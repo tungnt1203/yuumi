@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 )
 
@@ -26,6 +27,12 @@ type WebhookPayload struct {
 type Comment struct {
 	Author string
 	Body   string
+}
+type ClaudeResult struct {
+	Type    string `json:"type"`
+	Subtype string `json:"subtype"`
+	IsError bool   `json:"is_error"`
+	Result  string `json:"result"`
 }
 
 func (c Comment) MentionsBot(botName string) bool {
@@ -55,6 +62,24 @@ func VerifySignature(secret string, payload []byte, signatureHeader string) bool
 	return hmac.Equal([]byte(computedHex), []byte(expectedHex))
 }
 
+func RunClaudeReview(prompt string) (string, error) {
+	cmd := exec.Command("claude", "-p", prompt, "--output-format", "json")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("claude command failed: %w", err)
+	}
+
+	var result ClaudeResult
+	if err := json.Unmarshal(output, &result); err != nil {
+		return "", fmt.Errorf("cannot parse claude output: %w", err)
+	}
+
+	if result.IsError {
+		return "", fmt.Errorf("claude returned error: %s", result.Subtype)
+	}
+
+	return result.Result, nil
+}
 func main() {
 	secret, ok := os.LookupEnv("GITHUB_WEBHOOK_SECRET")
 	if !ok {
@@ -98,7 +123,16 @@ func main() {
 			return
 		}
 		fmt.Println("Command from", comment.Author, ":", cmd)
-		fmt.Fprintln(w, "received: "+cmd)
+
+		review, err := RunClaudeReview(cmd)
+		if err != nil {
+			fmt.Println("Claude error:", err)
+			http.Error(w, "claude review failed", http.StatusInternalServerError)
+			return
+		}
+
+		fmt.Println("Review result:", review)
+		fmt.Fprintln(w, review)
 	})
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }

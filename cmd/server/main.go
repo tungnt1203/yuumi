@@ -11,6 +11,7 @@ import (
 	"github.com/tungnt1203/yuumi/internal/claudecli"
 	"github.com/tungnt1203/yuumi/internal/config"
 	"github.com/tungnt1203/yuumi/internal/githubapi"
+	"github.com/tungnt1203/yuumi/internal/gitrepo"
 	"github.com/tungnt1203/yuumi/internal/review"
 	"github.com/tungnt1203/yuumi/internal/webhook"
 )
@@ -89,7 +90,21 @@ func main() {
 				}
 			}()
 
-			reviewText, err := claudecli.RunClaudeReview(cmd)
+			sha, err := githubapi.GetPullRequestHeadSHA(payload.Repository.FullName, payload.Issue.Number, cfg.GitHubToken)
+
+			if err != nil {
+				fmt.Println("Get pull request head SHA error:", err)
+				return
+			}
+
+			dir, cleanup, err := gitrepo.CloneRepo(payload.Repository.FullName, sha)
+			if err != nil {
+				fmt.Println("Clone repo error:", err)
+				return
+			}
+			defer cleanup()
+
+			reviewText, err := claudecli.RunClaudeReview(cmd, dir)
 			if err != nil {
 				if editErr := githubapi.EditGitHubComment(payload.Repository.FullName, placeholderID, "❌ Review thất bại: "+err.Error(), cfg.GitHubToken); editErr != nil {
 					fmt.Println("Edit comment error:", editErr)

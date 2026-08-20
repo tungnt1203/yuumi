@@ -10,7 +10,7 @@ import (
 type Payload struct {
 	Action  string `json:"action"`
 	Comment struct {
-		ID   int64 `json:"id"`
+		ID   int64  `json:"id"`
 		Body string `json:"body"`
 		User struct {
 			Login string `json:"login"`

@@ -12,6 +12,12 @@ type CommentResponse struct {
 	ID int64 `json:"id"`
 }
 
+type PullRequestResponse struct {
+	Head struct {
+		SHA string `json:"sha"`
+	} `json:"head"`
+}
+
 func PostGitHubComment(repoFullName string, issueNumber int, body string, token string) (int64, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/issues/%d/comments", repoFullName, issueNumber)
 	reqBody, err := json.Marshal(map[string]string{"body": body})
@@ -108,4 +114,34 @@ func EditGitHubComment(repoFullName string, commentID int64, body string, token 
 	}
 
 	return nil
+}
+
+func GetPullRequestHeadSHA(repoFullName string, pullRequestNumber int, token string) (string, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/pulls/%d", repoFullName, pullRequestNumber)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return "", fmt.Errorf("cannot create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("request failed: %w", err)
+	}
+
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("github api error %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var pullRequestResponse PullRequestResponse
+	if err := json.NewDecoder(resp.Body).Decode(&pullRequestResponse); err != nil {
+		return "", fmt.Errorf("cannot decode pull request response: %w", err)
+	}
+
+	return pullRequestResponse.Head.SHA, nil
 }

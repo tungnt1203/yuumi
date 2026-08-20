@@ -5,16 +5,22 @@ Bot review code tự động: nhận mention `@yuumi-bot <lệnh>` trong comment
 ## Kiến trúc
 
 ```
-GitHub PR/Issue comment "@yuumi-bot <lệnh>"
+GitHub PR comment "@yuumi-bot <lệnh>"
         │  (GitHub Webhook - HTTP POST, ký HMAC-SHA256)
         ▼
   Go HTTP server (cmd/server)
         │  verify chữ ký → check quyền → parse comment → trích lệnh
         ▼
-  Gọi `claude -p` (Claude Code CLI) để review          [internal/claudecli]
+  React 👀 + post comment placeholder "Đang review..."  [internal/githubapi]
         │
         ▼
-  Post kết quả thành comment lên GitHub PR/Issue        [internal/githubapi]
+  Lấy PR head SHA → git clone --depth 1 vào tmp dir      [internal/githubapi, internal/gitrepo]
+        │
+        ▼
+  Gọi `claude -p` với cmd.Dir = tmp dir để review        [internal/claudecli]
+        │  (dọn tmp dir sau khi xong)
+        ▼
+  Edit lại đúng comment placeholder với kết quả/lỗi      [internal/githubapi]
 ```
 
 ## Cấu trúc thư mục
@@ -25,15 +31,17 @@ internal/
   config/                 # đọc & validate biến môi trường
   review/                 # Comment, MentionsBot, ExtractCommand (logic thuần, có unit test)
   webhook/                # Payload struct, VerifySignature (HMAC)
-  claudecli/              # gọi `claude` CLI, parse kết quả
-  githubapi/               # gọi GitHub REST API để post comment
+  claudecli/              # gọi `claude` CLI (chạy trong repo đã clone), parse kết quả
+  githubapi/               # gọi GitHub REST API: reaction, post/edit comment, lấy PR head SHA
+  gitrepo/                 # clone PR head SHA vào tmp dir, trả cleanup() để dọn dẹp
 ```
 
 ## Yêu cầu
 
 - Go 1.26+
 - [Claude Code CLI](https://docs.claude.com/claude-code) đã cài và authenticate (`claude --version` chạy được)
-- 1 GitHub Personal Access Token (fine-grained, quyền `Issues: Read and write` trên repo mục tiêu)
+- `git` CLI có sẵn trên máy chạy server (dùng để clone PR head vào tmp dir)
+- 1 GitHub Personal Access Token (fine-grained, quyền `Issues: Read and write` + `Pull requests: Read` trên repo mục tiêu)
 - 1 webhook secret tự đặt (dùng để GitHub ký request, verify chống giả mạo)
 
 ## Cấu hình
@@ -58,10 +66,12 @@ Server lắng nghe cổng `:8080`, có 2 route:
 - `GET /health` — health check, trả `ok`.
 - `POST /webhook` — endpoint nhận GitHub webhook (event `issue_comment`).
 
+**Lưu ý:** `issue.number` trong payload phải là số của 1 **Pull Request thật** (không phải Issue thường), vì bước lấy head SHA gọi API `/pulls/{number}` — trên Issue thường API này trả 404.
+
 ## Test thủ công (giả lập webhook GitHub)
 
 ```bash
-BODY='{"action":"created","comment":{"body":"@yuumi-bot review","user":{"login":"<username>"}},"repository":{"full_name":"<owner>/<repo>"},"issue":{"number":<so>}}'
+BODY='{"action":"created","comment":{"id":1,"body":"@yuumi-bot review","user":{"login":"<username>"}},"repository":{"full_name":"<owner>/<repo>"},"issue":{"number":<số PR>}}'
 SIG=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "$GITHUB_WEBHOOK_SECRET" | sed 's/^.* //')
 curl -i -X POST localhost:8080/webhook \
   -H "Content-Type: application/json" \
@@ -69,14 +79,20 @@ curl -i -X POST localhost:8080/webhook \
   -d "$BODY"
 ```
 
+(`comment.id` là giả nên bước react 👀 sẽ luôn báo lỗi 404 — bình thường, không chặn các bước sau)
+
 ## Trạng thái
 
 - [x] HTTP server nhận & verify webhook (HMAC-SHA256)
 - [x] Xác thực người comment (allowlist)
-- [x] Gọi Claude Code CLI review (có timeout, capture stderr)
-- [x] Post kết quả lên GitHub PR/Issue (goroutine, không block response)
+- [x] React 👀 lên comment trigger + post comment placeholder "Đang review..."
+- [x] Lấy PR head SHA, `git clone --depth 1` vào tmp dir riêng mỗi request
+- [x] Gọi Claude Code CLI review với `cmd.Dir` trỏ vào repo đã clone (không còn đọc nhầm repo `yuumi_review`)
+- [x] Edit lại đúng comment placeholder với kết quả hoặc lỗi (không để treo), dọn tmp dir sau khi xong
 - [x] Chống panic làm sập server (`recover`)
 - [x] Tái cấu trúc theo layout `cmd/` + `internal/`
 - [ ] Unit test (`go test`)
+- [ ] Auto review khi PR mới tạo / có commit mới (event `pull_request`, không chỉ mention)
+- [ ] Migrate sang Go SDK (Tool Runner) thay vì shell ra `claude` CLI
 - [ ] Đóng gói Docker
 - [ ] Deploy AWS

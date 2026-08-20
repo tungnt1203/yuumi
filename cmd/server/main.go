@@ -72,6 +72,16 @@ func main() {
 		fmt.Println("Command from", comment.Author, ":", cmd)
 		fmt.Println("Repo:", payload.Repository.FullName, "| Issue #:", payload.Issue.Number)
 
+		if err := githubapi.AddReaction(payload.Repository.FullName, payload.Comment.ID, cfg.GitHubToken); err != nil {
+			fmt.Println("Add reaction error:", err)
+		}
+
+		placeholderID, err := githubapi.PostGitHubComment(payload.Repository.FullName, payload.Issue.Number, "Đang review...", cfg.GitHubToken)
+		if err != nil {
+			fmt.Println("Post comment error:", err)
+			return
+		}
+
 		go func() {
 			defer func() {
 				if r := recover(); r != nil {
@@ -81,12 +91,15 @@ func main() {
 
 			reviewText, err := claudecli.RunClaudeReview(cmd)
 			if err != nil {
-				fmt.Println("Claude error:", err)
+				if editErr := githubapi.EditGitHubComment(payload.Repository.FullName, placeholderID, "❌ Review thất bại: "+err.Error(), cfg.GitHubToken); editErr != nil {
+					fmt.Println("Edit comment error:", editErr)
+				}
 				return
 			}
+
 			fmt.Println("Review result:", reviewText)
 
-			err = githubapi.PostGitHubComment(payload.Repository.FullName, payload.Issue.Number, reviewText, cfg.GitHubToken)
+			err = githubapi.EditGitHubComment(payload.Repository.FullName, placeholderID, reviewText, cfg.GitHubToken)
 			if err != nil {
 				fmt.Println("Post comment error:", err)
 				return

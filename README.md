@@ -91,8 +91,22 @@ curl -i -X POST localhost:8080/webhook \
 - [x] Edit lại đúng comment placeholder với kết quả hoặc lỗi (không để treo), dọn tmp dir sau khi xong
 - [x] Chống panic làm sập server (`recover`)
 - [x] Tái cấu trúc theo layout `cmd/` + `internal/`
-- [ ] Unit test (`go test`)
+
+**Known limitation:** clone dùng `--depth 1` (chỉ 1 commit, không có history/commit cha) nên Claude không tự `git diff` được để biết chính xác PR thay đổi gì — chỉ đọc được trạng thái file hiện tại + commit message. Đủ dùng cho review chung, nhưng để review đúng diff cần bổ sung sau (lấy diff thật qua GitHub API, đưa vào prompt).
+
+### Roadmap tiếp theo (ưu tiên hoàn thiện app trước khi đổi kiến trúc)
+
+1. [x] Unit test (`go test`) cho phần logic thuần (`review`, `webhook`)
+2. [ ] Deploy có URL public thật (thay vì chỉ test local qua curl) — vẫn dùng PAT trước cho chắc chắn hoạt động
+3. [ ] Chuyển từ PAT cá nhân sang **GitHub App** — để bot có identity riêng (`yuumi-bot[bot]`), token theo installation thay vì gắn với account cá nhân, scope đúng theo repo cài app. Việc cần làm:
+   - Đăng ký GitHub App trên GitHub (permissions `Issues: RW`, `Pull requests: R`, subscribe event `issue_comment` + sau này `pull_request`)
+   - Thêm module ký JWT bằng private key của App + đổi lấy installation access token (`POST /app/installations/{id}/access_tokens`), cache tới khi hết hạn
+   - Đổi `config.Load()`: bỏ `GITHUB_TOKEN` tĩnh, dùng `GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY`
+   - Thêm field `installation.id` vào `webhook/payload.go`
+   - `gitrepo.CloneRepo` cần nhúng token vào URL khi fetch nếu sau này review repo private (hiện chỉ work với repo public)
+4. [ ] Đóng gói Docker
+5. [ ] Deploy AWS
+
+**Để sau (đã bàn, chưa ưu tiên):**
 - [ ] Auto review khi PR mới tạo / có commit mới (event `pull_request`, không chỉ mention)
 - [ ] Migrate sang Go SDK (Tool Runner) thay vì shell ra `claude` CLI
-- [ ] Đóng gói Docker
-- [ ] Deploy AWS

@@ -96,7 +96,7 @@ curl -i -X POST localhost:8080/webhook \
 
 ### Roadmap tiếp theo (ưu tiên hoàn thiện app trước khi đổi kiến trúc)
 
-1. [ ] Unit test (`go test`) cho phần logic thuần (`review`, `webhook`)
+1. [x] Unit test (`go test`) cho phần logic thuần (`review`, `webhook`)
 2. [ ] Deploy có URL public thật (thay vì chỉ test local qua curl) — vẫn dùng PAT trước cho chắc chắn hoạt động
 3. [ ] Chuyển từ PAT cá nhân sang **GitHub App** — để bot có identity riêng (`yuumi-bot[bot]`), token theo installation thay vì gắn với account cá nhân, scope đúng theo repo cài app. Việc cần làm:
    - Đăng ký GitHub App trên GitHub (permissions `Issues: RW`, `Pull requests: R`, subscribe event `issue_comment` + sau này `pull_request`)

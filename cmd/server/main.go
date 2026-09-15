@@ -12,6 +12,7 @@ import (
 	"github.com/tungnt1203/yuumi/internal/config"
 	"github.com/tungnt1203/yuumi/internal/githubapi"
 	"github.com/tungnt1203/yuumi/internal/gitrepo"
+	"github.com/tungnt1203/yuumi/internal/healthcheck"
 	"github.com/tungnt1203/yuumi/internal/review"
 	"github.com/tungnt1203/yuumi/internal/reviewlog"
 	"github.com/tungnt1203/yuumi/internal/webhook"
@@ -31,8 +32,29 @@ func main() {
 	seenComments := webhook.NewSeenComments()
 	reviewLogger := reviewlog.NewFileLogger(cfg.ReviewLogDir)
 
+	// Check claude CLI + GITHUB_TOKEN thật sự dùng được ngay lúc khởi động,
+	// thay vì chỉ tin biến môi trường đã set là đủ — nếu không, lỗi (CLI
+	// chưa authenticate, token hết hạn...) chỉ lộ ra khi có webhook thật
+	// tới (xem issue #29). Không Fatal ở đây: tránh crash loop nếu chỉ là
+	// sự cố mạng thoáng qua lúc deploy, nhưng phải log đủ rõ để không bị
+	// bỏ sót.
+	healthMonitor := healthcheck.NewMonitor(cfg.GitHubToken)
+	if report := healthMonitor.Check(); !report.Healthy() {
+		if !report.ClaudeCLI.OK {
+			log.Println("WARNING: claude CLI check thất bại:", report.ClaudeCLI.Message)
+		}
+		if !report.GitHubToken.OK {
+			log.Println("WARNING: GITHUB_TOKEN check thất bại:", report.GitHubToken.Message)
+		}
+	}
+
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintln(w, "ok")
+		report := healthMonitor.Last()
+		w.Header().Set("Content-Type", "application/json")
+		if !report.Healthy() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+		json.NewEncoder(w).Encode(report)
 	})
 
 	http.HandleFunc("/webhook", func(w http.ResponseWriter, r *http.Request) {

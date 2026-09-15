@@ -1,0 +1,150 @@
+// Package healthcheck xác thực các dependency ngoài mà bot cần để review
+// (Claude CLI, GitHub token) thật sự dùng được, thay vì chỉ tin biến môi
+// trường đã set là đủ (xem issue #29: /health trước đây luôn trả "ok" bất
+// kể claude CLI hay GITHUB_TOKEN có còn hoạt động không).
+package healthcheck
+
+import (
+	"fmt"
+	"net/http"
+	"os/exec"
+	"sync"
+	"time"
+)
+
+// Status là kết quả kiểm tra 1 dependency tại 1 thời điểm.
+type Status struct {
+	OK      bool   `json:"ok"`
+	Message string `json:"message"`
+}
+
+func okStatus() Status { return Status{OK: true, Message: "ok"} }
+
+func failStatus(err error) Status { return Status{OK: false, Message: err.Error()} }
+
+// Report gộp kết quả check tất cả dependency tại 1 thời điểm — là giá trị
+// Monitor cache lại để /health đọc, không phải gọi CLI/API thật mỗi request
+// (tốn quota GitHub + làm chậm health check).
+type Report struct {
+	ClaudeCLI   Status    `json:"claude_cli"`
+	GitHubToken Status    `json:"github_token"`
+	CheckedAt   time.Time `json:"checked_at"`
+}
+
+// Healthy báo toàn bộ dependency có đang hoạt động không.
+func (r Report) Healthy() bool {
+	return r.ClaudeCLI.OK && r.GitHubToken.OK
+}
+
+// ClaudeCLICheck kiểm tra `claude` CLI có gọi được không (đã cài + đã
+// authenticate). Khai báo dạng func type thay vì gọi thẳng exec.Command
+// trong Monitor, để test thay bằng fake mà không cần binary `claude` cài
+// sẵn trên máy chạy test — cùng cách claudecli.Reviewer đang test bằng fake
+// script (xem claudecli/claude_test.go).
+type ClaudeCLICheck func() error
+
+// GitHubTokenCheck xác thực 1 GitHub token còn dùng được.
+type GitHubTokenCheck func(token string) error
+
+// DefaultClaudeCLICheck chạy `claude --version` thật: lệnh rẻ, không gọi
+// model bên trong, chỉ cần binary tồn tại và chạy được (đủ để phát hiện
+// case CLI chưa cài hoặc chưa authenticate khiến mọi lệnh đều lỗi).
+func DefaultClaudeCLICheck() error {
+	if err := exec.Command("claude", "--version").Run(); err != nil {
+		return fmt.Errorf("claude CLI không chạy được: %w", err)
+	}
+	return nil
+}
+
+// DefaultGitHubTokenCheck gọi GET /rate_limit để xác thực token — đây là
+// endpoint rẻ nhất cho việc này: cần token hợp lệ mới trả 200 (401 nếu
+// token sai/hết hạn/bị thu hồi), bản thân request này lại KHÔNG bị tính
+// vào rate limit chính, và không đòi hỏi bất kỳ quyền cụ thể nào trên repo
+// nên dùng được bất kể token có scope gì.
+func DefaultGitHubTokenCheck(token string) error {
+	return checkTokenAgainst("https://api.github.com/rate_limit", token)
+}
+
+// checkTokenAgainst tách riêng khỏi DefaultGitHubTokenCheck để test tự trỏ
+// vào 1 httptest.Server giả lập response GitHub, thay vì phải gọi API thật.
+func checkTokenAgainst(url, token string) error {
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("cannot create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return fmt.Errorf("GITHUB_TOKEN không hợp lệ hoặc đã bị thu hồi")
+	}
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("github api error %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// Monitor chạy check cho các dependency của bot và cache lại kết quả lần
+// check gần nhất, để handler /health đọc trạng thái mà không phải gọi
+// CLI/API thật mỗi request.
+type Monitor struct {
+	CheckClaudeCLI   ClaudeCLICheck
+	CheckGitHubToken GitHubTokenCheck
+	GitHubToken      string
+
+	mu   sync.RWMutex
+	last Report
+}
+
+// NewMonitor tạo Monitor dùng check thật (DefaultClaudeCLICheck,
+// DefaultGitHubTokenCheck) cho token đã cấu hình. Trước lần Check() đầu
+// tiên, Last() trả Report zero-value (Healthy() == false) — main.go phải
+// tự gọi Check() lúc khởi động trước khi mở route /health.
+func NewMonitor(gitHubToken string) *Monitor {
+	return &Monitor{
+		CheckClaudeCLI:   DefaultClaudeCLICheck,
+		CheckGitHubToken: DefaultGitHubTokenCheck,
+		GitHubToken:      gitHubToken,
+	}
+}
+
+// Check chạy check thật cho từng dependency, cache lại kết quả rồi trả về.
+// Gọi lúc khởi động để biết ngay nếu bot start trong tình trạng đã hỏng sẵn
+// (claude CLI chưa authenticate, GITHUB_TOKEN hết hạn...), thay vì phải chờ
+// tới khi có webhook thật mới phát hiện ra.
+func (m *Monitor) Check() Report {
+	report := Report{CheckedAt: time.Now()}
+
+	if err := m.CheckClaudeCLI(); err != nil {
+		report.ClaudeCLI = failStatus(err)
+	} else {
+		report.ClaudeCLI = okStatus()
+	}
+
+	if err := m.CheckGitHubToken(m.GitHubToken); err != nil {
+		report.GitHubToken = failStatus(err)
+	} else {
+		report.GitHubToken = okStatus()
+	}
+
+	m.mu.Lock()
+	m.last = report
+	m.mu.Unlock()
+
+	return report
+}
+
+// Last trả về kết quả check gần nhất (từ lần Check() gần nhất) mà không
+// chạy check mới — dùng cho handler /health, để mỗi request health check
+// không tốn thêm 1 lần gọi GitHub API/exec claude CLI.
+func (m *Monitor) Last() Report {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.last
+}

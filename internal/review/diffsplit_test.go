@@ -97,7 +97,7 @@ func TestIsIgnoredPath(t *testing.T) {
 		"api/v1/user_pb2.py",
 	}
 	for _, p := range ignored {
-		if !isIgnoredPath(p) {
+		if !isIgnoredPath(p, nil) {
 			t.Errorf("isIgnoredPath(%q) = false, want true", p)
 		}
 	}
@@ -110,9 +110,30 @@ func TestIsIgnoredPath(t *testing.T) {
 		"internal/targets/resolver.go", // chứa "targets/", không phải "target/"
 	}
 	for _, p := range kept {
-		if isIgnoredPath(p) {
+		if isIgnoredPath(p, nil) {
 			t.Errorf("isIgnoredPath(%q) = true, want false", p)
 		}
+	}
+}
+
+func TestIsIgnoredPath_ExtraPatternsFromRepoConfig(t *testing.T) {
+	extra := []string{"testdata/", ".generated.go"}
+
+	ignoredByExtra := []string{"internal/foo/testdata/fixture.json", "api/user.generated.go"}
+	for _, p := range ignoredByExtra {
+		if !isIgnoredPath(p, extra) {
+			t.Errorf("isIgnoredPath(%q, %v) = false, want true", p, extra)
+		}
+	}
+
+	// Extra chỉ GỘP THÊM, không thay thế default.
+	if !isIgnoredPath("go.sum", extra) {
+		t.Error("isIgnoredPath(\"go.sum\", extra) = false, want true (default patterns vẫn áp dụng)")
+	}
+
+	// Path không khớp cả default lẫn extra vẫn phải được giữ lại.
+	if isIgnoredPath("internal/foo/handler.go", extra) {
+		t.Error("isIgnoredPath(\"internal/foo/handler.go\", extra) = true, want false")
 	}
 }
 
@@ -159,7 +180,7 @@ func TestBundleDiffs_KeepsSameDirectoryFilesTogether(t *testing.T) {
 	// Budget đủ cho 2 file/bundle nhưng không đủ cho cả 3 -> ép chia 2 bundle.
 	budget := len(fileA1) + len(fileA2) + 1
 
-	bundles, _ := bundleDiffs(diff, budget)
+	bundles, _ := bundleDiffs(diff, budget, nil)
 
 	if len(bundles) != 2 {
 		t.Fatalf("got %d bundles, want 2: %q", len(bundles), bundles)
@@ -177,7 +198,7 @@ func TestBundleDiffs_KeepsSameDirectoryFilesTogether(t *testing.T) {
 func TestBundleDiffs_UnderBudget_ReturnsOriginalUnchanged(t *testing.T) {
 	diff := "diff --git a/x.go b/x.go\n+line1"
 
-	got, skipped := bundleDiffs(diff, 1000)
+	got, skipped := bundleDiffs(diff, 1000, nil)
 
 	if len(got) != 1 || got[0] != diff {
 		t.Errorf("bundleDiffs() bundles = %v, want single bundle equal to original diff", got)
@@ -188,11 +209,11 @@ func TestBundleDiffs_UnderBudget_ReturnsOriginalUnchanged(t *testing.T) {
 }
 
 func TestBundleDiffs_EmptyDiff(t *testing.T) {
-	if got, skipped := bundleDiffs("", 1000); got != nil || skipped != nil {
-		t.Errorf("bundleDiffs(\"\", ...) = %v, %v, want nil, nil", got, skipped)
+	if got, skipped := bundleDiffs("", 1000, nil); got != nil || skipped != nil {
+		t.Errorf("bundleDiffs(\"\", ..., nil) = %v, %v, want nil, nil", got, skipped)
 	}
-	if got, skipped := bundleDiffs("   \n", 1000); got != nil || skipped != nil {
-		t.Errorf("bundleDiffs(whitespace, ...) = %v, %v, want nil, nil", got, skipped)
+	if got, skipped := bundleDiffs("   \n", 1000, nil); got != nil || skipped != nil {
+		t.Errorf("bundleDiffs(whitespace, ..., nil) = %v, %v, want nil, nil", got, skipped)
 	}
 }
 
@@ -205,7 +226,7 @@ func TestBundleDiffs_GroupsFilesUnderBudget(t *testing.T) {
 	// Budget đủ cho 2 file/bundle nhưng không đủ cho cả 3.
 	budget := len(fileA) + len(fileB) + 1
 
-	bundles, skipped := bundleDiffs(diff, budget)
+	bundles, skipped := bundleDiffs(diff, budget, nil)
 
 	if len(bundles) != 2 {
 		t.Fatalf("got %d bundles, want 2: %q", len(bundles), bundles)
@@ -227,7 +248,7 @@ func TestBundleDiffs_SingleHugeFileGetsOwnTruncatedBundle(t *testing.T) {
 	diff := huge + "\n" + small
 
 	budget := 50
-	bundles, _ := bundleDiffs(diff, budget)
+	bundles, _ := bundleDiffs(diff, budget, nil)
 
 	if len(bundles) != 2 {
 		t.Fatalf("got %d bundles, want 2 (huge file alone + small file alone): %q", len(bundles), bundles)
@@ -245,7 +266,7 @@ func TestBundleDiffs_AllFilesFitOneBundleWhenSmall(t *testing.T) {
 	fileB := "diff --git a/b.go b/b.go\n+b"
 	diff := fileA + "\n" + fileB
 
-	bundles, _ := bundleDiffs(diff, 10_000)
+	bundles, _ := bundleDiffs(diff, 10_000, nil)
 
 	if len(bundles) != 1 {
 		t.Fatalf("got %d bundles, want 1: %q", len(bundles), bundles)
@@ -257,7 +278,7 @@ func TestBundleDiffs_FiltersIgnoredFiles_SmallPR(t *testing.T) {
 	lock := "diff --git a/go.sum b/go.sum\n+h1:abc..."
 	diff := code + "\n" + lock
 
-	bundles, skipped := bundleDiffs(diff, 10_000)
+	bundles, skipped := bundleDiffs(diff, 10_000, nil)
 
 	if len(bundles) != 1 {
 		t.Fatalf("got %d bundles, want 1: %q", len(bundles), bundles)
@@ -273,12 +294,35 @@ func TestBundleDiffs_FiltersIgnoredFiles_SmallPR(t *testing.T) {
 	}
 }
 
+func TestBundleDiffs_FiltersExtraPatternsFromRepoConfig(t *testing.T) {
+	code := "diff --git a/main.go b/main.go\n+fmt.Println(1)"
+	fixture := "diff --git a/testdata/case1.json b/testdata/case1.json\n+{}"
+	diff := code + "\n" + fixture
+
+	// "testdata/" không nằm trong defaultIgnoredPathPatterns, chỉ bị lọc vì
+	// đây là extra pattern (giả lập đến từ .yuumi.yml của repo, issue #7).
+	bundles, skipped := bundleDiffs(diff, 10_000, []string{"testdata/"})
+
+	if len(bundles) != 1 {
+		t.Fatalf("got %d bundles, want 1: %q", len(bundles), bundles)
+	}
+	if strings.Contains(bundles[0], "testdata") {
+		t.Errorf("bundle should not contain testdata/, got %q", bundles[0])
+	}
+	if !strings.Contains(bundles[0], "main.go") {
+		t.Errorf("bundle should still contain main.go, got %q", bundles[0])
+	}
+	if len(skipped) != 1 || skipped[0] != "testdata/case1.json" {
+		t.Errorf("skipped = %v, want [\"testdata/case1.json\"]", skipped)
+	}
+}
+
 func TestBundleDiffs_AllFilesIgnored_ReturnsNoBundles(t *testing.T) {
 	lock := "diff --git a/go.sum b/go.sum\n+h1:abc..."
 	vendored := "diff --git a/vendor/x/y.go b/vendor/x/y.go\n+package y"
 	diff := lock + "\n" + vendored
 
-	bundles, skipped := bundleDiffs(diff, 10_000)
+	bundles, skipped := bundleDiffs(diff, 10_000, nil)
 
 	if bundles != nil {
 		t.Errorf("bundles = %v, want nil (everything filtered out)", bundles)

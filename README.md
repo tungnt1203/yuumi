@@ -54,6 +54,24 @@ GITHUB_WEBHOOK_SECRET=<secret bạn tự đặt, khai báo trùng khi setup webh
 ALLOWED_USERS=<username1,username2,...>   # danh sách GitHub username được phép trigger bot
 ```
 
+## Cấu hình review riêng cho từng repo (`.yuumi.yml`)
+
+Repo được review có thể thêm file `.yuumi.yml` ở thư mục gốc để tuỳ chỉnh cách bot review repo đó, không cần đụng vào code/cấu hình của bot:
+
+```yaml
+exclude:
+  - "testdata/"
+  - "*.generated.go"
+instructions: |
+  Review nghiêm khắc phần error handling.
+  Luôn yêu cầu unit test cho hàm export.
+```
+
+- `exclude`: thêm pattern loại trừ file/thư mục khỏi diff review — **gộp thêm** vào danh sách mặc định của bot (lock file, `vendor/`, `node_modules/`...), không thay thế.
+- `instructions`: đoạn hướng dẫn chèn thẳng vào prompt gửi Claude, để review đúng convention/mức độ nghiêm khắc riêng của repo.
+
+Không có file này thì bot dùng default hiện tại. File có nhưng sai định dạng YAML thì bot bỏ qua (log lỗi, không chặn review) và vẫn review với default.
+
 ## Chạy local
 
 ```bash
@@ -92,6 +110,7 @@ curl -i -X POST localhost:8080/webhook \
 - [x] Chống panic làm sập server (`recover`)
 - [x] Tái cấu trúc theo layout `cmd/` + `internal/`
 - [x] Lấy diff thật của PR qua GitHub API (`application/vnd.github.v3.diff`) và đưa vào prompt, kèm hướng dẫn Claude đọc thêm file/README liên quan để hiểu kiến trúc & convention trước khi review, thay vì chỉ nhìn diff cô lập (`review.BuildReviewPrompt`)
+- [x] Cấu hình review riêng cho từng repo qua file `.yuumi.yml` ở root repo được review (thêm pattern loại trừ, hướng dẫn review riêng)
 
 **Đã fix limitation cũ:** trước đây clone `--depth 1` nên Claude không `git diff` được, chỉ đoán qua commit message. Giờ diff thật lấy trực tiếp từ GitHub API (không phụ thuộc git history), nên vẫn giữ `--depth 1` khi clone bình thường (chỉ cần file state để Claude đọc code, không cần history) — nếu gọi GitHub API lỗi thì fallback về cách cũ (đọc file + commit message).
 

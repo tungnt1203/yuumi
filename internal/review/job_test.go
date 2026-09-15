@@ -580,3 +580,58 @@ func main() {
 		t.Errorf("expected prompt to include static check report, got:\n%s", reviewer.gotPrompt)
 	}
 }
+
+func TestJobRun_AppliesRepoConfig(t *testing.T) {
+	dir := writeRepoConfig(t, `
+exclude:
+  - "testdata/"
+instructions: "Luôn yêu cầu unit test cho hàm export."
+`)
+
+	code := "diff --git a/main.go b/main.go\n+fmt.Println(1)"
+	fixture := "diff --git a/testdata/case1.json b/testdata/case1.json\n+{}"
+	diff := code + "\n" + fixture
+
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: diff}
+	reviewer := &fakeReviewer{result: "trông ổn"}
+
+	job := &Job{
+		GitHub:   gh,
+		Clone:    fakeCloner(dir, nil, new(bool)),
+		Reviewer: reviewer,
+	}
+	job.Run()
+
+	if strings.Contains(reviewer.gotPrompt, "testdata") {
+		t.Errorf("expected testdata/ to be excluded per .yuumi.yml, got prompt:\n%s", reviewer.gotPrompt)
+	}
+	if !strings.Contains(reviewer.gotPrompt, "Luôn yêu cầu unit test cho hàm export.") {
+		t.Errorf("expected repo instructions to be included in prompt, got:\n%s", reviewer.gotPrompt)
+	}
+	if !strings.Contains(gh.editedBody, "trông ổn") {
+		t.Errorf("expected review result in comment, got: %s", gh.editedBody)
+	}
+}
+
+func TestJobRun_InvalidRepoConfig_FallsBackToDefault(t *testing.T) {
+	dir := writeRepoConfig(t, "exclude: [this is not valid yaml :::")
+
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: "diff --git a/main.go b/main.go\n+fmt.Println(1)"}
+	reviewer := &fakeReviewer{result: "trông ổn"}
+
+	job := &Job{
+		GitHub:   gh,
+		Clone:    fakeCloner(dir, nil, new(bool)),
+		Reviewer: reviewer,
+	}
+	job.Run()
+
+	// .yuumi.yml lỗi không được chặn review — vẫn phải review bình thường
+	// với default (không loại trừ thêm, không hướng dẫn riêng).
+	if !gh.editCalled {
+		t.Fatal("expected EditComment to still be called despite invalid .yuumi.yml")
+	}
+	if !strings.Contains(gh.editedBody, "trông ổn") {
+		t.Errorf("expected review to still run with default config, got: %s", gh.editedBody)
+	}
+}

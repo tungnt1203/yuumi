@@ -124,7 +124,7 @@ func TestBuildReviewPrompt(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := BuildReviewPrompt(tt.userCommand, tt.diff, tt.staticCheckNote, tt.repoInstructions)
+			got := BuildReviewPrompt(tt.userCommand, tt.diff, tt.staticCheckNote, tt.repoInstructions, "")
 
 			for _, want := range tt.wantContain {
 				if !strings.Contains(got, want) {
@@ -146,7 +146,7 @@ func TestBuildReviewPrompt(t *testing.T) {
 // tự ưu tiên issue #25 acceptance criteria yêu cầu (rule repo > rule mặc
 // định bot tự có).
 func TestBuildReviewPrompt_LanguageRules_PlacedAfterRepoInstructions_WithPriorityNote(t *testing.T) {
-	got := BuildReviewPrompt("review", "diff --git a/main.go b/main.go\n+fmt.Println(1)", "", "Luôn yêu cầu unit test.")
+	got := BuildReviewPrompt("review", "diff --git a/main.go b/main.go\n+fmt.Println(1)", "", "Luôn yêu cầu unit test.", "")
 
 	repoIdx := strings.Index(got, "Luôn yêu cầu unit test.")
 	rulesIdx := strings.Index(got, "Race condition")
@@ -166,7 +166,7 @@ func TestBuildReviewPrompt_LanguageRules_PlacedAfterRepoInstructions_WithPriorit
 // severity/message/suggestion) — không phụ thuộc input nào, luôn phải có
 // (xem resultFormatInstructions, issue #26 + #5).
 func TestBuildReviewPrompt_IncludesResultFormatInstructions(t *testing.T) {
-	got := BuildReviewPrompt("review", "diff --git a/x b/x\n+y", "", "")
+	got := BuildReviewPrompt("review", "diff --git a/x b/x\n+y", "", "", "")
 
 	for _, want := range []string{
 		"JSON array",
@@ -181,6 +181,36 @@ func TestBuildReviewPrompt_IncludesResultFormatInstructions(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("BuildReviewPrompt() missing %q in result format instructions:\n%s", want, got)
 		}
+	}
+}
+
+// TestBuildReviewPrompt_Primer_ReplacesGenericReadMoreHint đảm bảo khi có
+// primer (PR bị chia bundle, issue #18), prompt nhúng đúng nội dung primer
+// và KHÔNG còn dặn chung chung "hãy tự đọc thêm" nữa — primer đã thay thế
+// đúng vai trò đó bằng ngữ cảnh cụ thể (buildPrimer).
+func TestBuildReviewPrompt_Primer_ReplacesGenericReadMoreHint(t *testing.T) {
+	primer := "Toàn bộ 2 file bị thay đổi trong PR:\n- a.go\n- b.go\n\n"
+
+	got := BuildReviewPrompt("review", "diff --git a/a.go b/a.go\n+x", "", "", primer)
+
+	if !strings.Contains(got, primer) {
+		t.Fatalf("expected prompt to contain the primer verbatim, got:\n%s", got)
+	}
+	if strings.Contains(got, "Trước khi kết luận, hãy đọc thêm") {
+		t.Errorf("expected the generic \"read more\" hint to be replaced by the primer, got:\n%s", got)
+	}
+	if idx := strings.Index(got, primer); idx > strings.Index(got, "Yêu cầu từ người review") {
+		t.Errorf("expected primer to appear at the start of the prompt, before the reviewer's command, got:\n%s", got)
+	}
+}
+
+// TestBuildReviewPrompt_NoPrimer_KeepsGenericReadMoreHint đảm bảo hành vi cũ
+// (PR không bị chia bundle, primer rỗng) không đổi.
+func TestBuildReviewPrompt_NoPrimer_KeepsGenericReadMoreHint(t *testing.T) {
+	got := BuildReviewPrompt("review", "diff --git a/a.go b/a.go\n+x", "", "", "")
+
+	if !strings.Contains(got, "Trước khi kết luận, hãy đọc thêm") {
+		t.Errorf("expected the generic \"read more\" hint when there is no primer, got:\n%s", got)
 	}
 }
 

@@ -108,8 +108,9 @@ func (f *fakeStateStore) SetLastReviewedSHA(repoFullName string, issueNumber int
 }
 
 type fakeReviewer struct {
-	result string
-	err    error
+	result   string
+	err      error
+	attempts int // 0 nghĩa là "chưa chỉ định", Review() trả về 1 (không retry)
 
 	called    bool
 	gotPrompt string
@@ -120,12 +121,16 @@ type fakeReviewer struct {
 	gotPrompts []string
 }
 
-func (f *fakeReviewer) Review(prompt string, dir string) (string, error) {
+func (f *fakeReviewer) Review(prompt string, dir string) (string, int, error) {
 	f.called = true
 	f.gotPrompt = prompt
 	f.gotDir = dir
 	f.gotPrompts = append(f.gotPrompts, prompt)
-	return f.result, f.err
+	attempts := f.attempts
+	if attempts == 0 {
+		attempts = 1
+	}
+	return f.result, attempts, f.err
 }
 
 // scriptedReviewer trả về kết quả/lỗi khác nhau cho từng lần gọi Review()
@@ -137,7 +142,7 @@ type scriptedReviewer struct {
 	prompts []string
 }
 
-func (s *scriptedReviewer) Review(prompt string, dir string) (string, error) {
+func (s *scriptedReviewer) Review(prompt string, dir string) (string, int, error) {
 	i := len(s.prompts)
 	s.prompts = append(s.prompts, prompt)
 
@@ -149,7 +154,7 @@ func (s *scriptedReviewer) Review(prompt string, dir string) (string, error) {
 	if i < len(s.errs) {
 		err = s.errs[i]
 	}
-	return res, err
+	return res, 1, err
 }
 
 // fakeCloner trả về dir cố định và đánh dấu lại khi cleanup được gọi, để
@@ -296,7 +301,7 @@ func TestJobRun_ReviewerPanic_Recovered(t *testing.T) {
 	job := &Job{
 		GitHub: gh,
 		Clone:  fakeCloner("/tmp/fake-dir", nil, &cleanupCalled),
-		Reviewer: reviewerFunc(func(prompt, dir string) (string, error) {
+		Reviewer: reviewerFunc(func(prompt, dir string) (string, int, error) {
 			panic("unexpected panic")
 		}),
 	}
@@ -307,9 +312,9 @@ func TestJobRun_ReviewerPanic_Recovered(t *testing.T) {
 }
 
 // reviewerFunc cho phép dựng 1 Reviewer từ closure, dùng riêng cho test panic.
-type reviewerFunc func(prompt, dir string) (string, error)
+type reviewerFunc func(prompt, dir string) (string, int, error)
 
-func (f reviewerFunc) Review(prompt, dir string) (string, error) {
+func (f reviewerFunc) Review(prompt, dir string) (string, int, error) {
 	return f(prompt, dir)
 }
 
@@ -519,13 +524,14 @@ type loggedCall struct {
 	sha                   string
 	bundleIndex, total    int
 	prompt, response, err string
+	attempts              int
 }
 
 type fakeReviewLogger struct {
 	calls []loggedCall
 }
 
-func (f *fakeReviewLogger) LogReview(repoFullName string, issueNumber int, sha string, bundleIndex, bundleTotal int, prompt, response, errMsg string, duration time.Duration) {
+func (f *fakeReviewLogger) LogReview(repoFullName string, issueNumber int, sha string, bundleIndex, bundleTotal int, prompt, response, errMsg string, duration time.Duration, attempts int) {
 	f.calls = append(f.calls, loggedCall{
 		repoFullName: repoFullName,
 		issueNumber:  issueNumber,
@@ -535,6 +541,7 @@ func (f *fakeReviewLogger) LogReview(repoFullName string, issueNumber int, sha s
 		prompt:       prompt,
 		response:     response,
 		err:          errMsg,
+		attempts:     attempts,
 	})
 }
 
@@ -571,6 +578,9 @@ func TestJobRun_LogsEachBundleReview(t *testing.T) {
 	if call.response != "trông ổn" || call.err != "" {
 		t.Errorf("expected response=%q err=%q, got response=%q err=%q", "trông ổn", "", call.response, call.err)
 	}
+	if call.attempts != 1 {
+		t.Errorf("expected attempts=1 for a review that succeeded on the first try, got %d", call.attempts)
+	}
 }
 
 func TestJobRun_LogsErrorWithEmptyResponse(t *testing.T) {
@@ -597,6 +607,32 @@ func TestJobRun_LogsErrorWithEmptyResponse(t *testing.T) {
 	}
 	if call.err != "claude timed out" {
 		t.Errorf("expected logged error %q, got %q", "claude timed out", call.err)
+	}
+}
+
+// TestJobRun_LogsAttemptsFromReviewer đảm bảo Job chuyển đúng số lần thử
+// (attempts) mà Reviewer.Review báo về cho Logger — không tự bịa ra 1
+// (xem claudecli.Reviewer retry, issue #28).
+func TestJobRun_LogsAttemptsFromReviewer(t *testing.T) {
+	diff := "diff --git a/main.go b/main.go\n+fmt.Println(1)"
+
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: diff}
+	reviewer := &fakeReviewer{result: "trông ổn", attempts: 3}
+	logger := &fakeReviewLogger{}
+
+	job := &Job{
+		GitHub:   gh,
+		Clone:    fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer: reviewer,
+		Logger:   logger,
+	}
+	job.Run()
+
+	if len(logger.calls) != 1 {
+		t.Fatalf("expected 1 log call, got %d", len(logger.calls))
+	}
+	if got := logger.calls[0].attempts; got != 3 {
+		t.Errorf("expected logged attempts=3 (as reported by Reviewer), got %d", got)
 	}
 }
 

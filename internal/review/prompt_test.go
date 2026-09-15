@@ -7,11 +7,12 @@ import (
 
 func TestBuildReviewPrompt(t *testing.T) {
 	tests := []struct {
-		name        string
-		userCommand string
-		diff        string
-		wantContain []string
-		wantAbsent  []string
+		name            string
+		userCommand     string
+		diff            string
+		staticCheckNote string
+		wantContain     []string
+		wantAbsent      []string
 	}{
 		{
 			name:        "has diff",
@@ -46,11 +47,30 @@ func TestBuildReviewPrompt(t *testing.T) {
 				"Không lấy được diff thật",
 			},
 		},
+		{
+			name:            "static check note included when present",
+			userCommand:     "review",
+			diff:            "diff --git a/main.go b/main.go\n+fmt.Println(\"hi\")",
+			staticCheckNote: "gofmt (file chưa format đúng chuẩn):\nmain.go",
+			wantContain: []string{
+				"gofmt (file chưa format đúng chuẩn):\nmain.go",
+			},
+		},
+		{
+			name:            "no static check section when note is blank",
+			userCommand:     "review",
+			diff:            "diff --git a/main.go b/main.go\n+fmt.Println(\"hi\")",
+			staticCheckNote: "   ",
+			wantAbsent: []string{
+				"gofmt",
+				"go vet",
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := BuildReviewPrompt(tt.userCommand, tt.diff)
+			got := BuildReviewPrompt(tt.userCommand, tt.diff, tt.staticCheckNote)
 
 			for _, want := range tt.wantContain {
 				if !strings.Contains(got, want) {

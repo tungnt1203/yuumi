@@ -16,7 +16,13 @@ import (
 // The prompt explicitly tells Claude to read surrounding project files
 // (README, related packages/conventions) before judging the diff, instead
 // of reviewing the changed lines in isolation.
-func BuildReviewPrompt(userCommand string, diff string) string {
+//
+// staticCheckNote là kết quả check tĩnh tự động (gofmt/go vet — xem
+// staticCheckReport, issue #8), rỗng nếu không detect được toolchain hoặc
+// không có gì để báo cáo. Chèn vào prompt như context có sẵn để Claude khỏi
+// phải tự đọc code ra mới bắt được các lỗi máy đã bắt tốt hơn, tập trung
+// review logic/thiết kế.
+func BuildReviewPrompt(userCommand string, diff string, staticCheckNote string) string {
 	var b strings.Builder
 
 	b.WriteString("Bạn đang review một Pull Request trong repo hiện tại (thư mục làm việc chính là repo đã checkout).\n\n")
@@ -31,6 +37,11 @@ func BuildReviewPrompt(userCommand string, diff string) string {
 		b.WriteString("\n```\n\n")
 	} else {
 		b.WriteString("Không lấy được diff thật của PR (có thể do lỗi gọi GitHub API). Hãy tự xác định phần thay đổi bằng cách đọc commit message và các file trong repo.\n\n")
+	}
+
+	if strings.TrimSpace(staticCheckNote) != "" {
+		b.WriteString(staticCheckNote)
+		b.WriteString("\n\n")
 	}
 
 	b.WriteString("Trước khi kết luận, hãy đọc thêm các file liên quan trong repo (README, package/module xung quanh các file đã đổi) để hiểu đúng kiến trúc và convention của project — đừng chỉ nhìn diff một cách cô lập.\n")

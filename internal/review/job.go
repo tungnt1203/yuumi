@@ -95,6 +95,11 @@ func (j *Job) Run() {
 	}
 	defer cleanup()
 
+	// Chạy 1 lần cho cả PR (không phụ thuộc bundle nào) — kết quả gofmt/go
+	// vet là thuộc tính của code sau khi đổi, không phải của từng phần diff
+	// bị chia nhỏ (xem issue #8).
+	staticReport := staticCheckReport(dir)
+
 	diff, err := j.GitHub.GetPullRequestDiff(j.RepoFullName, j.IssueNumber)
 	if err != nil {
 		// Không chặn review nếu lấy diff lỗi — fallback về cách cũ
@@ -130,9 +135,9 @@ func (j *Job) Run() {
 		// Diff rỗng thật (GetPullRequestDiff lỗi ở trên, hoặc PR không đổi
 		// gì) — vẫn review 1 lần với diff rỗng, để BuildReviewPrompt tự
 		// chèn hướng dẫn fallback (Claude tự đọc file state + commit message).
-		merged = j.reviewBundles([]string{""}, dir, sha)
+		merged = j.reviewBundles([]string{""}, dir, sha, staticReport)
 	default:
-		merged = j.reviewBundles(bundles, dir, sha)
+		merged = j.reviewBundles(bundles, dir, sha, staticReport)
 	}
 
 	if len(notes) > 0 {
@@ -184,7 +189,7 @@ func (j *Job) diffTruncationWarning(diff string) string {
 // trong phần của nó, các bundle còn lại vẫn tiếp tục — PR lớn mà chỉ vì 1
 // phần bị lỗi (vd timeout) mà mất luôn kết quả của các phần đã review xong
 // thì phí hơn nhiều so với review PR nhỏ.
-func (j *Job) reviewBundles(bundles []string, dir string, sha string) string {
+func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticReport string) string {
 	single := len(bundles) == 1
 	sections := make([]string, len(bundles))
 
@@ -194,7 +199,7 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string) string {
 			promptDiff = bundleNote(i+1, len(bundles)) + bundleDiff
 		}
 
-		prompt := BuildReviewPrompt(j.UserCommand, promptDiff)
+		prompt := BuildReviewPrompt(j.UserCommand, promptDiff, staticReport)
 		start := time.Now()
 		text, err := j.Reviewer.Review(prompt, dir)
 		duration := time.Since(start)

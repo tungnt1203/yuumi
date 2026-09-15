@@ -3,6 +3,7 @@ package review
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // defaultBundleBudgetChars là ngưỡng mặc định (tính theo số ký tự) cho mỗi
@@ -28,6 +29,20 @@ type GitHubClient interface {
 // cần Job biết đến package gitrepo.
 type Cloner func(repoFullName string, sha string) (dir string, cleanup func(), err error)
 
+// ReviewLogger ghi lại chi tiết 1 lần gọi Reviewer.Review — prompt gửi đi,
+// response nhận được (rỗng nếu lỗi), lỗi (nếu có) và thời gian xử lý — để
+// trace lại được đã gửi/nhận gì khi cần debug review lỗi ở production (xem
+// issue #9). Khai báo interface riêng dùng toàn tham số cơ bản (không phải
+// struct từ package ghi log cụ thể), theo đúng cách GitHubClient/Cloner đã
+// tách ở trên — Job không cần biết log được lưu vào đâu (file, DB...).
+//
+// bundleIndex/bundleTotal đánh số từ 1, dùng để phân biệt các bundle khi 1
+// PR lớn bị chia nhiều phần (xem bundleDiffs). Logger là optional: Job.Logger
+// == nil nghĩa là "không ghi log", Run() vẫn hoạt động bình thường.
+type ReviewLogger interface {
+	LogReview(repoFullName string, issueNumber int, sha string, bundleIndex, bundleTotal int, prompt, response, errMsg string, duration time.Duration)
+}
+
 // Job đóng gói toàn bộ dữ liệu cần để thực hiện 1 lần review (clone repo,
 // lấy diff, gọi Reviewer, sửa lại comment placeholder). Tách ra khỏi
 // main.go để nơi nhận webhook (main.go) không cần biết chi tiết các bước
@@ -46,6 +61,11 @@ type Job struct {
 	// mỗi bundle review riêng rồi gộp kết quả (xem bundleDiffs). <=0 nghĩa là
 	// "chưa cấu hình" — dùng defaultBundleBudgetChars.
 	BundleBudgetChars int
+
+	// Logger ghi lại prompt/response/lỗi/thời gian xử lý của mỗi lần gọi
+	// Reviewer.Review (xem ReviewLogger, issue #9). nil nghĩa là "không ghi
+	// log" — Run() vẫn chạy bình thường, không bắt buộc phải cấu hình.
+	Logger ReviewLogger
 }
 
 // Run thực hiện review, nên luôn được gọi trong goroutine riêng
@@ -110,9 +130,9 @@ func (j *Job) Run() {
 		// Diff rỗng thật (GetPullRequestDiff lỗi ở trên, hoặc PR không đổi
 		// gì) — vẫn review 1 lần với diff rỗng, để BuildReviewPrompt tự
 		// chèn hướng dẫn fallback (Claude tự đọc file state + commit message).
-		merged = j.reviewBundles([]string{""}, dir)
+		merged = j.reviewBundles([]string{""}, dir, sha)
 	default:
-		merged = j.reviewBundles(bundles, dir)
+		merged = j.reviewBundles(bundles, dir, sha)
 	}
 
 	if len(notes) > 0 {
@@ -164,7 +184,7 @@ func (j *Job) diffTruncationWarning(diff string) string {
 // trong phần của nó, các bundle còn lại vẫn tiếp tục — PR lớn mà chỉ vì 1
 // phần bị lỗi (vd timeout) mà mất luôn kết quả của các phần đã review xong
 // thì phí hơn nhiều so với review PR nhỏ.
-func (j *Job) reviewBundles(bundles []string, dir string) string {
+func (j *Job) reviewBundles(bundles []string, dir string, sha string) string {
 	single := len(bundles) == 1
 	sections := make([]string, len(bundles))
 
@@ -174,12 +194,29 @@ func (j *Job) reviewBundles(bundles []string, dir string) string {
 			promptDiff = bundleNote(i+1, len(bundles)) + bundleDiff
 		}
 
-		text, err := j.Reviewer.Review(BuildReviewPrompt(j.UserCommand, promptDiff), dir)
+		prompt := BuildReviewPrompt(j.UserCommand, promptDiff)
+		start := time.Now()
+		text, err := j.Reviewer.Review(prompt, dir)
+		duration := time.Since(start)
+
+		errMsg := ""
 		if err != nil {
 			fmt.Println("Review bundle", i+1, "/", len(bundles), "error:", err)
-			text = "❌ Review thất bại: " + err.Error()
+			errMsg = err.Error()
+			text = "❌ Review thất bại: " + errMsg
 		} else {
 			fmt.Println("Review bundle", i+1, "/", len(bundles), "result:", text)
+		}
+
+		if j.Logger != nil {
+			// Log response gốc (rỗng nếu lỗi), không phải text đã bọc thêm
+			// "❌ Review thất bại: ..." — để file log phản ánh đúng những gì
+			// Reviewer thực sự trả về.
+			response := text
+			if err != nil {
+				response = ""
+			}
+			j.Logger.LogReview(j.RepoFullName, j.IssueNumber, sha, i+1, len(bundles), prompt, response, errMsg, duration)
 		}
 
 		if single {

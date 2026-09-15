@@ -13,6 +13,7 @@ import (
 	"github.com/tungnt1203/yuumi/internal/githubapi"
 	"github.com/tungnt1203/yuumi/internal/gitrepo"
 	"github.com/tungnt1203/yuumi/internal/review"
+	"github.com/tungnt1203/yuumi/internal/reviewlog"
 	"github.com/tungnt1203/yuumi/internal/webhook"
 )
 
@@ -28,6 +29,7 @@ func main() {
 	var reviewer review.Reviewer = claudecli.NewReviewer()
 	dispatcher := review.NewDispatcher(cfg.MaxConcurrentReviews)
 	seenComments := webhook.NewSeenComments()
+	reviewLogger := reviewlog.NewFileLogger(cfg.ReviewLogDir)
 
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "ok")
@@ -103,6 +105,7 @@ func main() {
 			PlaceholderID:     placeholderID,
 			UserCommand:       cmd,
 			BundleBudgetChars: cfg.MaxDiffBundleChars,
+			Logger:            reviewLogger,
 		}
 		dispatcher.Submit(job.Run)
 

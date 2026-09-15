@@ -22,6 +22,11 @@ type Config struct {
 	// (xem review.NewDispatcher/defaultMaxConcurrentJobs) — 0 nghĩa là
 	// "không set", để review package tự dùng default của nó.
 	MaxConcurrentReviews int
+
+	// ReviewLogDir override thư mục ghi log request/response mỗi lần review
+	// (xem reviewlog.FileLogger, issue #9) — rỗng nghĩa là "không set", để
+	// reviewlog tự dùng default của nó.
+	ReviewLogDir string
 }
 
 func Load() (Config, error) {
@@ -56,6 +61,7 @@ func Load() (Config, error) {
 		AllowedUsers:         strings.Split(allowedUsersRaw, ","),
 		MaxDiffBundleChars:   maxDiffBundleChars,
 		MaxConcurrentReviews: maxConcurrentReviews,
+		ReviewLogDir:         os.Getenv("REVIEW_LOG_DIR"),
 	}, nil
 }
 

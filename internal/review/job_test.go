@@ -553,3 +553,30 @@ func TestJobRun_NilLogger_DoesNotPanic(t *testing.T) {
 		t.Error("expected EditComment to still be called with nil Logger")
 	}
 }
+
+func TestJobRun_IncludesStaticCheckReportInPrompt(t *testing.T) {
+	// Module Go thật, có lỗi gofmt cố ý — để staticCheckReport (chạy thật
+	// trên dir đã clone) có gì đó để báo cáo, thay vì fake dir không tồn
+	// tại như các test khác (staticCheckReport tự no-op với dir đó).
+	dir := writeGoModule(t, `package main
+
+func main() {
+	x:=1
+	_ = x
+}
+`)
+
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: "diff --git a/main.go b/main.go\n+x"}
+	reviewer := &fakeReviewer{result: "trông ổn"}
+
+	job := &Job{
+		GitHub:   gh,
+		Clone:    fakeCloner(dir, nil, new(bool)),
+		Reviewer: reviewer,
+	}
+	job.Run()
+
+	if !strings.Contains(reviewer.gotPrompt, "gofmt") {
+		t.Errorf("expected prompt to include static check report, got:\n%s", reviewer.gotPrompt)
+	}
+}

@@ -25,6 +25,7 @@ func main() {
 	fmt.Println("Yuumi review bot starting...")
 
 	ghClient := githubapi.NewClient(cfg.GitHubToken)
+	var reviewer review.Reviewer = claudecli.NewReviewer()
 
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "ok")
@@ -115,7 +116,7 @@ func main() {
 
 			prompt := review.BuildReviewPrompt(cmd, diff)
 
-			reviewText, err := claudecli.RunClaudeReview(prompt, dir)
+			reviewText, err := reviewer.Review(prompt, dir)
 			if err != nil {
 				if editErr := ghClient.EditComment(payload.Repository.FullName, placeholderID, "❌ Review thất bại: "+err.Error()); editErr != nil {
 					fmt.Println("Edit comment error:", editErr)

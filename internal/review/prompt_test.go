@@ -106,6 +106,27 @@ func TestBuildReviewPrompt(t *testing.T) {
 	}
 }
 
+// TestBuildReviewPrompt_IncludesResultFormatInstructions đảm bảo prompt yêu
+// cầu rõ ràng format JSON output có ví dụ cụ thể (category/severity/
+// message/suggestion) — không phụ thuộc input nào, luôn phải có (xem
+// resultFormatInstructions, issue #26).
+func TestBuildReviewPrompt_IncludesResultFormatInstructions(t *testing.T) {
+	got := BuildReviewPrompt("review", "diff --git a/x b/x\n+y", "", "")
+
+	for _, want := range []string{
+		"JSON array",
+		`"category"`,
+		`"severity"`,
+		`"message"`,
+		`"suggestion"`,
+		"critical|high|medium|low",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("BuildReviewPrompt() missing %q in result format instructions:\n%s", want, got)
+		}
+	}
+}
+
 func TestBundleNote(t *testing.T) {
 	got := bundleNote(2, 5)
 

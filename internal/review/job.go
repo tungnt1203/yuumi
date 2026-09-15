@@ -296,20 +296,31 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 		text, attempts, numTurns, err := j.Reviewer.Review(prompt, dir)
 		duration := time.Since(start)
 
+		// display là những gì thực sự được post lên comment — mặc định
+		// giống hệt text (raw), chỉ khác khi có lỗi (bọc thêm thông báo lỗi)
+		// hoặc khi text parse được thành findings có cấu trúc (issue #26,
+		// xem parseFindings/renderFindings) thì render lại có phân loại
+		// severity/category thay vì hiển thị nguyên JSON thô.
+		display := text
 		errMsg := ""
 		if err != nil {
 			fmt.Println("Review bundle", i+1, "/", len(bundles), "error:", err)
 			errMsg = err.Error()
-			text = "❌ Review thất bại: " + errMsg
+			display = "❌ Review thất bại: " + errMsg
 			hadError = true
 		} else {
 			fmt.Println("Review bundle", i+1, "/", len(bundles), "result:", text)
+			if findings, ok := parseFindings(text); ok {
+				display = renderFindings(findings)
+			}
 		}
 
 		if j.Logger != nil {
-			// Log response gốc (rỗng nếu lỗi), không phải text đã bọc thêm
-			// "❌ Review thất bại: ..." — để file log phản ánh đúng những gì
-			// Reviewer thực sự trả về.
+			// Log response gốc Reviewer thực sự trả về (JSON nếu Claude làm
+			// đúng format được yêu cầu, text tự do nếu không — rỗng nếu
+			// lỗi), KHÔNG phải display đã render lại — để file log phản
+			// ánh đúng input gốc, hữu ích khi cần debug parseFindings
+			// không parse được.
 			response := text
 			if err != nil {
 				response = ""
@@ -318,9 +329,9 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 		}
 
 		if single {
-			sections[i] = text
+			sections[i] = display
 		} else {
-			sections[i] = fmt.Sprintf("### Phần %d/%d\n%s", i+1, len(bundles), text)
+			sections[i] = fmt.Sprintf("### Phần %d/%d\n%s", i+1, len(bundles), display)
 		}
 	}
 

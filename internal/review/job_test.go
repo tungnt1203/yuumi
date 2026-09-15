@@ -666,6 +666,67 @@ func TestJobRun_LogsNumTurnsFromReviewer(t *testing.T) {
 	}
 }
 
+// TestJobRun_StructuredFindings_RenderedInComment_RawJSONLogged xác nhận
+// khi Reviewer trả đúng JSON array theo format yêu cầu (issue #26), comment
+// post lên GitHub là bản render có phân loại severity (không phải JSON
+// thô), nhưng reviewlog vẫn ghi lại đúng JSON gốc — để debug parseFindings
+// khi cần mà không phụ thuộc vào cách hiển thị.
+func TestJobRun_StructuredFindings_RenderedInComment_RawJSONLogged(t *testing.T) {
+	diff := "diff --git a/main.go b/main.go\n+fmt.Println(1)"
+	rawJSON := `[{"category":"bug","severity":"critical","message":"nil pointer dereference"}]`
+
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: diff}
+	reviewer := &fakeReviewer{result: rawJSON}
+	logger := &fakeReviewLogger{}
+
+	job := &Job{
+		GitHub:   gh,
+		Clone:    fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer: reviewer,
+		Logger:   logger,
+	}
+	job.Run()
+
+	if !gh.editCalled {
+		t.Fatal("expected EditComment to be called")
+	}
+	if strings.Contains(gh.editedBody, rawJSON) {
+		t.Errorf("expected comment to be rendered, not raw JSON, got: %s", gh.editedBody)
+	}
+	if !strings.Contains(gh.editedBody, "🔴") || !strings.Contains(gh.editedBody, "nil pointer dereference") {
+		t.Errorf("expected comment to contain the rendered finding, got: %s", gh.editedBody)
+	}
+
+	if len(logger.calls) != 1 {
+		t.Fatalf("expected 1 log call, got %d", len(logger.calls))
+	}
+	if logger.calls[0].response != rawJSON {
+		t.Errorf("expected logged response to be the raw JSON (not the rendered comment), got: %s", logger.calls[0].response)
+	}
+}
+
+// TestJobRun_UnparsableResult_FallsBackToRawText đảm bảo Job không phá vỡ
+// hành vi hiện có khi Claude không tuân theo format JSON (bất chấp hướng
+// dẫn trong prompt) — comment vẫn hiển thị nguyên văn text như trước khi có
+// issue #26, review không bị coi là lỗi chỉ vì sai định dạng.
+func TestJobRun_UnparsableResult_FallsBackToRawText(t *testing.T) {
+	diff := "diff --git a/main.go b/main.go\n+fmt.Println(1)"
+
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: diff}
+	reviewer := &fakeReviewer{result: "Code trông ổn, không có vấn đề gì đáng chú ý."}
+
+	job := &Job{
+		GitHub:   gh,
+		Clone:    fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer: reviewer,
+	}
+	job.Run()
+
+	if !strings.Contains(gh.editedBody, "Code trông ổn, không có vấn đề gì đáng chú ý.") {
+		t.Errorf("expected raw text fallback in comment, got: %s", gh.editedBody)
+	}
+}
+
 func TestJobRun_NilLogger_DoesNotPanic(t *testing.T) {
 	diff := "diff --git a/main.go b/main.go\n+fmt.Println(1)"
 

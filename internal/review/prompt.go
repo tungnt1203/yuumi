@@ -56,10 +56,29 @@ func BuildReviewPrompt(userCommand string, diff string, staticCheckNote string, 
 		b.WriteString("\n\n")
 	}
 
-	b.WriteString("Trước khi kết luận, hãy đọc thêm các file liên quan trong repo (README, package/module xung quanh các file đã đổi) để hiểu đúng kiến trúc và convention của project — đừng chỉ nhìn diff một cách cô lập.\n")
+	b.WriteString("Trước khi kết luận, hãy đọc thêm các file liên quan trong repo (README, package/module xung quanh các file đã đổi) để hiểu đúng kiến trúc và convention của project — đừng chỉ nhìn diff một cách cô lập.\n\n")
+
+	b.WriteString(resultFormatInstructions)
 
 	return b.String()
 }
+
+// resultFormatInstructions yêu cầu Claude trả kết quả dưới dạng JSON array
+// có cấu trúc thay vì văn xuôi tự do — mỗi phần tử là 1 finding với
+// category/severity/message/suggestion, để comment hiển thị phân loại rõ
+// ràng theo mức độ quan trọng thay vì 1 khối text người đọc phải tự đánh
+// giá (xem parseFindings/renderFindings, issue #26).
+//
+// Yêu cầu "CHỈ trả JSON, không bọc trong ```, không kèm giải thích ngoài
+// JSON" vì parseFindings cần parse được text; Claude đôi khi vẫn không tuân
+// thủ tuyệt đối (thêm vài câu trước/sau, hoặc bọc code fence) — parseFindings
+// đã tự trích phần "[...]" để chịu được sai lệch nhỏ đó, và nếu vẫn không
+// parse được thì fallback hiển thị nguyên văn, không chặn/hỏng cả lần
+// review (xem Job.reviewBundles).
+const resultFormatInstructions = `Trả kết quả CHỈ dưới dạng 1 JSON array (không thêm giải thích ngoài JSON, không bọc trong markdown code fence), mỗi phần tử là 1 finding theo đúng format sau:
+[{"category":"bug|security|performance|maintainability|test|style|documentation","severity":"critical|high|medium|low","message":"mô tả ngắn gọn vấn đề","suggestion":"đoạn code gợi ý sửa cụ thể, để chuỗi rỗng nếu không áp dụng được"}]
+Nếu code không có vấn đề gì đáng chú ý, trả về mảng rỗng: []
+`
 
 // bundleNote được chèn vào đầu diff khi PR quá lớn và bị chia thành nhiều
 // bundle (xem bundleDiffs) — báo cho Claude biết nó chỉ đang thấy 1 phần

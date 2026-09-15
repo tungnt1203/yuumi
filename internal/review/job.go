@@ -19,6 +19,7 @@ const defaultBundleBudgetChars = 12_000
 type GitHubClient interface {
 	GetPullRequestHeadSHA(repoFullName string, pullRequestNumber int) (string, error)
 	GetPullRequestDiff(repoFullName string, pullRequestNumber int) (string, error)
+	GetPullRequestChangedFilesCount(repoFullName string, pullRequestNumber int) (int, error)
 	EditComment(repoFullName string, commentID int64, body string) error
 }
 
@@ -81,12 +82,22 @@ func (j *Job) Run() {
 		fmt.Println("Get pull request diff error:", err)
 	}
 
+	var notes []string
+	if strings.TrimSpace(diff) != "" {
+		if note := j.diffTruncationWarning(diff); note != "" {
+			notes = append(notes, note)
+		}
+	}
+
 	budget := j.BundleBudgetChars
 	if budget <= 0 {
 		budget = defaultBundleBudgetChars
 	}
 
 	bundles, skipped := bundleDiffs(diff, budget)
+	if len(skipped) > 0 {
+		notes = append(notes, skippedNote(skipped))
+	}
 
 	var merged string
 	switch {
@@ -94,7 +105,7 @@ func (j *Job) Run() {
 		// Diff CÓ nội dung nhưng toàn bộ file đều bị lọc (vd PR chỉ sửa
 		// go.sum) — không có gì đáng review, không tốn 1 lần gọi Claude CLI
 		// chỉ để nó nói "không có gì để xem".
-		merged = "Không có file nào cần review. " + skippedNote(skipped)
+		merged = "Không có file nào cần review."
 	case len(bundles) == 0:
 		// Diff rỗng thật (GetPullRequestDiff lỗi ở trên, hoặc PR không đổi
 		// gì) — vẫn review 1 lần với diff rỗng, để BuildReviewPrompt tự
@@ -102,9 +113,10 @@ func (j *Job) Run() {
 		merged = j.reviewBundles([]string{""}, dir)
 	default:
 		merged = j.reviewBundles(bundles, dir)
-		if len(skipped) > 0 {
-			merged = skippedNote(skipped) + "\n\n" + merged
-		}
+	}
+
+	if len(notes) > 0 {
+		merged = strings.Join(notes, "\n") + "\n\n" + merged
 	}
 
 	if err := j.GitHub.EditComment(j.RepoFullName, j.PlaceholderID, merged); err != nil {
@@ -112,6 +124,30 @@ func (j *Job) Run() {
 		return
 	}
 	fmt.Println("Comment posted successfully")
+}
+
+// diffTruncationWarning so số file parse được từ diff với "changed_files" mà
+// GitHub báo cáo cho cả PR (qua GetPullRequestChangedFilesCount) — nếu lệch,
+// nhiều khả năng GitHub đã tự giới hạn/cắt bớt diff trả về (PR quá nhiều
+// file thay đổi), và review có thể âm thầm sót file nếu không cảnh báo.
+// Đếm số file TRƯỚC khi lọc file rác ở bundleDiffs (Việc 3 của issue #3) —
+// lọc là chủ ý của mình, không phải do GitHub cắt, không được tính nhầm.
+//
+// Lỗi khi gọi GetPullRequestChangedFilesCount không chặn review, chỉ bỏ
+// qua việc so sánh — nhất quán với cách lỗi GetPullRequestDiff cũng không
+// chặn review (xem Run).
+func (j *Job) diffTruncationWarning(diff string) string {
+	changedFiles, err := j.GitHub.GetPullRequestChangedFilesCount(j.RepoFullName, j.IssueNumber)
+	if err != nil {
+		fmt.Println("Get pull request changed files count error:", err)
+		return ""
+	}
+
+	parsed := len(splitDiffByFile(diff))
+	if parsed >= changedFiles {
+		return ""
+	}
+	return fmt.Sprintf("⚠️ GitHub chỉ trả về diff của %d/%d file — review có thể sót file.", parsed, changedFiles)
 }
 
 // reviewBundles chạy Reviewer.Review tuần tự cho từng bundle rồi gộp kết

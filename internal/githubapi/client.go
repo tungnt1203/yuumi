@@ -16,6 +16,10 @@ type PullRequestResponse struct {
 	Head struct {
 		SHA string `json:"sha"`
 	} `json:"head"`
+	// ChangedFiles là số file GitHub ghi nhận PR đã đổi — dùng để phát hiện
+	// khi GetPullRequestDiff bị GitHub tự giới hạn/cắt bớt (xem
+	// GetPullRequestChangedFilesCount).
+	ChangedFiles int `json:"changed_files"`
 }
 
 // Client gọi GitHub REST API bằng 1 token cố định, thay vì phải truyền token
@@ -127,30 +131,56 @@ func (c *Client) EditComment(repoFullName string, commentID int64, body string) 
 	return nil
 }
 
-func (c *Client) GetPullRequestHeadSHA(repoFullName string, pullRequestNumber int) (string, error) {
+// getPullRequest gọi GET /repos/{repo}/pulls/{number} (JSON mặc định, không
+// phải Accept diff của GetPullRequestDiff) — dùng chung cho
+// GetPullRequestHeadSHA và GetPullRequestChangedFilesCount, vì cả 2 chỉ cần
+// 2 field khác nhau từ CÙNG 1 response, không đáng gọi API 2 lần hay lặp
+// lại boilerplate request/decode.
+func (c *Client) getPullRequest(repoFullName string, pullRequestNumber int) (PullRequestResponse, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/pulls/%d", repoFullName, pullRequestNumber)
 	req, err := c.newRequest("GET", url, nil)
 	if err != nil {
-		return "", err
+		return PullRequestResponse{}, err
 	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("request failed: %w", err)
+		return PullRequestResponse{}, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("github api error %d: %s", resp.StatusCode, string(respBody))
+		return PullRequestResponse{}, fmt.Errorf("github api error %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var pullRequestResponse PullRequestResponse
 	if err := json.NewDecoder(resp.Body).Decode(&pullRequestResponse); err != nil {
-		return "", fmt.Errorf("cannot decode pull request response: %w", err)
+		return PullRequestResponse{}, fmt.Errorf("cannot decode pull request response: %w", err)
 	}
 
-	return pullRequestResponse.Head.SHA, nil
+	return pullRequestResponse, nil
+}
+
+func (c *Client) GetPullRequestHeadSHA(repoFullName string, pullRequestNumber int) (string, error) {
+	pr, err := c.getPullRequest(repoFullName, pullRequestNumber)
+	if err != nil {
+		return "", err
+	}
+	return pr.Head.SHA, nil
+}
+
+// GetPullRequestChangedFilesCount trả về số file GitHub ghi nhận PR đã đổi.
+// review.Job dùng số này đối chiếu với số file thực sự parse được từ
+// GetPullRequestDiff, để phát hiện trường hợp GitHub tự giới hạn/cắt bớt
+// diff trả về (PR quá nhiều file) — khi đó review có thể sót file mà không
+// ai biết nếu không đối chiếu.
+func (c *Client) GetPullRequestChangedFilesCount(repoFullName string, pullRequestNumber int) (int, error) {
+	pr, err := c.getPullRequest(repoFullName, pullRequestNumber)
+	if err != nil {
+		return 0, err
+	}
+	return pr.ChangedFiles, nil
 }
 
 // GetPullRequestDiff fetches the real unified diff of a PR from GitHub

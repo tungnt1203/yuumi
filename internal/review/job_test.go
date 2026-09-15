@@ -13,6 +13,12 @@ type fakeGitHubClient struct {
 	diffErr    error
 	editErr    error
 
+	// changedFilesCount mặc định 0 — vô hại với các test không quan tâm đến
+	// tính năng này: 0 luôn <= số file parse được (>=0), nên không bao giờ
+	// tự nhiên kích hoạt cảnh báo truncation nếu test không set field này.
+	changedFilesCount    int
+	changedFilesCountErr error
+
 	editCalled bool
 	editedBody string
 }
@@ -23,6 +29,10 @@ func (f *fakeGitHubClient) GetPullRequestHeadSHA(repoFullName string, pullReques
 
 func (f *fakeGitHubClient) GetPullRequestDiff(repoFullName string, pullRequestNumber int) (string, error) {
 	return f.diff, f.diffErr
+}
+
+func (f *fakeGitHubClient) GetPullRequestChangedFilesCount(repoFullName string, pullRequestNumber int) (int, error) {
+	return f.changedFilesCount, f.changedFilesCountErr
 }
 
 func (f *fakeGitHubClient) EditComment(repoFullName string, commentID int64, body string) error {
@@ -279,6 +289,73 @@ func TestJobRun_LargeDiff_SplitsIntoBundlesAndMergesResults(t *testing.T) {
 	}
 	if !cleanupCalled {
 		t.Error("expected clone cleanup to be called")
+	}
+}
+
+func TestJobRun_ChangedFilesMismatch_WarnsDiffMayBeTruncated(t *testing.T) {
+	diff := "diff --git a/main.go b/main.go\n+fmt.Println(1)" // 1 file parse được
+
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: diff, changedFilesCount: 5}
+	reviewer := &fakeReviewer{result: "trông ổn"}
+
+	job := &Job{
+		GitHub:   gh,
+		Clone:    fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer: reviewer,
+	}
+	job.Run()
+
+	if !strings.Contains(gh.editedBody, "1/5") {
+		t.Errorf("expected comment to warn about the 1/5 file mismatch, got: %s", gh.editedBody)
+	}
+	if !strings.Contains(gh.editedBody, "trông ổn") {
+		t.Errorf("expected comment to still contain the review result, got: %s", gh.editedBody)
+	}
+}
+
+func TestJobRun_ChangedFilesMatch_NoWarning(t *testing.T) {
+	diff := "diff --git a/main.go b/main.go\n+fmt.Println(1)"
+
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: diff, changedFilesCount: 1}
+	reviewer := &fakeReviewer{result: "trông ổn"}
+
+	job := &Job{
+		GitHub:   gh,
+		Clone:    fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer: reviewer,
+	}
+	job.Run()
+
+	if strings.Contains(gh.editedBody, "⚠️") {
+		t.Errorf("expected no truncation warning when counts match, got: %s", gh.editedBody)
+	}
+}
+
+func TestJobRun_ChangedFilesCountError_ReviewsNormallyWithoutWarning(t *testing.T) {
+	diff := "diff --git a/main.go b/main.go\n+fmt.Println(1)"
+
+	gh := &fakeGitHubClient{
+		headSHA:              "abc123",
+		diff:                 diff,
+		changedFilesCountErr: errors.New("rate limited"),
+	}
+	reviewer := &fakeReviewer{result: "trông ổn"}
+
+	job := &Job{
+		GitHub:   gh,
+		Clone:    fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer: reviewer,
+	}
+	job.Run()
+
+	if !reviewer.called {
+		t.Fatal("expected Reviewer.Review to still be called when changed-files lookup fails")
+	}
+	if strings.Contains(gh.editedBody, "⚠️") {
+		t.Errorf("expected no warning when we don't know the real changed-files count, got: %s", gh.editedBody)
+	}
+	if !strings.Contains(gh.editedBody, "trông ổn") {
+		t.Errorf("expected review result to still be posted, got: %s", gh.editedBody)
 	}
 }
 

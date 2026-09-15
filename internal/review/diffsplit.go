@@ -33,10 +33,11 @@ var defaultIgnoredPathPatterns = []string{
 
 // isIgnoredPath báo path có khớp defaultIgnoredPathPatterns hoặc
 // extraPatterns không. extraPatterns đến từ cấu hình riêng của repo
-// (.yuumi.yml "exclude" — xem loadRepoConfig, issue #7): GỘP THÊM vào
-// default chứ không thay thế, vì default vẫn luôn đúng (lock file/vendor
-// không đáng review ở mọi repo) — .yuumi.yml chỉ dùng để loại trừ thêm
-// những gì đặc thù riêng của repo đó.
+// (.yuumi.yml "exclude" — xem loadRepoConfig, issue #7) GỘP với .gitignore
+// thật của repo (xem loadGitignorePatterns, issue #4): GỘP THÊM vào default
+// chứ không thay thế, vì default vẫn luôn đúng (lock file/vendor không
+// đáng review ở mọi repo) — 2 nguồn kia chỉ dùng để loại trừ thêm những gì
+// đặc thù riêng của repo đó.
 func isIgnoredPath(path string, extraPatterns []string) bool {
 	return matchesAnyPattern(path, defaultIgnoredPathPatterns) || matchesAnyPattern(path, extraPatterns)
 }
@@ -162,8 +163,10 @@ func truncateDiff(body string, budgetChars int) string {
 // file sẽ được review riêng trong 1 lần gọi Reviewer.Review, để PR lớn không
 // bị nhồi nguyên vào 1 prompt (xem issue #3). skipped là danh sách path đã
 // bị loại vì khớp defaultIgnoredPathPatterns hoặc extraIgnoredPatterns
-// (không nằm trong bundle nào). extraIgnoredPatterns đến từ .yuumi.yml của
-// repo (issue #7), nil nếu repo không có cấu hình riêng.
+// (không nằm trong bundle nào). extraIgnoredPatterns là danh sách đã GỘP
+// SẴN từ .yuumi.yml của repo (issue #7) và .gitignore thật của repo (issue
+// #4) — Job.Run chịu trách nhiệm gộp trước khi gọi hàm này; nil nếu repo
+// không có cả hai.
 //
 // Chiến lược, theo thứ tự ưu tiên:
 //  1. Tách theo file rồi lọc bỏ file không đáng review (defaultIgnoredPathPatterns

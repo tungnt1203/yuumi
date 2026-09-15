@@ -107,6 +107,15 @@ func (j *Job) Run() {
 		fmt.Println("Load .yuumi.yml error (dùng default):", err)
 	}
 
+	// .gitignore thật của repo (issue #4) — cộng dồn thêm vào ignore pattern
+	// của .yuumi.yml/default, KHÔNG thay thế. Không có file hay đọc lỗi đều
+	// không chặn review, chỉ log rồi bỏ qua — nhất quán với .yuumi.yml.
+	gitignorePatterns, err := loadGitignorePatterns(dir)
+	if err != nil {
+		fmt.Println("Load .gitignore error (bỏ qua):", err)
+	}
+	extraIgnoredPatterns := append(append([]string{}, repoCfg.Exclude...), gitignorePatterns...)
+
 	diff, err := j.GitHub.GetPullRequestDiff(j.RepoFullName, j.IssueNumber)
 	if err != nil {
 		// Không chặn review nếu lấy diff lỗi — fallback về cách cũ
@@ -126,7 +135,7 @@ func (j *Job) Run() {
 		budget = defaultBundleBudgetChars
 	}
 
-	bundles, skipped := bundleDiffs(diff, budget, repoCfg.Exclude)
+	bundles, skipped := bundleDiffs(diff, budget, extraIgnoredPatterns)
 	if len(skipped) > 0 {
 		notes = append(notes, skippedNote(skipped))
 	}

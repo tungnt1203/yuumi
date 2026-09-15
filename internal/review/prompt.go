@@ -28,6 +28,12 @@ import (
 // Chèn ngay sau yêu cầu của người review vì cùng là "cách review nên làm",
 // người review gõ trực tiếp lúc mention bot còn repoInstructions là mặc
 // định cố định của cả repo.
+//
+// Ngoài ra, prompt tự chèn thêm rule mặc định theo TỪNG loại file có trong
+// diff (xem languageRulesForDiff, issue #25) — không cần repo nào cấu hình
+// gì cả, khác repoInstructions ở trên. Đặt sau repoInstructions và có ghi
+// chú rõ độ ưu tiên thấp hơn, vì rule của repo (nếu có) phản ánh đúng ý
+// người maintain repo đó hơn rule chung bot tự đoán.
 func BuildReviewPrompt(userCommand string, diff string, staticCheckNote string, repoInstructions string) string {
 	var b strings.Builder
 
@@ -39,6 +45,12 @@ func BuildReviewPrompt(userCommand string, diff string, staticCheckNote string, 
 	if strings.TrimSpace(repoInstructions) != "" {
 		b.WriteString("Hướng dẫn review riêng cho repo này (cấu hình trong .yuumi.yml):\n")
 		b.WriteString(repoInstructions)
+		b.WriteString("\n\n")
+	}
+
+	if rules := languageRulesForDiff(diff); rules != "" {
+		b.WriteString("Ngoài ra, chú ý thêm các điểm sau theo từng loại file có trong diff (rule mặc định — nếu xung đột với hướng dẫn riêng của repo ở trên thì hướng dẫn của repo được ưu tiên hơn):\n")
+		b.WriteString(rules)
 		b.WriteString("\n\n")
 	}
 

@@ -24,6 +24,9 @@ func main() {
 
 	fmt.Println("Yuumi review bot starting...")
 
+	ghClient := githubapi.NewClient(cfg.GitHubToken)
+	var reviewer review.Reviewer = claudecli.NewReviewer()
+
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})
@@ -73,63 +76,26 @@ func main() {
 		fmt.Println("Command from", comment.Author, ":", cmd)
 		fmt.Println("Repo:", payload.Repository.FullName, "| Issue #:", payload.Issue.Number)
 
-		if err := githubapi.AddReaction(payload.Repository.FullName, payload.Comment.ID, cfg.GitHubToken); err != nil {
+		if err := ghClient.AddReaction(payload.Repository.FullName, payload.Comment.ID); err != nil {
 			fmt.Println("Add reaction error:", err)
 		}
 
-		placeholderID, err := githubapi.PostGitHubComment(payload.Repository.FullName, payload.Issue.Number, "Đang review...", cfg.GitHubToken)
+		placeholderID, err := ghClient.PostComment(payload.Repository.FullName, payload.Issue.Number, "Đang review...")
 		if err != nil {
 			fmt.Println("Post comment error:", err)
 			return
 		}
 
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					fmt.Println("Recovered from panic:", r)
-				}
-			}()
-
-			sha, err := githubapi.GetPullRequestHeadSHA(payload.Repository.FullName, payload.Issue.Number, cfg.GitHubToken)
-
-			if err != nil {
-				fmt.Println("Get pull request head SHA error:", err)
-				return
-			}
-
-			dir, cleanup, err := gitrepo.CloneRepo(payload.Repository.FullName, sha)
-			if err != nil {
-				fmt.Println("Clone repo error:", err)
-				return
-			}
-			defer cleanup()
-
-			diff, err := githubapi.GetPullRequestDiff(payload.Repository.FullName, payload.Issue.Number, cfg.GitHubToken)
-			if err != nil {
-				// Không chặn review nếu lấy diff lỗi — fallback về cách cũ
-				// (Claude tự đọc file state + commit message).
-				fmt.Println("Get pull request diff error:", err)
-			}
-
-			prompt := review.BuildReviewPrompt(cmd, diff)
-
-			reviewText, err := claudecli.RunClaudeReview(prompt, dir)
-			if err != nil {
-				if editErr := githubapi.EditGitHubComment(payload.Repository.FullName, placeholderID, "❌ Review thất bại: "+err.Error(), cfg.GitHubToken); editErr != nil {
-					fmt.Println("Edit comment error:", editErr)
-				}
-				return
-			}
-
-			fmt.Println("Review result:", reviewText)
-
-			err = githubapi.EditGitHubComment(payload.Repository.FullName, placeholderID, reviewText, cfg.GitHubToken)
-			if err != nil {
-				fmt.Println("Post comment error:", err)
-				return
-			}
-			fmt.Println("Comment posted successfully")
-		}()
+		job := &review.Job{
+			GitHub:        ghClient,
+			Clone:         gitrepo.CloneRepo,
+			Reviewer:      reviewer,
+			RepoFullName:  payload.Repository.FullName,
+			IssueNumber:   payload.Issue.Number,
+			PlaceholderID: placeholderID,
+			UserCommand:   cmd,
+		}
+		go job.Run()
 
 		fmt.Fprintln(w, "processing")
 	})

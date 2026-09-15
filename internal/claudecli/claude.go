@@ -16,7 +16,14 @@ type ClaudeResult struct {
 	Result  string `json:"result"`
 }
 
-func RunClaudeReview(prompt string, dir string) (string, error) {
+// Reviewer gọi Claude CLI để review code. Nó implement review.Reviewer.
+type Reviewer struct{}
+
+func NewReviewer() *Reviewer {
+	return &Reviewer{}
+}
+
+func (r *Reviewer) Review(prompt string, dir string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 

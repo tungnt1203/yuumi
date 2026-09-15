@@ -159,14 +159,37 @@ func (j *Job) Run() {
 	}
 
 	var notes []string
+	// validationDiff là diff dùng để XÁC THỰC finding.File/Line trước khi
+	// post inline comment (splitFindingsForPosting) — PHẢI là diff đầy đủ
+	// của cả PR (base...head), vì đó chính xác là diff GitHub Reviews API
+	// đối chiếu khi nhận 1 comment gắn vào dòng, không phải diff tuỳ ý nào
+	// khác. Review không incremental thì `diff` đã chính là diff đầy đủ
+	// này — dùng luôn, không tốn thêm lệnh gọi.
+	validationDiff := diff
 	if incremental {
-		// PR này đã được review trước đó (issue #21) — diff gửi đi chỉ là
-		// phần thay đổi mới, không phải toàn bộ PR, nên changed_files của cả
-		// PR (diffTruncationWarning) không áp dụng được ở đây: gần như luôn
-		// lệch (incremental luôn có ít file hơn cả PR) dù không có gì bị cắt
-		// thật. Báo rõ cho người đọc biết bot có tối ưu, tránh hiểu nhầm
-		// review sót phần cũ.
+		// PR này đã được review trước đó (issue #21) — diff gửi đi (và
+		// dùng để bundle/build prompt) chỉ là phần thay đổi MỚI so với lần
+		// review trước (compare(lastSHA, sha)), không phải toàn bộ PR, nên:
+		//   - changed_files của cả PR (diffTruncationWarning) không áp dụng
+		//     được ở đây: gần như luôn lệch (incremental luôn có ít file
+		//     hơn cả PR) dù không có gì bị cắt thật.
+		//   - hunk của diff incremental có thể KHÁC hunk GitHub tính cho
+		//     base...head (vd 1 dòng context nằm gần thay đổi so với lần
+		//     review trước, nhưng lại xa mọi thay đổi so với base) — dùng
+		//     nhầm diff này để validate inline comment có thể khiến GitHub
+		//     từ chối cả request (1 review là atomic — sai 1 comment mất
+		//     luôn TẤT CẢ), nên phải lấy riêng diff đầy đủ chỉ để validate.
 		notes = append(notes, "_(Chỉ review phần thay đổi mới so với lần review trước, không phải toàn bộ PR.)_")
+
+		fullDiff, ferr := j.GitHub.GetPullRequestDiff(j.RepoFullName, j.IssueNumber)
+		if ferr != nil {
+			// Best-effort: fallback dùng diff incremental để validate (rủi
+			// ro bug nói trên) còn hơn không post được inline comment nào —
+			// không tệ hơn hành vi trước khi có fix này.
+			fmt.Println("Get full PR diff for inline comment validation error (dùng diff incremental, 1 số comment hợp lệ có thể bị GitHub từ chối):", ferr)
+		} else {
+			validationDiff = fullDiff
+		}
 	} else if strings.TrimSpace(diff) != "" {
 		if note := j.diffTruncationWarning(diff); note != "" {
 			notes = append(notes, note)
@@ -196,9 +219,9 @@ func (j *Job) Run() {
 		// Diff rỗng thật (GetPullRequestDiff lỗi ở trên, hoặc PR không đổi
 		// gì) — vẫn review 1 lần với diff rỗng, để BuildReviewPrompt tự
 		// chèn hướng dẫn fallback (Claude tự đọc file state + commit message).
-		merged, hadError, inline = j.reviewBundles([]string{""}, dir, sha, staticReport, repoCfg.Instructions)
+		merged, hadError, inline = j.reviewBundles([]string{""}, dir, sha, staticReport, repoCfg.Instructions, validationDiff)
 	default:
-		merged, hadError, inline = j.reviewBundles(bundles, dir, sha, staticReport, repoCfg.Instructions)
+		merged, hadError, inline = j.reviewBundles(bundles, dir, sha, staticReport, repoCfg.Instructions, validationDiff)
 	}
 
 	if len(notes) > 0 {
@@ -342,7 +365,13 @@ func (j *Job) diffTruncationWarning(diff string) string {
 // inline gộp lại pendingComment của MỌI bundle (xem splitFindingsForPosting,
 // issue #5) — Run() post chúng thành 1 review duy nhất cho cả PR sau khi
 // tất cả bundle chạy xong, thay vì mỗi bundle tự tạo 1 review riêng gây rối.
-func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticReport string, repoInstructions string) (merged string, hadError bool, inline []pendingComment) {
+//
+// validationDiff dùng để xác thực finding.File/Line — PHẢI là diff đầy đủ
+// của cả PR (base...head, xem Run), KHÔNG phải bundleDiff của riêng bundle
+// đang xử lý: bundleDiff có thể chỉ là phần thay đổi mới so với lần review
+// trước (issue #21), có hunk khác với diff GitHub thực sự đối chiếu khi
+// nhận inline comment.
+func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticReport string, repoInstructions string, validationDiff string) (merged string, hadError bool, inline []pendingComment) {
 	single := len(bundles) == 1
 	sections := make([]string, len(bundles))
 
@@ -373,7 +402,7 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 		} else {
 			fmt.Println("Review bundle", i+1, "/", len(bundles), "result:", text)
 			if findings, ok := parseFindings(text); ok {
-				bundleInline, general := splitFindingsForPosting(bundleDiff, findings)
+				bundleInline, general := splitFindingsForPosting(validationDiff, findings)
 				inline = append(inline, bundleInline...)
 				display = renderBundleSummary(findings, general)
 			}

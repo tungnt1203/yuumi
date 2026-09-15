@@ -860,6 +860,85 @@ func TestJobRun_CreateReviewFails_DoesNotBlockPrimaryFlow(t *testing.T) {
 	}
 }
 
+// TestJobRun_IncrementalReview_ValidatesInlineFindingsAgainstFullDiff đảm
+// bảo inline finding được xác thực với diff ĐẦY ĐỦ của PR (base...head, qua
+// GetPullRequestDiff), KHÔNG phải diff incremental (compare(lastSHA, sha))
+// dùng để build prompt — 2 diff này có thể có hunk khác nhau (issue #21 +
+// #5), dùng nhầm diff incremental để validate có thể khiến GitHub từ chối
+// cả request (1 review là atomic).
+func TestJobRun_IncrementalReview_ValidatesInlineFindingsAgainstFullDiff(t *testing.T) {
+	// Diff đầy đủ (base...head) chỉ có hunk cho dòng 1-3 của main.go.
+	fullDiff := wellFormedDiff
+	// Diff incremental (so với lần review trước) có hunk KHÁC — dòng 5 hợp
+	// lệ trong diff incremental nhưng không nằm trong fullDiff ở trên.
+	incrementalDiff := "diff --git a/main.go b/main.go\n" +
+		"--- a/main.go\n" +
+		"+++ b/main.go\n" +
+		"@@ -5,1 +5,1 @@\n" +
+		"-old line 5\n" +
+		"+new line 5"
+
+	rawJSON := `[{"file":"main.go","line":5,"category":"style","severity":"low","message":"finding on line 5"}]`
+
+	gh := &fakeGitHubClient{
+		headSHA:     "sha-new",
+		diff:        fullDiff,        // GetPullRequestDiff — dùng để validate
+		compareDiff: incrementalDiff, // GetCompareDiff — dùng để build prompt
+	}
+	reviewer := &fakeReviewer{result: rawJSON}
+	store := newFakeStateStore(map[string]string{stateKey("owner/repo", 7): "sha-old"})
+
+	job := &Job{
+		GitHub:       gh,
+		Clone:        fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer:     reviewer,
+		StateStore:   store,
+		RepoFullName: "owner/repo",
+		IssueNumber:  7,
+	}
+	job.Run()
+
+	if !gh.compareCalled {
+		t.Fatal("expected GetCompareDiff to be called (incremental review)")
+	}
+	if len(gh.createReviewCalls) != 0 {
+		t.Errorf("expected CreateReview NOT to be called — line 5 is valid in the incremental diff but not in the full PR diff, got %d calls", len(gh.createReviewCalls))
+	}
+	if !strings.Contains(gh.editedBody, "finding on line 5") {
+		t.Errorf("expected the finding to fall back to the summary comment, got: %s", gh.editedBody)
+	}
+}
+
+// TestJobRun_IncrementalReview_FullDiffFetchFails_FallsBackToIncrementalDiff
+// đảm bảo lỗi lấy diff đầy đủ (để validate) không chặn luồng chính — fallback
+// dùng diff incremental để validate, còn hơn không post được inline comment
+// nào (best-effort, chấp nhận rủi ro GitHub có thể từ chối 1 vài comment).
+func TestJobRun_IncrementalReview_FullDiffFetchFails_FallsBackToIncrementalDiff(t *testing.T) {
+	rawJSON := `[{"file":"main.go","line":2,"category":"style","severity":"low","message":"m"}]`
+
+	gh := &fakeGitHubClient{
+		headSHA:     "sha-new",
+		diffErr:     errors.New("github down"), // GetPullRequestDiff lỗi
+		compareDiff: wellFormedDiff,
+	}
+	reviewer := &fakeReviewer{result: rawJSON}
+	store := newFakeStateStore(map[string]string{stateKey("owner/repo", 7): "sha-old"})
+
+	job := &Job{
+		GitHub:       gh,
+		Clone:        fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer:     reviewer,
+		StateStore:   store,
+		RepoFullName: "owner/repo",
+		IssueNumber:  7,
+	}
+	job.Run()
+
+	if len(gh.createReviewCalls) != 1 {
+		t.Fatalf("expected CreateReview to still be called using the incremental diff as fallback, got %d calls", len(gh.createReviewCalls))
+	}
+}
+
 func TestJobRun_NilLogger_DoesNotPanic(t *testing.T) {
 	diff := "diff --git a/main.go b/main.go\n+fmt.Println(1)"
 

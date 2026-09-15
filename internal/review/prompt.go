@@ -85,8 +85,16 @@ func BuildReviewPrompt(userCommand string, diff string, staticCheckNote string, 
 // gì cả, finding đó chỉ đơn giản rơi về hiển thị trong comment tổng hợp
 // thay vì gắn inline — nên Claude cứ để trống nếu không chắc còn hơn đoán
 // bừa.
-const resultFormatInstructions = `Trả kết quả CHỈ dưới dạng 1 JSON array (không thêm giải thích ngoài JSON, không bọc trong markdown code fence), mỗi phần tử là 1 finding theo đúng format sau:
-[{"file":"đường dẫn file đúng như trong diff, để trống nếu là nhận xét tổng quát không gắn với 1 dòng cụ thể","line":"số dòng trong file MỚI đúng như trong diff (số, không phải chuỗi), để trống/0 nếu không chắc hoặc là nhận xét tổng quát","category":"bug|security|performance|maintainability|test|style|documentation","severity":"critical|high|medium|low","message":"mô tả ngắn gọn vấn đề","suggestion":"đoạn code gợi ý sửa cụ thể, để chuỗi rỗng nếu không áp dụng được"}]
+//
+// Ví dụ JSON dưới đây để "line" là 1 SỐ KHÔNG BỌC NGOẶC KÉP (0) — cố tình,
+// vì Finding.Line là int: nếu ví dụ cũng bọc ngoặc kép như mọi field string
+// khác (file/category/severity/message/suggestion), Claude rất dễ bắt
+// chước style đó và trả "line":"12" (chuỗi), làm hỏng luôn cả json.Unmarshal
+// của TOÀN BỘ array (không chỉ finding đó) — đây từng là bug thật, xem PR
+// review issue #5.
+const resultFormatInstructions = `Trả kết quả CHỈ dưới dạng 1 JSON array (không thêm giải thích ngoài JSON, không bọc trong markdown code fence), mỗi phần tử là 1 finding theo đúng format sau — chú ý "line" LUÔN là số, KHÔNG bọc trong dấu ngoặc kép:
+[{"file":"đường dẫn file đúng như trong diff, chuỗi rỗng nếu là nhận xét tổng quát không gắn với 1 dòng cụ thể","line":0,"category":"bug|security|performance|maintainability|test|style|documentation","severity":"critical|high|medium|low","message":"mô tả ngắn gọn vấn đề","suggestion":"đoạn code gợi ý sửa cụ thể, để chuỗi rỗng nếu không áp dụng được"}]
+"line" là số dòng trong file MỚI (sau khi áp dụng thay đổi của PR) đúng như xuất hiện ở khối diff bên trên, không phải số thứ tự trong toàn bộ file — để 0 nếu không chắc hoặc là nhận xét tổng quát, đừng đoán bừa.
 Nếu code không có vấn đề gì đáng chú ý, trả về mảng rỗng: []
 `
 

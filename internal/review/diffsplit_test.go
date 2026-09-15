@@ -88,6 +88,13 @@ func TestIsIgnoredPath(t *testing.T) {
 		"app.min.js",
 		"package-lock.json",
 		"yarn.lock",
+		"go.work.sum",
+		"target/debug/build.rs",
+		"backend/__pycache__/main.cpython-311.pyc",
+		"src/__snapshots__/App.test.js.snap",
+		"web/.next/static/chunk.js",
+		"api/v1/user.pb.go",
+		"api/v1/user_pb2.py",
 	}
 	for _, p := range ignored {
 		if !isIgnoredPath(p) {
@@ -100,6 +107,7 @@ func TestIsIgnoredPath(t *testing.T) {
 		"internal/review/job.go",
 		"README.md",
 		"cmd/server/main.go",
+		"internal/targets/resolver.go", // chứa "targets/", không phải "target/"
 	}
 	for _, p := range kept {
 		if isIgnoredPath(p) {

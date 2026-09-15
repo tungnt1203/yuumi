@@ -18,12 +18,17 @@ const truncationNotice = "\n... (diff đã bị cắt bớt vì quá lớn, ph�
 // như ".min.js").
 var defaultIgnoredPathPatterns = []string{
 	// thư mục dependency/build output
-	"vendor/", "node_modules/", "dist/", "build/",
+	"vendor/", "node_modules/", "dist/", "build/", "target/", ".next/",
+	// cache/artifact runtime — không phải code người viết, sinh lại được
+	"__pycache__/", "__snapshots__/",
 	// lock file phổ biến — máy sinh ra, không phải code người viết
-	"go.sum", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+	"go.sum", "go.work.sum", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
 	"Cargo.lock", "Gemfile.lock", "poetry.lock", "composer.lock",
 	// generated/binary/minified thường gặp
 	".min.js", ".min.css", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".woff", ".woff2", ".pdf",
+	".pyc", ".snap",
+	// code sinh tự động từ IDL (protobuf) — review file .proto gốc là đủ
+	".pb.go", "_pb2.py",
 }
 
 // isIgnoredPath báo path có khớp defaultIgnoredPathPatterns không.

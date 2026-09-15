@@ -41,6 +41,13 @@ type entry struct {
 	// là gặp lỗi tạm thời và phải thử lại (xem claudecli.Reviewer, issue
 	// #28). Dùng để dò tần suất lỗi tạm thời trong thực tế qua log.
 	Attempts int `json:"attempts"`
+
+	// NumTurns là số turn Claude CLI dùng ở lần gọi cuối để ra được kết
+	// quả/lỗi này (0 nếu lỗi trước khi có output để đọc, vd lệnh chạy thất
+	// bại). Proxy rẻ để biết model có thực sự đọc thêm file ngoài diff hay
+	// chỉ review mù trên diff — num_turns thấp bất thường trên 1 bundle
+	// nhiều file là dấu hiệu đáng ngờ (xem claudecli.Reviewer, issue #20).
+	NumTurns int `json:"num_turns"`
 }
 
 // FileLogger implement review.ReviewLogger bằng cách ghi mỗi lần gọi thành
@@ -61,7 +68,7 @@ func NewFileLogger(dir string) *FileLogger {
 	return &FileLogger{Dir: dir}
 }
 
-func (l *FileLogger) LogReview(repoFullName string, issueNumber int, sha string, bundleIndex, bundleTotal int, prompt, response, errMsg string, duration time.Duration, attempts int) {
+func (l *FileLogger) LogReview(repoFullName string, issueNumber int, sha string, bundleIndex, bundleTotal int, prompt, response, errMsg string, duration time.Duration, attempts int, numTurns int) {
 	dir := l.Dir
 	if dir == "" {
 		dir = defaultDir
@@ -83,6 +90,7 @@ func (l *FileLogger) LogReview(repoFullName string, issueNumber int, sha string,
 		Error:        errMsg,
 		DurationMs:   duration.Milliseconds(),
 		Attempts:     attempts,
+		NumTurns:     numTurns,
 	}
 
 	data, err := json.MarshalIndent(e, "", "  ")

@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"testing"
 )
 
@@ -70,5 +71,79 @@ func TestVerifySignature(t *testing.T) {
 				t.Errorf("VerifySignature() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestPayload_UnmarshalPullRequestEvent đảm bảo Payload parse đúng shape
+// thật của webhook event "pull_request" (issue #32) — action, số PR, head
+// SHA và tác giả PR, để main.go dùng được ngay không cần parse tay JSON.
+func TestPayload_UnmarshalPullRequestEvent(t *testing.T) {
+	body := []byte(`{
+		"action": "synchronize",
+		"repository": {"full_name": "octo/repo"},
+		"pull_request": {
+			"number": 7,
+			"head": {"sha": "abc123"},
+			"user": {"login": "author1"}
+		}
+	}`)
+
+	var p Payload
+	if err := json.Unmarshal(body, &p); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	if p.Action != "synchronize" {
+		t.Errorf("Action = %q, want %q", p.Action, "synchronize")
+	}
+	if p.Repository.FullName != "octo/repo" {
+		t.Errorf("Repository.FullName = %q, want %q", p.Repository.FullName, "octo/repo")
+	}
+	if p.PullRequest.Number != 7 {
+		t.Errorf("PullRequest.Number = %d, want 7", p.PullRequest.Number)
+	}
+	if p.PullRequest.Head.SHA != "abc123" {
+		t.Errorf("PullRequest.Head.SHA = %q, want %q", p.PullRequest.Head.SHA, "abc123")
+	}
+	if p.PullRequest.User.Login != "author1" {
+		t.Errorf("PullRequest.User.Login = %q, want %q", p.PullRequest.User.Login, "author1")
+	}
+}
+
+// TestPayload_UnmarshalIssueCommentEvent_PullRequestFieldStaysZero đảm bảo
+// parse event "issue_comment" hiện có KHÔNG bị ảnh hưởng bởi field
+// PullRequest mới thêm — JSON không có "pull_request" thì field này giữ
+// nguyên zero value, luồng mention không cần đổi gì.
+func TestPayload_UnmarshalIssueCommentEvent_PullRequestFieldStaysZero(t *testing.T) {
+	body := []byte(`{
+		"action": "created",
+		"comment": {"id": 1, "body": "@yuumi-bot review", "user": {"login": "u"}},
+		"repository": {"full_name": "octo/repo"},
+		"issue": {"number": 3}
+	}`)
+
+	var p Payload
+	if err := json.Unmarshal(body, &p); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	if p.Issue.Number != 3 {
+		t.Errorf("Issue.Number = %d, want 3", p.Issue.Number)
+	}
+	if p.PullRequest.Number != 0 || p.PullRequest.Head.SHA != "" {
+		t.Errorf("expected zero-value PullRequest field, got %+v", p.PullRequest)
+	}
+}
+
+func TestPullRequestAutoReviewActions(t *testing.T) {
+	for _, action := range []string{"opened", "synchronize"} {
+		if !PullRequestAutoReviewActions[action] {
+			t.Errorf("expected action %q to trigger auto-review", action)
+		}
+	}
+	for _, action := range []string{"closed", "reopened", "edited", "labeled", "review_requested"} {
+		if PullRequestAutoReviewActions[action] {
+			t.Errorf("expected action %q NOT to trigger auto-review", action)
+		}
 	}
 }

@@ -22,6 +22,32 @@ type Payload struct {
 	Issue struct {
 		Number int `json:"number"`
 	} `json:"issue"`
+
+	// PullRequest chỉ có mặt trên webhook event "pull_request" (header
+	// X-GitHub-Event, KHÔNG phải "action" — 2 event dùng chung tên field
+	// "action" nhưng ý nghĩa khác nhau), dùng để tự động review khi PR mới
+	// mở hoặc có commit mới push lên, không chỉ khi được mention (issue
+	// #32). Ở event "issue_comment" field này giữ nguyên zero value, không
+	// ảnh hưởng gì tới luồng mention hiện có.
+	PullRequest struct {
+		Number int `json:"number"`
+		Head   struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
+		User struct {
+			Login string `json:"login"`
+		} `json:"user"`
+	} `json:"pull_request"`
+}
+
+// PullRequestAutoReviewActions liệt kê action của event "pull_request" nên
+// kích hoạt auto-review (issue #32): "opened" (PR mới tạo) và "synchronize"
+// (có commit mới push lên PR) — các action khác (closed, reopened, edited,
+// labeled, review_requested...) không phải "có code mới cần review" nên
+// không kích hoạt gì cả.
+var PullRequestAutoReviewActions = map[string]bool{
+	"opened":      true,
+	"synchronize": true,
 }
 
 func VerifySignature(secret string, payload []byte, signatureHeader string) bool {

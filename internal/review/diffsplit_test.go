@@ -108,6 +108,64 @@ func TestIsIgnoredPath(t *testing.T) {
 	}
 }
 
+func TestGroupByDirectory(t *testing.T) {
+	files := []keptFile{
+		{path: "pkg/a/x.go", body: "A1"},
+		{path: "pkg/b/y.go", body: "B1"},
+		{path: "pkg/a/x_test.go", body: "A2"},
+		{path: "pkg/b/z.go", body: "B2"},
+	}
+
+	got := groupByDirectory(files)
+
+	// Thư mục theo lần xuất hiện đầu tiên: pkg/a trước pkg/b. Trong từng
+	// thư mục, giữ nguyên thứ tự tương đối gốc (A1 trước A2, B1 trước B2).
+	want := []string{"A1", "A2", "B1", "B2"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("groupByDirectory() = %v, want %v", got, want)
+	}
+}
+
+func TestGroupByDirectory_RootFilesShareOneGroup(t *testing.T) {
+	files := []keptFile{
+		{path: "a.go", body: "A"},
+		{path: "b.go", body: "B"},
+	}
+
+	got := groupByDirectory(files)
+
+	// Không có "/" trong path -> path.Dir trả về "." cho cả 2 -> cùng nhóm,
+	// thứ tự giữ nguyên vì đã liền nhau sẵn.
+	if len(got) != 2 || got[0] != "A" || got[1] != "B" {
+		t.Errorf("groupByDirectory() = %v, want [A B]", got)
+	}
+}
+
+func TestBundleDiffs_KeepsSameDirectoryFilesTogether(t *testing.T) {
+	// Xen kẽ: pkg/a, pkg/b, pkg/a — file pkg/a bị tách xa nhau trong diff gốc.
+	fileA1 := "diff --git a/pkg/a/x.go b/pkg/a/x.go\n" + strings.Repeat("+a", 20)
+	fileB := "diff --git a/pkg/b/y.go b/pkg/b/y.go\n" + strings.Repeat("+b", 20)
+	fileA2 := "diff --git a/pkg/a/x_test.go b/pkg/a/x_test.go\n" + strings.Repeat("+a", 20)
+	diff := strings.Join([]string{fileA1, fileB, fileA2}, "\n")
+
+	// Budget đủ cho 2 file/bundle nhưng không đủ cho cả 3 -> ép chia 2 bundle.
+	budget := len(fileA1) + len(fileA2) + 1
+
+	bundles, _ := bundleDiffs(diff, budget)
+
+	if len(bundles) != 2 {
+		t.Fatalf("got %d bundles, want 2: %q", len(bundles), bundles)
+	}
+	// Cả 2 file pkg/a phải nằm CHUNG 1 bundle, dù bị xen giữa bởi pkg/b
+	// trong diff gốc.
+	if !strings.Contains(bundles[0], "pkg/a/x.go") || !strings.Contains(bundles[0], "pkg/a/x_test.go") {
+		t.Errorf("bundle[0] should contain both pkg/a files together, got %q", bundles[0])
+	}
+	if !strings.Contains(bundles[1], "pkg/b/y.go") {
+		t.Errorf("bundle[1] should contain pkg/b/y.go, got %q", bundles[1])
+	}
+}
+
 func TestBundleDiffs_UnderBudget_ReturnsOriginalUnchanged(t *testing.T) {
 	diff := "diff --git a/x.go b/x.go\n+line1"
 

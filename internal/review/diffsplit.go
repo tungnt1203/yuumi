@@ -1,6 +1,9 @@
 package review
 
-import "strings"
+import (
+	"path"
+	"strings"
+)
 
 // truncationNotice được nối vào cuối 1 file diff bị cắt bớt vì quá lớn, để
 // Claude (và người đọc log/comment sau này) biết phần còn lại của file đó
@@ -88,6 +91,46 @@ func splitDiffByFile(diff string) []string {
 	return files
 }
 
+// keptFile là 1 file diff còn lại sau bước lọc ignore, kèm path của nó —
+// cần cả path (không chỉ body) để groupByDirectory biết file nào cùng thư
+// mục với file nào.
+type keptFile struct {
+	path string
+	body string
+}
+
+// groupByDirectory sắp lại files sao cho các file cùng thư mục cha trực
+// tiếp (path.Dir) đứng liền nhau, thay vì giữ nguyên thứ tự rải rác trong
+// diff gốc. Dùng "cùng thư mục" làm heuristic cho "liên quan" — đơn giản,
+// không cần biết convention riêng của từng ngôn ngữ, và với Go (ngôn ngữ
+// của chính project này) heuristic này giải quyết trọn vẹn case hay gặp
+// nhất: file impl + file test luôn cùng thư mục.
+//
+// Dùng package "path" (không phải "path/filepath") vì path lấy từ git diff
+// luôn dùng "/" bất kể OS chạy bot.
+//
+// Giữ thứ tự thư mục theo lần xuất hiện đầu tiên và thứ tự tương đối giữa
+// các file trong cùng 1 thư mục — kết quả deterministic, không xáo trộn vô
+// nghĩa so với input.
+func groupByDirectory(files []keptFile) []string {
+	var dirOrder []string
+	groups := make(map[string][]string, len(files))
+
+	for _, f := range files {
+		dir := path.Dir(f.path)
+		if _, ok := groups[dir]; !ok {
+			dirOrder = append(dirOrder, dir)
+		}
+		groups[dir] = append(groups[dir], f.body)
+	}
+
+	result := make([]string, 0, len(files))
+	for _, dir := range dirOrder {
+		result = append(result, groups[dir]...)
+	}
+	return result
+}
+
 // truncateDiff cắt bớt diff của 1 file quá lớn xuống budgetChars, giữ lại
 // phần đầu (thường có mật độ thông tin cao nhất: header + các hunk đầu) và
 // đánh dấu rõ đã bị cắt.
@@ -129,17 +172,23 @@ func bundleDiffs(diff string, budgetChars int) (bundles []string, skipped []stri
 		return []string{truncateDiff(diff, budgetChars)}, nil
 	}
 
-	kept := make([]string, 0, len(files))
+	keptFiles := make([]keptFile, 0, len(files))
 	for _, body := range files {
-		if path := extractFilePath(body); path != "" && isIgnoredPath(path) {
-			skipped = append(skipped, path)
+		p := extractFilePath(body)
+		if p != "" && isIgnoredPath(p) {
+			skipped = append(skipped, p)
 			continue
 		}
-		kept = append(kept, body)
+		keptFiles = append(keptFiles, keptFile{path: p, body: body})
 	}
-	if len(kept) == 0 {
+	if len(keptFiles) == 0 {
 		return nil, skipped
 	}
+
+	// Sắp lại để file cùng thư mục đứng liền nhau — greedy pack bên dưới
+	// nhờ đó tự nhiên nhóm chúng vào cùng 1 bundle khi vừa budget, thay vì
+	// tách rời chỉ vì tình cờ nằm cách xa nhau trong diff gốc.
+	kept := groupByDirectory(keptFiles)
 
 	totalLen := 0
 	for _, body := range kept {

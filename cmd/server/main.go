@@ -15,6 +15,7 @@ import (
 	"github.com/tungnt1203/yuumi/internal/healthcheck"
 	"github.com/tungnt1203/yuumi/internal/review"
 	"github.com/tungnt1203/yuumi/internal/reviewlog"
+	"github.com/tungnt1203/yuumi/internal/reviewstate"
 	"github.com/tungnt1203/yuumi/internal/webhook"
 )
 
@@ -31,6 +32,7 @@ func main() {
 	dispatcher := review.NewDispatcher(cfg.MaxConcurrentReviews)
 	seenComments := webhook.NewSeenComments()
 	reviewLogger := reviewlog.NewFileLogger(cfg.ReviewLogDir)
+	reviewStateStore := reviewstate.NewFileStore(cfg.ReviewStateFile)
 
 	// Check claude CLI + GITHUB_TOKEN thật sự dùng được ngay lúc khởi động,
 	// thay vì chỉ tin biến môi trường đã set là đủ — nếu không, lỗi (CLI
@@ -128,6 +130,7 @@ func main() {
 			UserCommand:       cmd,
 			BundleBudgetChars: cfg.MaxDiffBundleChars,
 			Logger:            reviewLogger,
+			StateStore:        reviewStateStore,
 		}
 		dispatcher.Submit(job.Run)
 

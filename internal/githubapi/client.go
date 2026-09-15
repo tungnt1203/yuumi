@@ -212,3 +212,34 @@ func (c *Client) GetPullRequestDiff(repoFullName string, pullRequestNumber int) 
 
 	return string(body), nil
 }
+
+// GetCompareDiff fetches the unified diff between 2 commits (base...head)
+// via GitHub's compare API, cùng media type với GetPullRequestDiff — dùng
+// để lấy CHỈ phần thay đổi MỚI khi 1 PR đã được review trước đó (xem
+// review.Job.loadDiff, issue #21), thay vì lấy lại toàn bộ diff so với base
+// mỗi lần review thêm.
+func (c *Client) GetCompareDiff(repoFullName string, baseSHA string, headSHA string) (string, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/compare/%s...%s", repoFullName, baseSHA, headSHA)
+	req, err := c.newRequest("GET", url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3.diff")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("cannot read diff response: %w", err)
+	}
+
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("github api error %d: %s", resp.StatusCode, string(body))
+	}
+
+	return string(body), nil
+}

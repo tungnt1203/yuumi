@@ -107,7 +107,7 @@ func (j *Job) Run() {
 		fmt.Println("Load .yuumi.yml error (dùng default):", err)
 	}
 
-	// .gitignore thật của repo (issue #4) — cộng dồn thêm vào ignore pattern
+	// .gitignore thật của repo (issue #27) — cộng dồn thêm vào ignore pattern
 	// của .yuumi.yml/default, KHÔNG thay thế. Không có file hay đọc lỗi đều
 	// không chặn review, chỉ log rồi bỏ qua — nhất quán với .yuumi.yml.
 	gitignorePatterns, err := loadGitignorePatterns(dir)

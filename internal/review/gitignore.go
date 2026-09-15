@@ -7,7 +7,7 @@ import (
 )
 
 // gitignoreFileName là tên file .gitignore thật của repo được review, đọc
-// được ở root sau khi clone (xem issue #4).
+// được ở root sau khi clone (xem issue #27).
 const gitignoreFileName = ".gitignore"
 
 // loadGitignorePatterns đọc .gitignore ở root dir (repo đã checkout), trả
@@ -34,7 +34,7 @@ func loadGitignorePatterns(dir string) ([]string, error) {
 // match kiểu "path chứa chuỗi này", pattern không có "/" match theo suffix
 // của path (xem diffsplit.go).
 //
-// Chỉ cần hỗ trợ các case phổ biến nhất theo yêu cầu issue #4 (không cần
+// Chỉ cần hỗ trợ các case phổ biến nhất theo yêu cầu issue #27 (không cần
 // đúng 100% spec .gitignore, ưu tiên basename/prefix/thư mục):
 //   - dòng trống và comment ("#...") → bỏ qua.
 //   - pattern phủ định ("!...") → bỏ qua: isIgnoredPath không có khái niệm

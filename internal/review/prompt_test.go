@@ -107,14 +107,16 @@ func TestBuildReviewPrompt(t *testing.T) {
 }
 
 // TestBuildReviewPrompt_IncludesResultFormatInstructions đảm bảo prompt yêu
-// cầu rõ ràng format JSON output có ví dụ cụ thể (category/severity/
-// message/suggestion) — không phụ thuộc input nào, luôn phải có (xem
-// resultFormatInstructions, issue #26).
+// cầu rõ ràng format JSON output có ví dụ cụ thể (file/line/category/
+// severity/message/suggestion) — không phụ thuộc input nào, luôn phải có
+// (xem resultFormatInstructions, issue #26 + #5).
 func TestBuildReviewPrompt_IncludesResultFormatInstructions(t *testing.T) {
 	got := BuildReviewPrompt("review", "diff --git a/x b/x\n+y", "", "")
 
 	for _, want := range []string{
 		"JSON array",
+		`"file"`,
+		`"line"`,
 		`"category"`,
 		`"severity"`,
 		`"message"`,

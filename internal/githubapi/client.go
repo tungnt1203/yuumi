@@ -131,6 +131,55 @@ func (c *Client) EditComment(repoFullName string, commentID int64, body string) 
 	return nil
 }
 
+// CreateReview tạo 1 PR review qua GitHub Reviews API
+// (POST /pulls/{number}/reviews), post nhiều inline comment cùng lúc thay
+// vì phải gọi riêng lẻ từng dòng — dùng để gắn góp ý review trực tiếp vào
+// đúng dòng code thay đổi (xem review.Job.postInlineComments, issue #5).
+//
+// commentsJSON là mảng comment ĐÃ marshal sẵn (mỗi phần tử dạng
+// {"path","line","side","body"}) — Client không cần biết/định nghĩa struct
+// gì về "comment" cả, chỉ nhúng thẳng vào body request qua json.RawMessage;
+// caller (review.Job) chịu trách nhiệm đảm bảo đúng shape GitHub kỳ vọng.
+//
+// event luôn "COMMENT": bot chỉ góp ý, không tự ý APPROVE hay
+// REQUEST_CHANGES — đó là quyết định của người review thật, không phải bot.
+func (c *Client) CreateReview(repoFullName string, pullRequestNumber int, commitSHA string, body string, commentsJSON []byte) error {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/pulls/%d/reviews", repoFullName, pullRequestNumber)
+	reqBody, err := json.Marshal(struct {
+		CommitID string          `json:"commit_id"`
+		Body     string          `json:"body,omitempty"`
+		Event    string          `json:"event"`
+		Comments json.RawMessage `json:"comments,omitempty"`
+	}{
+		CommitID: commitSHA,
+		Body:     body,
+		Event:    "COMMENT",
+		Comments: commentsJSON,
+	})
+	if err != nil {
+		return fmt.Errorf("cannot marshal review body: %w", err)
+	}
+
+	req, err := c.newRequest("POST", url, bytes.NewBuffer(reqBody))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("github api error %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	return nil
+}
+
 // getPullRequest gọi GET /repos/{repo}/pulls/{number} (JSON mặc định, không
 // phải Accept diff của GetPullRequestDiff) — dùng chung cho
 // GetPullRequestHeadSHA và GetPullRequestChangedFilesCount, vì cả 2 chỉ cần

@@ -12,7 +12,16 @@ import (
 // — thay vì review trả về 1 khối text tự do không phân biệt được "lỗi
 // nghiêm trọng phải sửa trước khi merge" với "góp ý style nhỏ" (xem
 // BuildReviewPrompt, issue #26).
+//
+// File/Line (issue #5) là vị trí Claude cho là finding này áp dụng — File
+// rỗng hoặc Line <= 0 nghĩa là nhận xét TỔNG QUÁT, không gắn với 1 dòng cụ
+// thể (vd kiến trúc tổng thể). Có File/Line không có nghĩa nó ĐÚNG: Claude
+// có thể diễn giải lại thay vì copy nguyên văn số dòng từ diff — luôn phải
+// đối chiếu với diff thật (xem splitFindingsForPosting) trước khi tin dùng
+// để post inline comment, không dùng thẳng.
 type Finding struct {
+	File       string `json:"file,omitempty"`
+	Line       int    `json:"line,omitempty"`
 	Category   string `json:"category"`
 	Severity   string `json:"severity"`
 	Message    string `json:"message"`
@@ -71,6 +80,32 @@ func extractJSONArray(text string) string {
 		return ""
 	}
 	return text[start : end+1]
+}
+
+// renderBundleSummary render phần hiển thị trong comment tổng hợp cho 1
+// bundle: findings là TOÀN BỘ finding parse được, general là phần con
+// KHÔNG gắn inline được (xem splitFindingsForPosting, issue #5) — 2 danh
+// sách này khác nhau (general là tập con của findings) nên cần cả 2 để biết
+// có bao nhiêu finding đã "biến mất" khỏi đây vì được post inline riêng,
+// tránh người đọc tưởng bot bỏ sót.
+func renderBundleSummary(findings []Finding, general []Finding) string {
+	if len(findings) == 0 {
+		return "✅ Không có vấn đề đáng chú ý."
+	}
+
+	inlineCount := len(findings) - len(general)
+
+	var b strings.Builder
+	if inlineCount > 0 {
+		fmt.Fprintf(&b, "_(%d góp ý đã được gắn trực tiếp vào dòng code liên quan — xem tab \"Files changed\".)_", inlineCount)
+	}
+	if len(general) > 0 {
+		if inlineCount > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(renderFindings(general))
+	}
+	return b.String()
 }
 
 // renderFindings render findings thành markdown cho GitHub comment, sắp

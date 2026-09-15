@@ -86,15 +86,26 @@ func (j *Job) Run() {
 		budget = defaultBundleBudgetChars
 	}
 
-	bundles := bundleDiffs(diff, budget)
-	if len(bundles) == 0 {
-		// Diff rỗng (thường do GetPullRequestDiff lỗi ở trên) — vẫn review 1
-		// lần với diff rỗng, để BuildReviewPrompt tự chèn hướng dẫn fallback
-		// (Claude tự đọc file state + commit message).
-		bundles = []string{""}
-	}
+	bundles, skipped := bundleDiffs(diff, budget)
 
-	merged := j.reviewBundles(bundles, dir)
+	var merged string
+	switch {
+	case len(bundles) == 0 && len(skipped) > 0:
+		// Diff CÓ nội dung nhưng toàn bộ file đều bị lọc (vd PR chỉ sửa
+		// go.sum) — không có gì đáng review, không tốn 1 lần gọi Claude CLI
+		// chỉ để nó nói "không có gì để xem".
+		merged = "Không có file nào cần review. " + skippedNote(skipped)
+	case len(bundles) == 0:
+		// Diff rỗng thật (GetPullRequestDiff lỗi ở trên, hoặc PR không đổi
+		// gì) — vẫn review 1 lần với diff rỗng, để BuildReviewPrompt tự
+		// chèn hướng dẫn fallback (Claude tự đọc file state + commit message).
+		merged = j.reviewBundles([]string{""}, dir)
+	default:
+		merged = j.reviewBundles(bundles, dir)
+		if len(skipped) > 0 {
+			merged = skippedNote(skipped) + "\n\n" + merged
+		}
+	}
 
 	if err := j.GitHub.EditComment(j.RepoFullName, j.PlaceholderID, merged); err != nil {
 		fmt.Println("Post comment error:", err)
@@ -143,4 +154,21 @@ func (j *Job) reviewBundles(bundles []string, dir string) string {
 	}
 
 	return strings.Join(sections, "\n\n")
+}
+
+// skippedNote render 1 dòng thông báo các file bị bundleDiffs bỏ qua
+// (defaultIgnoredPathPatterns) — để người review biết bot có chủ đích
+// không xem các file này, thay vì im lặng bỏ sót. Cap hiển thị tối đa
+// showLimit tên để không làm phình comment nếu PR đổi rất nhiều file bị lọc
+// (vd đổi cả cây vendor/).
+func skippedNote(skipped []string) string {
+	const showLimit = 10
+
+	shown := skipped
+	suffix := ""
+	if len(skipped) > showLimit {
+		shown = skipped[:showLimit]
+		suffix = fmt.Sprintf(" và %d file khác", len(skipped)-showLimit)
+	}
+	return fmt.Sprintf("_(Đã bỏ qua %d file không cần review: %s%s)_", len(skipped), strings.Join(shown, ", "), suffix)
 }

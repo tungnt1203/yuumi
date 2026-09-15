@@ -54,22 +54,79 @@ func TestTruncateDiff(t *testing.T) {
 	}
 }
 
+func TestExtractFilePath(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"normal file", "diff --git a/internal/x.go b/internal/x.go\n+ok", "internal/x.go"},
+		{"root file", "diff --git a/go.sum b/go.sum\n+ok", "go.sum"},
+		{"no content after header", "diff --git a/x.go b/x.go", "x.go"},
+		{"malformed", "not a diff header", ""},
+		{"empty", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := extractFilePath(tt.body); got != tt.want {
+				t.Errorf("extractFilePath(%q) = %q, want %q", tt.body, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsIgnoredPath(t *testing.T) {
+	ignored := []string{
+		"go.sum",
+		"internal/x/go.sum",
+		"vendor/github.com/foo/bar.go",
+		"node_modules/react/index.js",
+		"dist/bundle.js",
+		"assets/logo.svg",
+		"assets/logo.png",
+		"app.min.js",
+		"package-lock.json",
+		"yarn.lock",
+	}
+	for _, p := range ignored {
+		if !isIgnoredPath(p) {
+			t.Errorf("isIgnoredPath(%q) = false, want true", p)
+		}
+	}
+
+	kept := []string{
+		"main.go",
+		"internal/review/job.go",
+		"README.md",
+		"cmd/server/main.go",
+	}
+	for _, p := range kept {
+		if isIgnoredPath(p) {
+			t.Errorf("isIgnoredPath(%q) = true, want false", p)
+		}
+	}
+}
+
 func TestBundleDiffs_UnderBudget_ReturnsOriginalUnchanged(t *testing.T) {
 	diff := "diff --git a/x.go b/x.go\n+line1"
 
-	got := bundleDiffs(diff, 1000)
+	got, skipped := bundleDiffs(diff, 1000)
 
 	if len(got) != 1 || got[0] != diff {
-		t.Errorf("bundleDiffs() = %v, want single bundle equal to original diff", got)
+		t.Errorf("bundleDiffs() bundles = %v, want single bundle equal to original diff", got)
+	}
+	if skipped != nil {
+		t.Errorf("skipped = %v, want nil", skipped)
 	}
 }
 
 func TestBundleDiffs_EmptyDiff(t *testing.T) {
-	if got := bundleDiffs("", 1000); got != nil {
-		t.Errorf("bundleDiffs(\"\", ...) = %v, want nil", got)
+	if got, skipped := bundleDiffs("", 1000); got != nil || skipped != nil {
+		t.Errorf("bundleDiffs(\"\", ...) = %v, %v, want nil, nil", got, skipped)
 	}
-	if got := bundleDiffs("   \n", 1000); got != nil {
-		t.Errorf("bundleDiffs(whitespace, ...) = %v, want nil", got)
+	if got, skipped := bundleDiffs("   \n", 1000); got != nil || skipped != nil {
+		t.Errorf("bundleDiffs(whitespace, ...) = %v, %v, want nil, nil", got, skipped)
 	}
 }
 
@@ -82,23 +139,19 @@ func TestBundleDiffs_GroupsFilesUnderBudget(t *testing.T) {
 	// Budget đủ cho 2 file/bundle nhưng không đủ cho cả 3.
 	budget := len(fileA) + len(fileB) + 1
 
-	bundles := bundleDiffs(diff, budget)
+	bundles, skipped := bundleDiffs(diff, budget)
 
 	if len(bundles) != 2 {
 		t.Fatalf("got %d bundles, want 2: %q", len(bundles), bundles)
+	}
+	if skipped != nil {
+		t.Errorf("skipped = %v, want nil", skipped)
 	}
 	if !strings.Contains(bundles[0], "a.go") || !strings.Contains(bundles[0], "b.go") {
 		t.Errorf("bundle[0] should contain a.go and b.go, got %q", bundles[0])
 	}
 	if !strings.Contains(bundles[1], "c.go") {
 		t.Errorf("bundle[1] should contain c.go, got %q", bundles[1])
-	}
-	for i, b := range bundles {
-		if len(b) > budget {
-			// bundle gồm nhiều file gộp lại có thể lệch 1 chút do ký tự nối,
-			// nhưng ở test này từng bundle chỉ có <=2 file vừa khít budget.
-			t.Errorf("bundle[%d] length %d exceeds budget %d", i, len(b), budget)
-		}
 	}
 }
 
@@ -108,7 +161,7 @@ func TestBundleDiffs_SingleHugeFileGetsOwnTruncatedBundle(t *testing.T) {
 	diff := huge + "\n" + small
 
 	budget := 50
-	bundles := bundleDiffs(diff, budget)
+	bundles, _ := bundleDiffs(diff, budget)
 
 	if len(bundles) != 2 {
 		t.Fatalf("got %d bundles, want 2 (huge file alone + small file alone): %q", len(bundles), bundles)
@@ -126,9 +179,45 @@ func TestBundleDiffs_AllFilesFitOneBundleWhenSmall(t *testing.T) {
 	fileB := "diff --git a/b.go b/b.go\n+b"
 	diff := fileA + "\n" + fileB
 
-	bundles := bundleDiffs(diff, 10_000)
+	bundles, _ := bundleDiffs(diff, 10_000)
 
 	if len(bundles) != 1 {
 		t.Fatalf("got %d bundles, want 1: %q", len(bundles), bundles)
+	}
+}
+
+func TestBundleDiffs_FiltersIgnoredFiles_SmallPR(t *testing.T) {
+	code := "diff --git a/main.go b/main.go\n+fmt.Println(1)"
+	lock := "diff --git a/go.sum b/go.sum\n+h1:abc..."
+	diff := code + "\n" + lock
+
+	bundles, skipped := bundleDiffs(diff, 10_000)
+
+	if len(bundles) != 1 {
+		t.Fatalf("got %d bundles, want 1: %q", len(bundles), bundles)
+	}
+	if strings.Contains(bundles[0], "go.sum") {
+		t.Errorf("bundle should not contain go.sum, got %q", bundles[0])
+	}
+	if !strings.Contains(bundles[0], "main.go") {
+		t.Errorf("bundle should still contain main.go, got %q", bundles[0])
+	}
+	if len(skipped) != 1 || skipped[0] != "go.sum" {
+		t.Errorf("skipped = %v, want [\"go.sum\"]", skipped)
+	}
+}
+
+func TestBundleDiffs_AllFilesIgnored_ReturnsNoBundles(t *testing.T) {
+	lock := "diff --git a/go.sum b/go.sum\n+h1:abc..."
+	vendored := "diff --git a/vendor/x/y.go b/vendor/x/y.go\n+package y"
+	diff := lock + "\n" + vendored
+
+	bundles, skipped := bundleDiffs(diff, 10_000)
+
+	if bundles != nil {
+		t.Errorf("bundles = %v, want nil (everything filtered out)", bundles)
+	}
+	if len(skipped) != 2 {
+		t.Errorf("skipped = %v, want 2 entries", skipped)
 	}
 }

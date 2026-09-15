@@ -282,6 +282,61 @@ func TestJobRun_LargeDiff_SplitsIntoBundlesAndMergesResults(t *testing.T) {
 	}
 }
 
+func TestJobRun_DiffWithIgnoredFile_NotesSkippedAndStillReviewsRest(t *testing.T) {
+	code := "diff --git a/main.go b/main.go\n+fmt.Println(1)"
+	lock := "diff --git a/go.sum b/go.sum\n+h1:abc..."
+	diff := code + "\n" + lock
+
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: diff}
+	reviewer := &fakeReviewer{result: "trông ổn"}
+
+	job := &Job{
+		GitHub:   gh,
+		Clone:    fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer: reviewer,
+	}
+	job.Run()
+
+	if !reviewer.called {
+		t.Fatal("expected Reviewer.Review to still be called for main.go")
+	}
+	if strings.Contains(reviewer.gotPrompt, "go.sum") {
+		t.Errorf("prompt should not contain the ignored file, got: %s", reviewer.gotPrompt)
+	}
+	if !strings.Contains(gh.editedBody, "Đã bỏ qua") || !strings.Contains(gh.editedBody, "go.sum") {
+		t.Errorf("expected comment to note the skipped file, got: %s", gh.editedBody)
+	}
+	if !strings.Contains(gh.editedBody, "trông ổn") {
+		t.Errorf("expected comment to still contain the review result, got: %s", gh.editedBody)
+	}
+}
+
+func TestJobRun_DiffOnlyIgnoredFiles_SkipsReviewerEntirely(t *testing.T) {
+	lock := "diff --git a/go.sum b/go.sum\n+h1:abc..."
+	vendored := "diff --git a/vendor/x/y.go b/vendor/x/y.go\n+package y"
+	diff := lock + "\n" + vendored
+
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: diff}
+	reviewer := &fakeReviewer{result: "không nên thấy dòng này"}
+
+	job := &Job{
+		GitHub:   gh,
+		Clone:    fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer: reviewer,
+	}
+	job.Run()
+
+	if reviewer.called {
+		t.Error("expected Reviewer.Review NOT to be called when every changed file is ignored")
+	}
+	if !gh.editCalled {
+		t.Fatal("expected EditComment to be called")
+	}
+	if !strings.Contains(gh.editedBody, "Đã bỏ qua") {
+		t.Errorf("expected comment to explain everything was skipped, got: %s", gh.editedBody)
+	}
+}
+
 func TestJobRun_LargeDiff_OneBundleFails_OthersStillPostResult(t *testing.T) {
 	fileA := "diff --git a/a.go b/a.go\n+" + strings.Repeat("a", 30)
 	fileB := "diff --git a/b.go b/b.go\n+" + strings.Repeat("b", 30)

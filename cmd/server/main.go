@@ -104,7 +104,16 @@ func main() {
 			}
 			defer cleanup()
 
-			reviewText, err := claudecli.RunClaudeReview(cmd, dir)
+			diff, err := githubapi.GetPullRequestDiff(payload.Repository.FullName, payload.Issue.Number, cfg.GitHubToken)
+			if err != nil {
+				// Không chặn review nếu lấy diff lỗi — fallback về cách cũ
+				// (Claude tự đọc file state + commit message).
+				fmt.Println("Get pull request diff error:", err)
+			}
+
+			prompt := review.BuildReviewPrompt(cmd, diff)
+
+			reviewText, err := claudecli.RunClaudeReview(prompt, dir)
 			if err != nil {
 				if editErr := githubapi.EditGitHubComment(payload.Repository.FullName, placeholderID, "❌ Review thất bại: "+err.Error(), cfg.GitHubToken); editErr != nil {
 					fmt.Println("Edit comment error:", editErr)

@@ -145,3 +145,36 @@ func GetPullRequestHeadSHA(repoFullName string, pullRequestNumber int, token str
 
 	return pullRequestResponse.Head.SHA, nil
 }
+
+// GetPullRequestDiff fetches the real unified diff of a PR from GitHub
+// (via the "application/vnd.github.v3.diff" media type), so the reviewer
+// knows exactly which lines changed instead of guessing from the checked-out
+// file state. See gitrepo.CloneRepo's "--depth 1" limitation.
+func GetPullRequestDiff(repoFullName string, pullRequestNumber int, token string) (string, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/pulls/%d", repoFullName, pullRequestNumber)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return "", fmt.Errorf("cannot create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github.v3.diff")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("request failed: %w", err)
+	}
+
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("cannot read diff response: %w", err)
+	}
+
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("github api error %d: %s", resp.StatusCode, string(body))
+	}
+
+	return string(body), nil
+}

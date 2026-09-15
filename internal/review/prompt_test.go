@@ -65,3 +65,13 @@ func TestBuildReviewPrompt(t *testing.T) {
 		})
 	}
 }
+
+func TestBundleNote(t *testing.T) {
+	got := bundleNote(2, 5)
+
+	for _, want := range []string{"2/5", "chia làm 5 phần"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("bundleNote(2, 5) missing %q in output: %q", want, got)
+		}
+	}
+}

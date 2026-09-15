@@ -1,6 +1,17 @@
 package review
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
+
+// defaultBundleBudgetChars là ngưỡng mặc định (tính theo số ký tự) cho mỗi
+// bundle khi Job.BundleBudgetChars không được set (<=0). Ký tự là proxy rẻ
+// và đủ tốt cho số token thực tế — không cần tokenizer chính xác ở đây.
+// Con số này là điểm khởi đầu hợp lý, cần tinh chỉnh lại bằng PR lớn thật
+// (xem issue #3) — vì vậy nó KHÔNG phải const cứng mà override được qua
+// Job.BundleBudgetChars (và Config.MaxDiffBundleChars ở tầng main.go).
+const defaultBundleBudgetChars = 12_000
 
 // GitHubClient là tập con các method của githubapi.Client mà Job cần.
 // Khai báo interface riêng ở đây (thay vì phụ thuộc thẳng *githubapi.Client)
@@ -28,10 +39,21 @@ type Job struct {
 	IssueNumber   int
 	PlaceholderID int64
 	UserCommand   string
+
+	// BundleBudgetChars giới hạn kích thước (ký tự) diff gửi trong 1 lần gọi
+	// Reviewer.Review. Diff PR vượt ngưỡng này sẽ bị chia thành nhiều bundle,
+	// mỗi bundle review riêng rồi gộp kết quả (xem bundleDiffs). <=0 nghĩa là
+	// "chưa cấu hình" — dùng defaultBundleBudgetChars.
+	BundleBudgetChars int
 }
 
 // Run thực hiện review, nên luôn được gọi trong goroutine riêng
 // (vd `go job.Run()`) vì có thể chạy lâu (clone repo, gọi Claude CLI).
+//
+// Diff PR quá lớn được chia thành nhiều bundle (xem bundleDiffs), mỗi bundle
+// review riêng rồi gộp kết quả trước khi edit lại đúng 1 comment placeholder
+// (issue #3) — với PR bình thường (đa số), bundleDiffs trả về đúng 1 bundle
+// chứa nguyên diff, hành vi giống hệt trước khi có bundling.
 func (j *Job) Run() {
 	defer func() {
 		if r := recover(); r != nil {
@@ -59,21 +81,66 @@ func (j *Job) Run() {
 		fmt.Println("Get pull request diff error:", err)
 	}
 
-	prompt := BuildReviewPrompt(j.UserCommand, diff)
-
-	reviewText, err := j.Reviewer.Review(prompt, dir)
-	if err != nil {
-		if editErr := j.GitHub.EditComment(j.RepoFullName, j.PlaceholderID, "❌ Review thất bại: "+err.Error()); editErr != nil {
-			fmt.Println("Edit comment error:", editErr)
-		}
-		return
+	budget := j.BundleBudgetChars
+	if budget <= 0 {
+		budget = defaultBundleBudgetChars
 	}
 
-	fmt.Println("Review result:", reviewText)
+	bundles := bundleDiffs(diff, budget)
+	if len(bundles) == 0 {
+		// Diff rỗng (thường do GetPullRequestDiff lỗi ở trên) — vẫn review 1
+		// lần với diff rỗng, để BuildReviewPrompt tự chèn hướng dẫn fallback
+		// (Claude tự đọc file state + commit message).
+		bundles = []string{""}
+	}
 
-	if err := j.GitHub.EditComment(j.RepoFullName, j.PlaceholderID, reviewText); err != nil {
+	merged := j.reviewBundles(bundles, dir)
+
+	if err := j.GitHub.EditComment(j.RepoFullName, j.PlaceholderID, merged); err != nil {
 		fmt.Println("Post comment error:", err)
 		return
 	}
 	fmt.Println("Comment posted successfully")
+}
+
+// reviewBundles chạy Reviewer.Review tuần tự cho từng bundle rồi gộp kết
+// quả thành 1 văn bản duy nhất (EditComment chỉ sửa được đúng 1 comment
+// placeholder — xem PlaceholderID).
+//
+// Chạy tuần tự thay vì song song: mỗi bundle là 1 tiến trình `claude` riêng
+// trong cùng thư mục repo đã clone, và review PR lớn vốn đã là đường hiếm
+// gặp/không chặn HTTP response (Job chạy trong goroutine nền) — đơn giản và
+// dễ đoán quan trọng hơn là tối ưu vài chục giây. Có thể revisit sau nếu
+// thực tế thấy quá chậm.
+//
+// Lỗi ở 1 bundle không làm hỏng cả kết quả: bundle đó được ghi nhận lỗi
+// trong phần của nó, các bundle còn lại vẫn tiếp tục — PR lớn mà chỉ vì 1
+// phần bị lỗi (vd timeout) mà mất luôn kết quả của các phần đã review xong
+// thì phí hơn nhiều so với review PR nhỏ.
+func (j *Job) reviewBundles(bundles []string, dir string) string {
+	single := len(bundles) == 1
+	sections := make([]string, len(bundles))
+
+	for i, bundleDiff := range bundles {
+		promptDiff := bundleDiff
+		if !single && bundleDiff != "" {
+			promptDiff = bundleNote(i+1, len(bundles)) + bundleDiff
+		}
+
+		text, err := j.Reviewer.Review(BuildReviewPrompt(j.UserCommand, promptDiff), dir)
+		if err != nil {
+			fmt.Println("Review bundle", i+1, "/", len(bundles), "error:", err)
+			text = "❌ Review thất bại: " + err.Error()
+		} else {
+			fmt.Println("Review bundle", i+1, "/", len(bundles), "result:", text)
+		}
+
+		if single {
+			sections[i] = text
+		} else {
+			sections[i] = fmt.Sprintf("### Phần %d/%d\n%s", i+1, len(bundles), text)
+		}
+	}
+
+	return strings.Join(sections, "\n\n")
 }

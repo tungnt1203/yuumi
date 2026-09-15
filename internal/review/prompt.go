@@ -1,6 +1,9 @@
 package review
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // BuildReviewPrompt assembles the final prompt sent to the Claude CLI.
 //
@@ -33,4 +36,17 @@ func BuildReviewPrompt(userCommand string, diff string) string {
 	b.WriteString("Trước khi kết luận, hãy đọc thêm các file liên quan trong repo (README, package/module xung quanh các file đã đổi) để hiểu đúng kiến trúc và convention của project — đừng chỉ nhìn diff một cách cô lập.\n")
 
 	return b.String()
+}
+
+// bundleNote được chèn vào đầu diff khi PR quá lớn và bị chia thành nhiều
+// bundle (xem bundleDiffs) — báo cho Claude biết nó chỉ đang thấy 1 phần
+// của PR, để không kết luận nhầm (vd "PR chỉ sửa 3 file") khi thực ra còn
+// các phần khác đang được review riêng.
+func bundleNote(index, total int) string {
+	return fmt.Sprintf(
+		"[Lưu ý: PR này khá lớn nên được chia làm %d phần để review, đây là phần %d/%d. "+
+			"Diff dưới đây KHÔNG phải toàn bộ PR — chỉ nhận xét dựa trên phần được giao, "+
+			"đừng kết luận về những file không xuất hiện ở đây.]\n\n",
+		total, index, total,
+	)
 }

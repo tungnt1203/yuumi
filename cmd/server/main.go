@@ -87,13 +87,14 @@ func main() {
 		}
 
 		job := &review.Job{
-			GitHub:        ghClient,
-			Clone:         gitrepo.CloneRepo,
-			Reviewer:      reviewer,
-			RepoFullName:  payload.Repository.FullName,
-			IssueNumber:   payload.Issue.Number,
-			PlaceholderID: placeholderID,
-			UserCommand:   cmd,
+			GitHub:            ghClient,
+			Clone:             gitrepo.CloneRepo,
+			Reviewer:          reviewer,
+			RepoFullName:      payload.Repository.FullName,
+			IssueNumber:       payload.Issue.Number,
+			PlaceholderID:     placeholderID,
+			UserCommand:       cmd,
+			BundleBudgetChars: cfg.MaxDiffBundleChars,
 		}
 		go job.Run()
 

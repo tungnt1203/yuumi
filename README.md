@@ -74,6 +74,17 @@ instructions: |
 
 Không có file này thì bot dùng default hiện tại. File có nhưng sai định dạng YAML thì bot bỏ qua (log lỗi, không chặn review) và vẫn review với default.
 
+## Rule mặc định theo loại file
+
+Ngoài `instructions` của `.yuumi.yml` (repo tự khai báo), bot tự có sẵn 1 bộ rule mặc định gắn theo đuôi file có trong diff — không cần repo nào cấu hình gì cả:
+
+- **Go**: race condition, error wrapping (`%w`), context leak, goroutine leak.
+- **JavaScript/TypeScript**: floating promise, lạm dụng `any`/`as`, thiếu kiểm tra null/undefined.
+- **Python**: mutable default argument, `except` quá rộng, resource không dùng `with`.
+- **SQL**: N+1 query, thiếu index, SQL injection do nối string.
+
+Bundle có nhiều loại file khác nhau thì rule của TẤT CẢ loại có mặt đều được chèn vào (không chỉ loại chiếm đa số). File loại chưa có rule riêng vẫn review bình thường với hướng dẫn chung. Nếu repo có `instructions` riêng trong `.yuumi.yml`, hướng dẫn của repo được **ưu tiên hơn** khi có xung đột với rule mặc định ở đây.
+
 ## Tự động đọc `.gitignore` của repo
 
 Ngoài `exclude` ở `.yuumi.yml`, bot còn tự đọc file `.gitignore` thật ở root repo được review và **gộp thêm** pattern trong đó vào danh sách loại trừ (cộng dồn với default + `.yuumi.yml`, không thay thế) — repo nào đã tự đánh dấu 1 thư mục/file là "không cần track" (`coverage/`, `.turbo/`, `*.log`...) thì bot cũng không review nhầm nó.
@@ -141,6 +152,7 @@ curl -i -X POST localhost:8080/webhook \
 - [x] Tự đọc `.gitignore` thật của repo được review, gộp thêm vào danh sách loại trừ (cộng dồn với default + `.yuumi.yml`, không thay thế)
 - [x] Review lần 2 trở đi trên cùng 1 PR chỉ gửi diff phần thay đổi mới (so với SHA đã review lần trước), không gửi lại toàn bộ diff cũ
 - [x] Kết quả review có `category`/`severity`/gợi ý sửa (JSON có cấu trúc thay vì text tự do), finding gắn đúng vào dòng code qua GitHub Reviews API khi xác định được vị trí, còn lại hiển thị trong comment tổng hợp
+- [x] Rule mặc định theo loại file (Go/JS/TS/Python/SQL) tự động chèn vào prompt theo đuôi file có trong diff, không cần repo cấu hình gì — ưu tiên thấp hơn `instructions` riêng của repo nếu có xung đột
 
 **Đã fix limitation cũ:** trước đây clone `--depth 1` nên Claude không `git diff` được, chỉ đoán qua commit message. Giờ diff thật lấy trực tiếp từ GitHub API (không phụ thuộc git history), nên vẫn giữ `--depth 1` khi clone bình thường (chỉ cần file state để Claude đọc code, không cần history) — nếu gọi GitHub API lỗi thì fallback về cách cũ (đọc file + commit message).
 

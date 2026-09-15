@@ -86,6 +86,23 @@ func TestBuildReviewPrompt(t *testing.T) {
 				".yuumi.yml",
 			},
 		},
+		{
+			name:        "language default rules included for a recognized file type",
+			userCommand: "review",
+			diff:        "diff --git a/main.go b/main.go\n+fmt.Println(\"hi\")",
+			wantContain: []string{
+				"Race condition",
+			},
+		},
+		{
+			name:        "no language rules section for an unrecognized file type",
+			userCommand: "review",
+			diff:        "diff --git a/README.md b/README.md\n+# hi",
+			wantAbsent: []string{
+				"Race condition",
+				"Mutable default argument",
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -103,6 +120,27 @@ func TestBuildReviewPrompt(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestBuildReviewPrompt_LanguageRules_PlacedAfterRepoInstructions_WithPriorityNote
+// đảm bảo khi cả repoInstructions lẫn rule mặc định theo loại file cùng có
+// mặt, rule mặc định đứng SAU và có ghi chú rõ ưu tiên thấp hơn — đúng thứ
+// tự ưu tiên issue #25 acceptance criteria yêu cầu (rule repo > rule mặc
+// định bot tự có).
+func TestBuildReviewPrompt_LanguageRules_PlacedAfterRepoInstructions_WithPriorityNote(t *testing.T) {
+	got := BuildReviewPrompt("review", "diff --git a/main.go b/main.go\n+fmt.Println(1)", "", "Luôn yêu cầu unit test.")
+
+	repoIdx := strings.Index(got, "Luôn yêu cầu unit test.")
+	rulesIdx := strings.Index(got, "Race condition")
+	if repoIdx == -1 || rulesIdx == -1 {
+		t.Fatalf("expected both repo instructions and language rules present, got:\n%s", got)
+	}
+	if repoIdx > rulesIdx {
+		t.Errorf("expected repo instructions to appear BEFORE default language rules, got:\n%s", got)
+	}
+	if !strings.Contains(got, "ưu tiên hơn") {
+		t.Errorf("expected an explicit note that repo instructions take priority, got:\n%s", got)
 	}
 }
 

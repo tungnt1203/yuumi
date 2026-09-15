@@ -11,7 +11,6 @@ import (
 	"github.com/tungnt1203/yuumi/internal/claudecli"
 	"github.com/tungnt1203/yuumi/internal/config"
 	"github.com/tungnt1203/yuumi/internal/githubapi"
-	"github.com/tungnt1203/yuumi/internal/gitrepo"
 	"github.com/tungnt1203/yuumi/internal/review"
 	"github.com/tungnt1203/yuumi/internal/webhook"
 )
@@ -86,53 +85,15 @@ func main() {
 			return
 		}
 
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					fmt.Println("Recovered from panic:", r)
-				}
-			}()
-
-			sha, err := ghClient.GetPullRequestHeadSHA(payload.Repository.FullName, payload.Issue.Number)
-
-			if err != nil {
-				fmt.Println("Get pull request head SHA error:", err)
-				return
-			}
-
-			dir, cleanup, err := gitrepo.CloneRepo(payload.Repository.FullName, sha)
-			if err != nil {
-				fmt.Println("Clone repo error:", err)
-				return
-			}
-			defer cleanup()
-
-			diff, err := ghClient.GetPullRequestDiff(payload.Repository.FullName, payload.Issue.Number)
-			if err != nil {
-				// Không chặn review nếu lấy diff lỗi — fallback về cách cũ
-				// (Claude tự đọc file state + commit message).
-				fmt.Println("Get pull request diff error:", err)
-			}
-
-			prompt := review.BuildReviewPrompt(cmd, diff)
-
-			reviewText, err := reviewer.Review(prompt, dir)
-			if err != nil {
-				if editErr := ghClient.EditComment(payload.Repository.FullName, placeholderID, "❌ Review thất bại: "+err.Error()); editErr != nil {
-					fmt.Println("Edit comment error:", editErr)
-				}
-				return
-			}
-
-			fmt.Println("Review result:", reviewText)
-
-			err = ghClient.EditComment(payload.Repository.FullName, placeholderID, reviewText)
-			if err != nil {
-				fmt.Println("Post comment error:", err)
-				return
-			}
-			fmt.Println("Comment posted successfully")
-		}()
+		job := &review.Job{
+			GitHub:        ghClient,
+			Reviewer:      reviewer,
+			RepoFullName:  payload.Repository.FullName,
+			IssueNumber:   payload.Issue.Number,
+			PlaceholderID: placeholderID,
+			UserCommand:   cmd,
+		}
+		go job.Run()
 
 		fmt.Fprintln(w, "processing")
 	})

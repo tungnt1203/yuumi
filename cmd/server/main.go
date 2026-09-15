@@ -26,6 +26,7 @@ func main() {
 
 	ghClient := githubapi.NewClient(cfg.GitHubToken)
 	var reviewer review.Reviewer = claudecli.NewReviewer()
+	dispatcher := review.NewDispatcher(cfg.MaxConcurrentReviews)
 
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "ok")
@@ -96,7 +97,7 @@ func main() {
 			UserCommand:       cmd,
 			BundleBudgetChars: cfg.MaxDiffBundleChars,
 		}
-		go job.Run()
+		dispatcher.Submit(job.Run)
 
 		fmt.Fprintln(w, "processing")
 	})

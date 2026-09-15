@@ -34,6 +34,7 @@ internal/
   claudecli/              # gọi `claude` CLI (chạy trong repo đã clone), parse kết quả
   githubapi/               # gọi GitHub REST API: reaction, post/edit comment, lấy PR head SHA
   gitrepo/                 # clone PR head SHA vào tmp dir, trả cleanup() để dọn dẹp
+  healthcheck/              # check claude CLI + GITHUB_TOKEN còn dùng được, cache cho /health
 ```
 
 ## Yêu cầu
@@ -81,7 +82,7 @@ go run ./cmd/server
 
 Server lắng nghe cổng `:8080`, có 2 route:
 
-- `GET /health` — health check, trả `ok`.
+- `GET /health` — trả trạng thái thật của các dependency (check lúc khởi động, cache lại, không gọi CLI/API mỗi request): `200` kèm JSON `{"claude_cli":{"ok":true,...},"github_token":{"ok":true,...},"checked_at":"..."}` nếu mọi thứ OK, `503` nếu có dependency lỗi.
 - `POST /webhook` — endpoint nhận GitHub webhook (event `issue_comment`).
 
 **Lưu ý:** `issue.number` trong payload phải là số của 1 **Pull Request thật** (không phải Issue thường), vì bước lấy head SHA gọi API `/pulls/{number}` — trên Issue thường API này trả 404.
@@ -111,6 +112,7 @@ curl -i -X POST localhost:8080/webhook \
 - [x] Tái cấu trúc theo layout `cmd/` + `internal/`
 - [x] Lấy diff thật của PR qua GitHub API (`application/vnd.github.v3.diff`) và đưa vào prompt, kèm hướng dẫn Claude đọc thêm file/README liên quan để hiểu kiến trúc & convention trước khi review, thay vì chỉ nhìn diff cô lập (`review.BuildReviewPrompt`)
 - [x] Cấu hình review riêng cho từng repo qua file `.yuumi.yml` ở root repo được review (thêm pattern loại trừ, hướng dẫn review riêng)
+- [x] `/health` phản ánh đúng trạng thái claude CLI + GITHUB_TOKEN (check lúc khởi động, cache lại) thay vì luôn trả "ok"
 
 **Đã fix limitation cũ:** trước đây clone `--depth 1` nên Claude không `git diff` được, chỉ đoán qua commit message. Giờ diff thật lấy trực tiếp từ GitHub API (không phụ thuộc git history), nên vẫn giữ `--depth 1` khi clone bình thường (chỉ cần file state để Claude đọc code, không cần history) — nếu gọi GitHub API lỗi thì fallback về cách cũ (đọc file + commit message).
 

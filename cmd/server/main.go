@@ -24,6 +24,8 @@ func main() {
 
 	fmt.Println("Yuumi review bot starting...")
 
+	ghClient := githubapi.NewClient(cfg.GitHubToken)
+
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "ok")
 	})
@@ -73,11 +75,11 @@ func main() {
 		fmt.Println("Command from", comment.Author, ":", cmd)
 		fmt.Println("Repo:", payload.Repository.FullName, "| Issue #:", payload.Issue.Number)
 
-		if err := githubapi.AddReaction(payload.Repository.FullName, payload.Comment.ID, cfg.GitHubToken); err != nil {
+		if err := ghClient.AddReaction(payload.Repository.FullName, payload.Comment.ID); err != nil {
 			fmt.Println("Add reaction error:", err)
 		}
 
-		placeholderID, err := githubapi.PostGitHubComment(payload.Repository.FullName, payload.Issue.Number, "Đang review...", cfg.GitHubToken)
+		placeholderID, err := ghClient.PostComment(payload.Repository.FullName, payload.Issue.Number, "Đang review...")
 		if err != nil {
 			fmt.Println("Post comment error:", err)
 			return
@@ -90,7 +92,7 @@ func main() {
 				}
 			}()
 
-			sha, err := githubapi.GetPullRequestHeadSHA(payload.Repository.FullName, payload.Issue.Number, cfg.GitHubToken)
+			sha, err := ghClient.GetPullRequestHeadSHA(payload.Repository.FullName, payload.Issue.Number)
 
 			if err != nil {
 				fmt.Println("Get pull request head SHA error:", err)
@@ -104,7 +106,7 @@ func main() {
 			}
 			defer cleanup()
 
-			diff, err := githubapi.GetPullRequestDiff(payload.Repository.FullName, payload.Issue.Number, cfg.GitHubToken)
+			diff, err := ghClient.GetPullRequestDiff(payload.Repository.FullName, payload.Issue.Number)
 			if err != nil {
 				// Không chặn review nếu lấy diff lỗi — fallback về cách cũ
 				// (Claude tự đọc file state + commit message).
@@ -115,7 +117,7 @@ func main() {
 
 			reviewText, err := claudecli.RunClaudeReview(prompt, dir)
 			if err != nil {
-				if editErr := githubapi.EditGitHubComment(payload.Repository.FullName, placeholderID, "❌ Review thất bại: "+err.Error(), cfg.GitHubToken); editErr != nil {
+				if editErr := ghClient.EditComment(payload.Repository.FullName, placeholderID, "❌ Review thất bại: "+err.Error()); editErr != nil {
 					fmt.Println("Edit comment error:", editErr)
 				}
 				return
@@ -123,7 +125,7 @@ func main() {
 
 			fmt.Println("Review result:", reviewText)
 
-			err = githubapi.EditGitHubComment(payload.Repository.FullName, placeholderID, reviewText, cfg.GitHubToken)
+			err = ghClient.EditComment(payload.Repository.FullName, placeholderID, reviewText)
 			if err != nil {
 				fmt.Println("Post comment error:", err)
 				return

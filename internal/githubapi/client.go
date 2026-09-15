@@ -18,26 +18,46 @@ type PullRequestResponse struct {
 	} `json:"head"`
 }
 
-func PostGitHubComment(repoFullName string, issueNumber int, body string, token string) (int64, error) {
+// Client gọi GitHub REST API bằng 1 token cố định, thay vì phải truyền token
+// vào từng lời gọi hàm như trước.
+type Client struct {
+	token string
+}
+
+func NewClient(token string) *Client {
+	return &Client{token: token}
+}
+
+// newRequest tạo request kèm sẵn header Authorization + Accept dùng chung
+// cho hầu hết endpoint (trừ GetPullRequestDiff, cần Accept khác).
+func (c *Client) newRequest(method, url string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequest(method, url, body)
+	if err != nil {
+		return nil, fmt.Errorf("cannot create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	return req, nil
+}
+
+func (c *Client) PostComment(repoFullName string, issueNumber int, body string) (int64, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/issues/%d/comments", repoFullName, issueNumber)
 	reqBody, err := json.Marshal(map[string]string{"body": body})
 	if err != nil {
 		return 0, fmt.Errorf("cannot marshal comment body: %w", err)
 	}
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(reqBody))
-	if err != nil {
-		return 0, fmt.Errorf("cannot create request: %w", err)
-	}
 
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/vnd.github+json")
+	req, err := c.newRequest("POST", url, bytes.NewBuffer(reqBody))
+	if err != nil {
+		return 0, err
+	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("request failed: %w", err)
 	}
-
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
@@ -53,27 +73,23 @@ func PostGitHubComment(repoFullName string, issueNumber int, body string, token 
 	return commentResponse.ID, nil
 }
 
-func AddReaction(repoFullName string, commentID int64, token string) error {
+func (c *Client) AddReaction(repoFullName string, commentID int64) error {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/issues/comments/%d/reactions", repoFullName, commentID)
 	reqBody, err := json.Marshal(map[string]string{"content": "eyes"})
 	if err != nil {
 		return fmt.Errorf("cannot marshal reaction body: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(reqBody))
+	req, err := c.newRequest("POST", url, bytes.NewBuffer(reqBody))
 	if err != nil {
-		return fmt.Errorf("cannot create request: %w", err)
+		return err
 	}
-
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
-
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
@@ -84,28 +100,23 @@ func AddReaction(repoFullName string, commentID int64, token string) error {
 	return nil
 }
 
-func EditGitHubComment(repoFullName string, commentID int64, body string, token string) error {
+func (c *Client) EditComment(repoFullName string, commentID int64, body string) error {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/issues/comments/%d", repoFullName, commentID)
 	reqBody, err := json.Marshal(map[string]string{"body": body})
-
 	if err != nil {
 		return fmt.Errorf("cannot marshal comment body: %w", err)
 	}
 
-	req, err := http.NewRequest("PATCH", url, bytes.NewBuffer(reqBody))
+	req, err := c.newRequest("PATCH", url, bytes.NewBuffer(reqBody))
 	if err != nil {
-		return fmt.Errorf("cannot create request: %w", err)
+		return err
 	}
-
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
-
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
@@ -116,21 +127,17 @@ func EditGitHubComment(repoFullName string, commentID int64, body string, token 
 	return nil
 }
 
-func GetPullRequestHeadSHA(repoFullName string, pullRequestNumber int, token string) (string, error) {
+func (c *Client) GetPullRequestHeadSHA(repoFullName string, pullRequestNumber int) (string, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/pulls/%d", repoFullName, pullRequestNumber)
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := c.newRequest("GET", url, nil)
 	if err != nil {
-		return "", fmt.Errorf("cannot create request: %w", err)
+		return "", err
 	}
-
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/vnd.github+json")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("request failed: %w", err)
 	}
-
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
@@ -150,21 +157,18 @@ func GetPullRequestHeadSHA(repoFullName string, pullRequestNumber int, token str
 // (via the "application/vnd.github.v3.diff" media type), so the reviewer
 // knows exactly which lines changed instead of guessing from the checked-out
 // file state. See gitrepo.CloneRepo's "--depth 1" limitation.
-func GetPullRequestDiff(repoFullName string, pullRequestNumber int, token string) (string, error) {
+func (c *Client) GetPullRequestDiff(repoFullName string, pullRequestNumber int) (string, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/pulls/%d", repoFullName, pullRequestNumber)
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := c.newRequest("GET", url, nil)
 	if err != nil {
-		return "", fmt.Errorf("cannot create request: %w", err)
+		return "", err
 	}
-
-	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github.v3.diff")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("request failed: %w", err)
 	}
-
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)

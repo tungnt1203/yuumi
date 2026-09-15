@@ -103,6 +103,23 @@ func TestBuildReviewPrompt(t *testing.T) {
 				"Mutable default argument",
 			},
 		},
+		{
+			name:        "changed symbols listed and grep instruction included",
+			userCommand: "review",
+			diff:        "diff --git a/main.go b/main.go\n+doSomething(x)",
+			wantContain: []string{
+				"doSomething",
+				"grep",
+			},
+		},
+		{
+			name:        "no changed symbols section when diff has no code-like content",
+			userCommand: "review",
+			diff:        "diff --git a/README.md b/README.md\n+Hello world, this is just prose.",
+			wantAbsent: []string{
+				"grep",
+			},
+		},
 	}
 
 	for _, tt := range tests {

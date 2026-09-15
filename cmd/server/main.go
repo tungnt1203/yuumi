@@ -59,25 +59,31 @@ func main() {
 		json.NewEncoder(w).Encode(report)
 	})
 
-	http.HandleFunc("/webhook", func(w http.ResponseWriter, r *http.Request) {
-		bodyBytes, err := io.ReadAll(r.Body)
-		if err != nil {
-			http.Error(w, "cannot read body", http.StatusBadRequest)
-			return
+	// newJob dựng 1 review.Job dùng chung cấu hình (GitHub client, cloner,
+	// reviewer, budget, logger, state store) cho CẢ 2 luồng trigger (mention
+	// thủ công lẫn auto-review, issue #32) — chỉ khác nhau ở
+	// RepoFullName/IssueNumber/PlaceholderID/UserCommand, tránh 2 luồng tự
+	// xây dựng Job lệch nhau.
+	newJob := func(repoFullName string, issueNumber int, placeholderID int64, userCommand string) *review.Job {
+		return &review.Job{
+			GitHub:            ghClient,
+			Clone:             gitrepo.CloneRepo,
+			Reviewer:          reviewer,
+			RepoFullName:      repoFullName,
+			IssueNumber:       issueNumber,
+			PlaceholderID:     placeholderID,
+			UserCommand:       userCommand,
+			BundleBudgetChars: cfg.MaxDiffBundleChars,
+			Logger:            reviewLogger,
+			StateStore:        reviewStateStore,
 		}
+	}
 
-		signature := r.Header.Get("X-Hub-Signature-256")
-		if !webhook.VerifySignature(cfg.WebhookSecret, bodyBytes, signature) {
-			http.Error(w, "invalid signature", http.StatusUnauthorized)
-			return
-		}
-
-		var payload webhook.Payload
-		if err := json.Unmarshal(bodyBytes, &payload); err != nil {
-			http.Error(w, "invalid JSON", http.StatusBadRequest)
-			return
-		}
-
+	// handleIssueComment xử lý luồng review theo mention thủ công
+	// ("@yuumi-bot review" trong comment PR) — hành vi giữ nguyên như trước
+	// issue #32, chỉ tách ra khỏi handler chính để handler chính route được
+	// theo loại event (xem handlePullRequest cho luồng auto-review mới).
+	handleIssueComment := func(w http.ResponseWriter, payload webhook.Payload) {
 		if payload.Action != "created" {
 			fmt.Println("Ignored: action is", payload.Action)
 			fmt.Fprintln(w, "ignored")
@@ -110,6 +116,19 @@ func main() {
 			return
 		}
 
+		// PR đã được review xong tới đúng head SHA hiện tại (vd auto-review
+		// đã chạy lúc mở/push, giờ có người mention lại) — không có gì mới,
+		// tốn thêm 1 lần gọi Claude CLI chỉ để nhận ra vậy là phí (issue
+		// #32, dùng chung AlreadyReviewedSHA với luồng auto-review bên
+		// dưới). Lỗi hoặc chưa review lần nào đều review bình thường.
+		if headSHA, err := ghClient.GetPullRequestHeadSHA(payload.Repository.FullName, payload.Issue.Number); err == nil {
+			if review.AlreadyReviewedSHA(reviewStateStore, payload.Repository.FullName, payload.Issue.Number, headSHA) {
+				fmt.Println("Ignored: PR already reviewed at SHA", headSHA)
+				fmt.Fprintln(w, "ignored")
+				return
+			}
+		}
+
 		if err := ghClient.AddReaction(payload.Repository.FullName, payload.Comment.ID); err != nil {
 			fmt.Println("Add reaction error:", err)
 		}
@@ -120,21 +139,89 @@ func main() {
 			return
 		}
 
-		job := &review.Job{
-			GitHub:            ghClient,
-			Clone:             gitrepo.CloneRepo,
-			Reviewer:          reviewer,
-			RepoFullName:      payload.Repository.FullName,
-			IssueNumber:       payload.Issue.Number,
-			PlaceholderID:     placeholderID,
-			UserCommand:       cmd,
-			BundleBudgetChars: cfg.MaxDiffBundleChars,
-			Logger:            reviewLogger,
-			StateStore:        reviewStateStore,
-		}
-		dispatcher.Submit(job.Run)
+		dispatcher.Submit(newJob(payload.Repository.FullName, payload.Issue.Number, placeholderID, cmd).Run)
 
 		fmt.Fprintln(w, "processing")
+	}
+
+	// handlePullRequest xử lý luồng auto-review khi PR mới mở hoặc có
+	// commit mới push lên (issue #32), không cần ai mention bot.
+	//
+	// Allowlist: ALLOWED_USERS (vốn dùng để chặn ai được PHÉP mention bot ở
+	// luồng issue_comment) được tái dùng ở đây để quyết định auto-review áp
+	// dụng cho PR của AI — chỉ auto-review PR do chính người trong danh
+	// sách này tạo, tránh review "miễn phí" mọi PR của bất kỳ ai gửi vào
+	// repo đã cài webhook (xem README mục "Auto review").
+	handlePullRequest := func(w http.ResponseWriter, payload webhook.Payload) {
+		if !webhook.PullRequestAutoReviewActions[payload.Action] {
+			fmt.Println("Ignored: pull_request action is", payload.Action)
+			fmt.Fprintln(w, "ignored")
+			return
+		}
+
+		author := payload.PullRequest.User.Login
+		if !slices.Contains(cfg.AllowedUsers, author) {
+			fmt.Println("Ignored: auto-review skipped, PR author not in ALLOWED_USERS:", author)
+			fmt.Fprintln(w, "ignored")
+			return
+		}
+
+		repoFullName := payload.Repository.FullName
+		issueNumber := payload.PullRequest.Number
+		headSHA := payload.PullRequest.Head.SHA
+		fmt.Println("Auto-review trigger from", author, "| Repo:", repoFullName, "| PR #:", issueNumber, "| action:", payload.Action)
+
+		// Đã review xong đúng SHA này rồi — vd GitHub redeliver webhook,
+		// hoặc "synchronize" bắn ra mà không thật sự có commit mới. Cùng cơ
+		// chế dedup với luồng mention ở trên (issue #32).
+		if review.AlreadyReviewedSHA(reviewStateStore, repoFullName, issueNumber, headSHA) {
+			fmt.Println("Ignored: PR already reviewed at SHA", headSHA)
+			fmt.Fprintln(w, "ignored")
+			return
+		}
+
+		placeholderID, err := ghClient.PostComment(repoFullName, issueNumber, "Đang review... _(tự động khi PR được mở/cập nhật)_")
+		if err != nil {
+			fmt.Println("Post comment error:", err)
+			return
+		}
+
+		dispatcher.Submit(newJob(repoFullName, issueNumber, placeholderID, "review").Run)
+
+		fmt.Fprintln(w, "processing")
+	}
+
+	http.HandleFunc("/webhook", func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "cannot read body", http.StatusBadRequest)
+			return
+		}
+
+		signature := r.Header.Get("X-Hub-Signature-256")
+		if !webhook.VerifySignature(cfg.WebhookSecret, bodyBytes, signature) {
+			http.Error(w, "invalid signature", http.StatusUnauthorized)
+			return
+		}
+
+		var payload webhook.Payload
+		if err := json.Unmarshal(bodyBytes, &payload); err != nil {
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		// GitHub phân biệt loại event qua header X-GitHub-Event, KHÔNG phải
+		// qua field "action" trong body (issue_comment và pull_request đều
+		// có "action" nhưng giá trị/ý nghĩa khác nhau — xem webhook.Payload).
+		switch eventType := r.Header.Get("X-GitHub-Event"); eventType {
+		case "issue_comment":
+			handleIssueComment(w, payload)
+		case "pull_request":
+			handlePullRequest(w, payload)
+		default:
+			fmt.Println("Ignored: unsupported X-GitHub-Event", eventType)
+			fmt.Fprintln(w, "ignored")
+		}
 	})
 
 	log.Fatal(http.ListenAndServe(":8080", nil))

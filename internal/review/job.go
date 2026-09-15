@@ -43,8 +43,10 @@ type Cloner func(repoFullName string, sha string) (dir string, cleanup func(), e
 //
 // attempts là số lần Reviewer.Review thực sự tốn để ra được kết quả/lỗi
 // cuối (xem review.Reviewer, issue #28) — 1 nghĩa là không phải retry.
+// numTurns là số turn model dùng ở lần gọi cuối (xem review.Reviewer, issue
+// #20) — tín hiệu rẻ để biết model có thực sự đọc thêm file ngoài diff.
 type ReviewLogger interface {
-	LogReview(repoFullName string, issueNumber int, sha string, bundleIndex, bundleTotal int, prompt, response, errMsg string, duration time.Duration, attempts int)
+	LogReview(repoFullName string, issueNumber int, sha string, bundleIndex, bundleTotal int, prompt, response, errMsg string, duration time.Duration, attempts int, numTurns int)
 }
 
 // ReviewStateStore tra cứu/lưu lại SHA đã review lần gần nhất cho 1 (repo,
@@ -291,7 +293,7 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 
 		prompt := BuildReviewPrompt(j.UserCommand, promptDiff, staticReport, repoInstructions)
 		start := time.Now()
-		text, attempts, err := j.Reviewer.Review(prompt, dir)
+		text, attempts, numTurns, err := j.Reviewer.Review(prompt, dir)
 		duration := time.Since(start)
 
 		errMsg := ""
@@ -312,7 +314,7 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 			if err != nil {
 				response = ""
 			}
-			j.Logger.LogReview(j.RepoFullName, j.IssueNumber, sha, i+1, len(bundles), prompt, response, errMsg, duration, attempts)
+			j.Logger.LogReview(j.RepoFullName, j.IssueNumber, sha, i+1, len(bundles), prompt, response, errMsg, duration, attempts, numTurns)
 		}
 
 		if single {

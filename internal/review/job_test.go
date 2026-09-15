@@ -111,6 +111,7 @@ type fakeReviewer struct {
 	result   string
 	err      error
 	attempts int // 0 nghĩa là "chưa chỉ định", Review() trả về 1 (không retry)
+	numTurns int // 0 nghĩa là "chưa chỉ định" (fake không giả lập num_turns thật)
 
 	called    bool
 	gotPrompt string
@@ -121,7 +122,7 @@ type fakeReviewer struct {
 	gotPrompts []string
 }
 
-func (f *fakeReviewer) Review(prompt string, dir string) (string, int, error) {
+func (f *fakeReviewer) Review(prompt string, dir string) (string, int, int, error) {
 	f.called = true
 	f.gotPrompt = prompt
 	f.gotDir = dir
@@ -130,7 +131,7 @@ func (f *fakeReviewer) Review(prompt string, dir string) (string, int, error) {
 	if attempts == 0 {
 		attempts = 1
 	}
-	return f.result, attempts, f.err
+	return f.result, attempts, f.numTurns, f.err
 }
 
 // scriptedReviewer trả về kết quả/lỗi khác nhau cho từng lần gọi Review()
@@ -142,7 +143,7 @@ type scriptedReviewer struct {
 	prompts []string
 }
 
-func (s *scriptedReviewer) Review(prompt string, dir string) (string, int, error) {
+func (s *scriptedReviewer) Review(prompt string, dir string) (string, int, int, error) {
 	i := len(s.prompts)
 	s.prompts = append(s.prompts, prompt)
 
@@ -154,7 +155,7 @@ func (s *scriptedReviewer) Review(prompt string, dir string) (string, int, error
 	if i < len(s.errs) {
 		err = s.errs[i]
 	}
-	return res, 1, err
+	return res, 1, 0, err
 }
 
 // fakeCloner trả về dir cố định và đánh dấu lại khi cleanup được gọi, để
@@ -301,7 +302,7 @@ func TestJobRun_ReviewerPanic_Recovered(t *testing.T) {
 	job := &Job{
 		GitHub: gh,
 		Clone:  fakeCloner("/tmp/fake-dir", nil, &cleanupCalled),
-		Reviewer: reviewerFunc(func(prompt, dir string) (string, int, error) {
+		Reviewer: reviewerFunc(func(prompt, dir string) (string, int, int, error) {
 			panic("unexpected panic")
 		}),
 	}
@@ -312,9 +313,9 @@ func TestJobRun_ReviewerPanic_Recovered(t *testing.T) {
 }
 
 // reviewerFunc cho phép dựng 1 Reviewer từ closure, dùng riêng cho test panic.
-type reviewerFunc func(prompt, dir string) (string, int, error)
+type reviewerFunc func(prompt, dir string) (string, int, int, error)
 
-func (f reviewerFunc) Review(prompt, dir string) (string, int, error) {
+func (f reviewerFunc) Review(prompt, dir string) (string, int, int, error) {
 	return f(prompt, dir)
 }
 
@@ -525,13 +526,14 @@ type loggedCall struct {
 	bundleIndex, total    int
 	prompt, response, err string
 	attempts              int
+	numTurns              int
 }
 
 type fakeReviewLogger struct {
 	calls []loggedCall
 }
 
-func (f *fakeReviewLogger) LogReview(repoFullName string, issueNumber int, sha string, bundleIndex, bundleTotal int, prompt, response, errMsg string, duration time.Duration, attempts int) {
+func (f *fakeReviewLogger) LogReview(repoFullName string, issueNumber int, sha string, bundleIndex, bundleTotal int, prompt, response, errMsg string, duration time.Duration, attempts int, numTurns int) {
 	f.calls = append(f.calls, loggedCall{
 		repoFullName: repoFullName,
 		issueNumber:  issueNumber,
@@ -542,6 +544,7 @@ func (f *fakeReviewLogger) LogReview(repoFullName string, issueNumber int, sha s
 		response:     response,
 		err:          errMsg,
 		attempts:     attempts,
+		numTurns:     numTurns,
 	})
 }
 
@@ -633,6 +636,33 @@ func TestJobRun_LogsAttemptsFromReviewer(t *testing.T) {
 	}
 	if got := logger.calls[0].attempts; got != 3 {
 		t.Errorf("expected logged attempts=3 (as reported by Reviewer), got %d", got)
+	}
+}
+
+// TestJobRun_LogsNumTurnsFromReviewer đảm bảo Job chuyển đúng num_turns mà
+// Reviewer.Review báo về cho Logger — tín hiệu để dò xem model có thực sự
+// đọc thêm file ngoài diff hay không (xem claudecli.ClaudeResult, issue
+// #20).
+func TestJobRun_LogsNumTurnsFromReviewer(t *testing.T) {
+	diff := "diff --git a/main.go b/main.go\n+fmt.Println(1)"
+
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: diff}
+	reviewer := &fakeReviewer{result: "trông ổn", numTurns: 7}
+	logger := &fakeReviewLogger{}
+
+	job := &Job{
+		GitHub:   gh,
+		Clone:    fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer: reviewer,
+		Logger:   logger,
+	}
+	job.Run()
+
+	if len(logger.calls) != 1 {
+		t.Fatalf("expected 1 log call, got %d", len(logger.calls))
+	}
+	if got := logger.calls[0].numTurns; got != 7 {
+		t.Errorf("expected logged numTurns=7 (as reported by Reviewer), got %d", got)
 	}
 }
 

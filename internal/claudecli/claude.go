@@ -14,6 +14,12 @@ type ClaudeResult struct {
 	Subtype string `json:"subtype"`
 	IsError bool   `json:"is_error"`
 	Result  string `json:"result"`
+
+	// NumTurns là số turn Claude CLI thực sự dùng để ra kết quả này — proxy
+	// rẻ để biết model có khám phá thêm gì ngoài diff hay không (1 turn bất
+	// thường trên diff nhiều file là dấu hiệu model không tự đọc thêm gì,
+	// xem reviewlog, issue #20).
+	NumTurns int `json:"num_turns"`
 }
 
 // defaultMaxAttempts là số lần thử tối đa mặc định khi Reviewer.MaxAttempts
@@ -58,7 +64,12 @@ func NewReviewer() *Reviewer {
 // attempts trả về số lần Claude CLI thực sự được gọi (1 nghĩa là thành công
 // hoặc thất bại ngay lần đầu, không phải retry) — để nơi gọi ghi nhận lại
 // tần suất phải retry trong thực tế (xem reviewlog, issue #28).
-func (r *Reviewer) Review(prompt string, dir string) (result string, attempts int, err error) {
+//
+// numTurns trả về ClaudeResult.NumTurns của lần gọi cuối cùng (0 nếu lỗi
+// chạy lệnh/JSON không parse được, tức chưa có output để đọc num_turns) —
+// dùng làm tín hiệu Claude có thực sự đọc thêm file ngoài diff hay không
+// (xem reviewlog, issue #20).
+func (r *Reviewer) Review(prompt string, dir string) (result string, attempts int, numTurns int, err error) {
 	maxAttempts := r.MaxAttempts
 	if maxAttempts <= 0 {
 		maxAttempts = defaultMaxAttempts
@@ -74,19 +85,19 @@ func (r *Reviewer) Review(prompt string, dir string) (result string, attempts in
 
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		result, err, retryable := runOnce(prompt, dir)
+		result, turns, err, retryable := runOnce(prompt, dir)
 		if err == nil {
-			return result, attempt, nil
+			return result, attempt, turns, nil
 		}
 		lastErr = err
 		if !retryable || attempt == maxAttempts {
-			return "", attempt, lastErr
+			return "", attempt, turns, lastErr
 		}
 		wait := backoff(attempt + 1)
 		fmt.Println("claude review attempt", attempt, "failed, retrying in", wait, ":", err)
 		sleep(wait)
 	}
-	return "", maxAttempts, lastErr
+	return "", maxAttempts, 0, lastErr
 }
 
 // runOnce gọi Claude CLI đúng 1 lần. retryable báo lỗi này có đáng thử lại
@@ -94,7 +105,7 @@ func (r *Reviewer) Review(prompt string, dir string) (result string, attempts in
 // lỗi này thường do mạng/tải tạm thời, chạy lại có cơ hội thành công; false
 // cho lỗi xác định trước (output không parse được đúng định dạng kỳ vọng,
 // hoặc Claude tự báo is_error=true) — retry không thay đổi được kết quả.
-func runOnce(prompt string, dir string) (result string, err error, retryable bool) {
+func runOnce(prompt string, dir string) (result string, numTurns int, err error, retryable bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
@@ -106,17 +117,17 @@ func runOnce(prompt string, dir string) (result string, err error, retryable boo
 
 	output, cmdErr := cmd.Output()
 	if cmdErr != nil {
-		return "", fmt.Errorf("claude command failed: %w (stderr: %s)", cmdErr, stderr.String()), true
+		return "", 0, fmt.Errorf("claude command failed: %w (stderr: %s)", cmdErr, stderr.String()), true
 	}
 
 	var claudeResult ClaudeResult
 	if jsonErr := json.Unmarshal(output, &claudeResult); jsonErr != nil {
-		return "", fmt.Errorf("cannot parse claude output: %w", jsonErr), false
+		return "", 0, fmt.Errorf("cannot parse claude output: %w", jsonErr), false
 	}
 
 	if claudeResult.IsError {
-		return "", fmt.Errorf("claude returned error (%s): %s", claudeResult.Subtype, claudeResult.Result), false
+		return "", claudeResult.NumTurns, fmt.Errorf("claude returned error (%s): %s", claudeResult.Subtype, claudeResult.Result), false
 	}
 
-	return claudeResult.Result, nil, false
+	return claudeResult.Result, claudeResult.NumTurns, nil, false
 }

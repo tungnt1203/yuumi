@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakeGitHubClient struct {
@@ -441,5 +442,114 @@ func TestJobRun_LargeDiff_OneBundleFails_OthersStillPostResult(t *testing.T) {
 	}
 	if !strings.Contains(gh.editedBody, "❌ Review thất bại: claude timed out") {
 		t.Errorf("expected failed bundle's error to be reported inline, got: %s", gh.editedBody)
+	}
+}
+
+// loggedCall là 1 lần gọi ReviewLogger.LogReview ghi lại được — dùng để
+// test Job có gọi Logger đúng tham số hay không, không quan tâm cách log
+// được lưu trữ (đó là việc của reviewlog.FileLogger).
+type loggedCall struct {
+	repoFullName          string
+	issueNumber           int
+	sha                   string
+	bundleIndex, total    int
+	prompt, response, err string
+}
+
+type fakeReviewLogger struct {
+	calls []loggedCall
+}
+
+func (f *fakeReviewLogger) LogReview(repoFullName string, issueNumber int, sha string, bundleIndex, bundleTotal int, prompt, response, errMsg string, duration time.Duration) {
+	f.calls = append(f.calls, loggedCall{
+		repoFullName: repoFullName,
+		issueNumber:  issueNumber,
+		sha:          sha,
+		bundleIndex:  bundleIndex,
+		total:        bundleTotal,
+		prompt:       prompt,
+		response:     response,
+		err:          errMsg,
+	})
+}
+
+func TestJobRun_LogsEachBundleReview(t *testing.T) {
+	diff := "diff --git a/main.go b/main.go\n+fmt.Println(1)"
+
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: diff}
+	reviewer := &fakeReviewer{result: "trông ổn"}
+	logger := &fakeReviewLogger{}
+
+	job := &Job{
+		GitHub:       gh,
+		Clone:        fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer:     reviewer,
+		RepoFullName: "owner/repo",
+		IssueNumber:  42,
+		Logger:       logger,
+	}
+	job.Run()
+
+	if len(logger.calls) != 1 {
+		t.Fatalf("expected 1 log call for a single-bundle review, got %d", len(logger.calls))
+	}
+	call := logger.calls[0]
+	if call.repoFullName != "owner/repo" || call.issueNumber != 42 || call.sha != "abc123" {
+		t.Errorf("unexpected log identity, got: %+v", call)
+	}
+	if call.bundleIndex != 1 || call.total != 1 {
+		t.Errorf("expected bundleIndex=1 total=1, got %d/%d", call.bundleIndex, call.total)
+	}
+	if !strings.Contains(call.prompt, "fmt.Println(1)") {
+		t.Errorf("expected logged prompt to contain the diff, got: %s", call.prompt)
+	}
+	if call.response != "trông ổn" || call.err != "" {
+		t.Errorf("expected response=%q err=%q, got response=%q err=%q", "trông ổn", "", call.response, call.err)
+	}
+}
+
+func TestJobRun_LogsErrorWithEmptyResponse(t *testing.T) {
+	diff := "diff --git a/main.go b/main.go\n+fmt.Println(1)"
+
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: diff}
+	reviewer := &fakeReviewer{err: errors.New("claude timed out")}
+	logger := &fakeReviewLogger{}
+
+	job := &Job{
+		GitHub:   gh,
+		Clone:    fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer: reviewer,
+		Logger:   logger,
+	}
+	job.Run()
+
+	if len(logger.calls) != 1 {
+		t.Fatalf("expected 1 log call, got %d", len(logger.calls))
+	}
+	call := logger.calls[0]
+	if call.response != "" {
+		t.Errorf("expected empty response logged on error, got: %q", call.response)
+	}
+	if call.err != "claude timed out" {
+		t.Errorf("expected logged error %q, got %q", "claude timed out", call.err)
+	}
+}
+
+func TestJobRun_NilLogger_DoesNotPanic(t *testing.T) {
+	diff := "diff --git a/main.go b/main.go\n+fmt.Println(1)"
+
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: diff}
+	reviewer := &fakeReviewer{result: "trông ổn"}
+
+	job := &Job{
+		GitHub:   gh,
+		Clone:    fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer: reviewer,
+		// Logger không set (nil) — hành vi mặc định trước khi có issue #9.
+	}
+	job.Run()
+
+	if !gh.editCalled {
+		t.Error("expected EditComment to still be called with nil Logger")
 	}
 }

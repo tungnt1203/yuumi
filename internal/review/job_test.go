@@ -36,6 +36,21 @@ type fakeGitHubClient struct {
 
 	editCalled bool
 	editedBody string
+
+	// createReviewErr/createReviewCalls mô phỏng CreateReview (issue #5) —
+	// createReviewCalls ghi lại TỪNG lần gọi (dù Job hiện chỉ gọi tối đa 1
+	// lần/lần review) để test có thể assert số lần gọi lẫn tham số.
+	createReviewErr   error
+	createReviewCalls []createReviewCall
+}
+
+// createReviewCall ghi lại tham số 1 lần gọi CreateReview — dùng để test
+// assert Job gửi đúng commitSHA/comments mà không cần biết
+// githubapi.Client.CreateReview build request HTTP thật ra sao.
+type createReviewCall struct {
+	commitSHA    string
+	body         string
+	commentsJSON string
 }
 
 func (f *fakeGitHubClient) GetPullRequestHeadSHA(repoFullName string, pullRequestNumber int) (string, error) {
@@ -61,6 +76,15 @@ func (f *fakeGitHubClient) EditComment(repoFullName string, commentID int64, bod
 	f.editCalled = true
 	f.editedBody = body
 	return f.editErr
+}
+
+func (f *fakeGitHubClient) CreateReview(repoFullName string, pullRequestNumber int, commitSHA string, body string, commentsJSON []byte) error {
+	f.createReviewCalls = append(f.createReviewCalls, createReviewCall{
+		commitSHA:    commitSHA,
+		body:         body,
+		commentsJSON: string(commentsJSON),
+	})
+	return f.createReviewErr
 }
 
 // fakeStateStore implement ReviewStateStore bằng 1 map trong bộ nhớ — dùng
@@ -724,6 +748,115 @@ func TestJobRun_UnparsableResult_FallsBackToRawText(t *testing.T) {
 
 	if !strings.Contains(gh.editedBody, "Code trông ổn, không có vấn đề gì đáng chú ý.") {
 		t.Errorf("expected raw text fallback in comment, got: %s", gh.editedBody)
+	}
+}
+
+// wellFormedDiff là 1 diff hunk-parse được (có header "@@ ") để test findings
+// gắn được vào dòng thật — khác các diff tối giản "diff --git ...\n+..."
+// dùng ở các test khác (chỉ cần đủ cho splitDiffByFile, không cần
+// parseFileHunks).
+const wellFormedDiff = "diff --git a/main.go b/main.go\n" +
+	"--- a/main.go\n" +
+	"+++ b/main.go\n" +
+	"@@ -1,2 +1,3 @@\n" +
+	" package main\n" +
+	"+import \"fmt\"\n" +
+	" var x = 1"
+
+// TestJobRun_InlineFinding_PostedViaCreateReview_NotDuplicatedInComment xác
+// nhận finding có file/line khớp đúng diff thật (issue #5) được post qua
+// GitHub Reviews API (CreateReview) — KHÔNG lặp lại nội dung đó trong
+// comment tổng hợp (EditComment), tránh người đọc thấy trùng lặp.
+func TestJobRun_InlineFinding_PostedViaCreateReview_NotDuplicatedInComment(t *testing.T) {
+	rawJSON := `[{"file":"main.go","line":2,"category":"style","severity":"low","message":"unused import fmt"}]`
+
+	gh := &fakeGitHubClient{headSHA: "sha-abc", diff: wellFormedDiff}
+	reviewer := &fakeReviewer{result: rawJSON}
+
+	job := &Job{
+		GitHub:       gh,
+		Clone:        fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer:     reviewer,
+		RepoFullName: "owner/repo",
+		IssueNumber:  7,
+	}
+	job.Run()
+
+	if len(gh.createReviewCalls) != 1 {
+		t.Fatalf("expected CreateReview to be called once, got %d", len(gh.createReviewCalls))
+	}
+	call := gh.createReviewCalls[0]
+	if call.commitSHA != "sha-abc" {
+		t.Errorf("CreateReview commitSHA = %q, want %q", call.commitSHA, "sha-abc")
+	}
+	if !strings.Contains(call.commentsJSON, `"path":"main.go"`) || !strings.Contains(call.commentsJSON, `"line":2`) || !strings.Contains(call.commentsJSON, `"side":"RIGHT"`) {
+		t.Errorf("CreateReview commentsJSON = %q, want it to include path/line/side", call.commentsJSON)
+	}
+	if !strings.Contains(call.commentsJSON, "unused import fmt") {
+		t.Errorf("CreateReview commentsJSON = %q, want it to include the finding's message", call.commentsJSON)
+	}
+
+	if !gh.editCalled {
+		t.Fatal("expected EditComment to be called")
+	}
+	if strings.Contains(gh.editedBody, "unused import fmt") {
+		t.Errorf("expected the inline finding NOT to be duplicated in the summary comment, got: %s", gh.editedBody)
+	}
+	if !strings.Contains(gh.editedBody, "gắn trực tiếp") {
+		t.Errorf("expected the summary comment to note the finding went inline, got: %s", gh.editedBody)
+	}
+}
+
+// TestJobRun_NoInlineFindings_CreateReviewNotCalled đảm bảo Job không gọi
+// GitHub Reviews API khi không có finding nào gắn được vào dòng cụ thể —
+// tránh tạo review rỗng/không cần thiết.
+func TestJobRun_NoInlineFindings_CreateReviewNotCalled(t *testing.T) {
+	rawJSON := `[{"severity":"low","message":"nhận xét tổng quát"}]`
+
+	gh := &fakeGitHubClient{headSHA: "sha-abc", diff: wellFormedDiff}
+	reviewer := &fakeReviewer{result: rawJSON}
+
+	job := &Job{
+		GitHub:   gh,
+		Clone:    fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer: reviewer,
+	}
+	job.Run()
+
+	if len(gh.createReviewCalls) != 0 {
+		t.Errorf("expected CreateReview NOT to be called, got %d calls", len(gh.createReviewCalls))
+	}
+	if !strings.Contains(gh.editedBody, "nhận xét tổng quát") {
+		t.Errorf("expected the general finding in the summary comment, got: %s", gh.editedBody)
+	}
+}
+
+// TestJobRun_CreateReviewFails_DoesNotBlockPrimaryFlow đảm bảo lỗi gọi
+// CreateReview (best-effort) không chặn/làm hỏng luồng chính — comment tổng
+// hợp đã post thành công vẫn được coi là review thành công (StateStore vẫn
+// được lưu, xem issue #21).
+func TestJobRun_CreateReviewFails_DoesNotBlockPrimaryFlow(t *testing.T) {
+	rawJSON := `[{"file":"main.go","line":2,"category":"style","severity":"low","message":"m"}]`
+
+	gh := &fakeGitHubClient{headSHA: "sha-new", diff: wellFormedDiff, createReviewErr: errors.New("github rate limited")}
+	reviewer := &fakeReviewer{result: rawJSON}
+	store := newFakeStateStore(nil)
+
+	job := &Job{
+		GitHub:       gh,
+		Clone:        fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer:     reviewer,
+		StateStore:   store,
+		RepoFullName: "owner/repo",
+		IssueNumber:  7,
+	}
+	job.Run()
+
+	if len(gh.createReviewCalls) != 1 {
+		t.Fatalf("expected CreateReview to still be attempted once, got %d", len(gh.createReviewCalls))
+	}
+	if !store.setCalled {
+		t.Error("expected SetLastReviewedSHA to still be called despite CreateReview failing (best-effort)")
 	}
 }
 

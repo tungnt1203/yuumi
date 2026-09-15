@@ -67,6 +67,56 @@ func TestParseFindings_JSONObjectNotArray_NotOk(t *testing.T) {
 	}
 }
 
+func TestRenderBundleSummary_NoFindings(t *testing.T) {
+	got := renderBundleSummary(nil, nil)
+	if !strings.Contains(got, "Không có vấn đề") {
+		t.Errorf("renderBundleSummary(nil, nil) = %q, want a no-issues message", got)
+	}
+}
+
+func TestRenderBundleSummary_AllWentInline_NotesCountNoDuplicateText(t *testing.T) {
+	findings := []Finding{
+		{File: "main.go", Line: 1, Severity: "high", Message: "inline finding"},
+	}
+	got := renderBundleSummary(findings, nil) // general rỗng: tất cả đã đi inline
+
+	if !strings.Contains(got, "1") || !strings.Contains(got, "gắn trực tiếp") {
+		t.Errorf("renderBundleSummary() = %q, want a note mentioning 1 inline finding", got)
+	}
+	if strings.Contains(got, "inline finding") {
+		t.Errorf("renderBundleSummary() should not repeat the finding's own text when it already went inline, got: %q", got)
+	}
+}
+
+func TestRenderBundleSummary_MixedInlineAndGeneral(t *testing.T) {
+	findings := []Finding{
+		{File: "main.go", Line: 1, Severity: "high", Message: "inline finding"},
+		{Severity: "low", Message: "general finding"},
+	}
+	general := []Finding{findings[1]}
+
+	got := renderBundleSummary(findings, general)
+
+	if !strings.Contains(got, "1") || !strings.Contains(got, "gắn trực tiếp") {
+		t.Errorf("renderBundleSummary() missing inline-count note, got: %q", got)
+	}
+	if !strings.Contains(got, "general finding") {
+		t.Errorf("renderBundleSummary() missing general finding text, got: %q", got)
+	}
+}
+
+func TestRenderBundleSummary_NoneWentInline_SameAsRenderFindings(t *testing.T) {
+	findings := []Finding{
+		{Severity: "low", Message: "general only"},
+	}
+
+	got := renderBundleSummary(findings, findings)
+
+	if got != renderFindings(findings) {
+		t.Errorf("renderBundleSummary() = %q, want it to equal renderFindings() when nothing went inline", got)
+	}
+}
+
 func TestRenderFindings_Empty(t *testing.T) {
 	got := renderFindings(nil)
 	if !strings.Contains(got, "Không có vấn đề") {

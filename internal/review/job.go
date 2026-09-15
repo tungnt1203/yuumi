@@ -1,6 +1,7 @@
 package review
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -17,12 +18,20 @@ const defaultBundleBudgetChars = 12_000
 // GitHubClient là tập con các method của githubapi.Client mà Job cần.
 // Khai báo interface riêng ở đây (thay vì phụ thuộc thẳng *githubapi.Client)
 // để test Job.Run bằng fake, không phải gọi API GitHub thật.
+//
+// CreateReview nhận comments đã marshal sẵn thành JSON ([]byte, dạng mảng
+// object {"path","line","side","body"}) thay vì 1 struct type riêng — để
+// GitHubClient tiếp tục chỉ dùng tham số cơ bản (string/int/[]byte) như mọi
+// method khác ở đây, GitHubClient (và implementation githubapi.Client)
+// không cần biết/import bất cứ gì về Finding hay pendingComment (xem
+// postInlineComments, issue #5).
 type GitHubClient interface {
 	GetPullRequestHeadSHA(repoFullName string, pullRequestNumber int) (string, error)
 	GetPullRequestDiff(repoFullName string, pullRequestNumber int) (string, error)
 	GetCompareDiff(repoFullName string, baseSHA string, headSHA string) (string, error)
 	GetPullRequestChangedFilesCount(repoFullName string, pullRequestNumber int) (int, error)
 	EditComment(repoFullName string, commentID int64, body string) error
+	CreateReview(repoFullName string, pullRequestNumber int, commitSHA string, body string, commentsJSON []byte) error
 }
 
 // Cloner khớp chữ ký gitrepo.CloneRepo — khai báo dạng func type để Job có
@@ -176,6 +185,7 @@ func (j *Job) Run() {
 
 	var merged string
 	var hadError bool
+	var inline []pendingComment
 	switch {
 	case len(bundles) == 0 && len(skipped) > 0:
 		// Diff CÓ nội dung nhưng toàn bộ file đều bị lọc (vd PR chỉ sửa
@@ -186,9 +196,9 @@ func (j *Job) Run() {
 		// Diff rỗng thật (GetPullRequestDiff lỗi ở trên, hoặc PR không đổi
 		// gì) — vẫn review 1 lần với diff rỗng, để BuildReviewPrompt tự
 		// chèn hướng dẫn fallback (Claude tự đọc file state + commit message).
-		merged, hadError = j.reviewBundles([]string{""}, dir, sha, staticReport, repoCfg.Instructions)
+		merged, hadError, inline = j.reviewBundles([]string{""}, dir, sha, staticReport, repoCfg.Instructions)
 	default:
-		merged, hadError = j.reviewBundles(bundles, dir, sha, staticReport, repoCfg.Instructions)
+		merged, hadError, inline = j.reviewBundles(bundles, dir, sha, staticReport, repoCfg.Instructions)
 	}
 
 	if len(notes) > 0 {
@@ -201,6 +211,16 @@ func (j *Job) Run() {
 	}
 	fmt.Println("Comment posted successfully")
 
+	if len(inline) > 0 {
+		// Best-effort, KHÔNG return/chặn gì nếu lỗi — comment tổng hợp
+		// (quan trọng hơn) đã post thành công ở trên; inline comment chỉ là
+		// bổ sung, mất nó (vd rate limit, lỗi mạng) không nên làm mất luôn
+		// kết quả review đã có (issue #5).
+		if err := j.postInlineComments(sha, inline); err != nil {
+			fmt.Println("Post inline review comments error:", err)
+		}
+	}
+
 	// Chỉ ghi nhận "đã review tới SHA này" nếu KHÔNG có bundle nào lỗi —
 	// review thất bại (vd Claude CLI lỗi) không nên coi là đã xem qua code ở
 	// SHA đó, nếu không lần review kế (issue #21) sẽ bỏ sót đúng phần lẽ ra
@@ -210,6 +230,43 @@ func (j *Job) Run() {
 			fmt.Println("Save last reviewed SHA error:", err)
 		}
 	}
+}
+
+// inlineReviewBody là body cấp-review (không phải body của từng comment) khi
+// tạo review qua GitHub Reviews API — GitHub yêu cầu review phải có body
+// hoặc ít nhất 1 comment; luôn có >=1 comment ở đây (postInlineComments chỉ
+// được gọi khi len(inline) > 0) nên body chỉ mang tính chú thích, không bắt
+// buộc phải có nội dung dài.
+const inlineReviewBody = "Góp ý chi tiết theo từng dòng — xem tổng hợp đầy đủ ở comment phía trên."
+
+// reviewCommentPayload là shape JSON GitHub Reviews API kỳ vọng cho 1 phần
+// tử trong "comments" (xem GitHubClient.CreateReview). Side luôn "RIGHT" vì
+// pendingComment.Line luôn là số dòng ở file MỚI (xem
+// splitFindingsForPosting/FileDiff.LineAtNew) — finding gắn vào dòng bị xoá
+// (chỉ tồn tại ở file cũ) không bao giờ tới được đây vì LineAtNew không
+// khớp dòng removed.
+type reviewCommentPayload struct {
+	Path string `json:"path"`
+	Line int    `json:"line"`
+	Side string `json:"side"`
+	Body string `json:"body"`
+}
+
+// postInlineComments gộp mọi pendingComment (từ mọi bundle, xem
+// reviewBundles) thành 1 GitHub PR review duy nhất — thay vì mỗi bundle tự
+// tạo 1 review riêng, gây rối cho người đọc khi PR bị chia nhiều bundle.
+func (j *Job) postInlineComments(commitSHA string, inline []pendingComment) error {
+	payload := make([]reviewCommentPayload, len(inline))
+	for i, c := range inline {
+		payload[i] = reviewCommentPayload{Path: c.Path, Line: c.Line, Side: "RIGHT", Body: c.Body}
+	}
+
+	commentsJSON, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("cannot marshal inline comments: %w", err)
+	}
+
+	return j.GitHub.CreateReview(j.RepoFullName, j.IssueNumber, commitSHA, inlineReviewBody, commentsJSON)
 }
 
 // loadDiff quyết định lấy diff nào để review. Nếu StateStore có SHA đã
@@ -281,7 +338,11 @@ func (j *Job) diffTruncationWarning(diff string) string {
 // hadError báo có ÍT NHẤT 1 bundle lỗi không — Run() dùng để quyết định có
 // nên ghi nhận "đã review xong tới SHA này" vào StateStore không (issue
 // #21): review lỗi không nên tính là đã xem qua code ở SHA đó.
-func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticReport string, repoInstructions string) (merged string, hadError bool) {
+//
+// inline gộp lại pendingComment của MỌI bundle (xem splitFindingsForPosting,
+// issue #5) — Run() post chúng thành 1 review duy nhất cho cả PR sau khi
+// tất cả bundle chạy xong, thay vì mỗi bundle tự tạo 1 review riêng gây rối.
+func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticReport string, repoInstructions string) (merged string, hadError bool, inline []pendingComment) {
 	single := len(bundles) == 1
 	sections := make([]string, len(bundles))
 
@@ -296,11 +357,12 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 		text, attempts, numTurns, err := j.Reviewer.Review(prompt, dir)
 		duration := time.Since(start)
 
-		// display là những gì thực sự được post lên comment — mặc định
-		// giống hệt text (raw), chỉ khác khi có lỗi (bọc thêm thông báo lỗi)
-		// hoặc khi text parse được thành findings có cấu trúc (issue #26,
-		// xem parseFindings/renderFindings) thì render lại có phân loại
-		// severity/category thay vì hiển thị nguyên JSON thô.
+		// display là những gì thực sự được post lên comment tổng hợp — mặc
+		// định giống hệt text (raw), chỉ khác khi có lỗi (bọc thêm thông báo
+		// lỗi) hoặc khi text parse được thành findings có cấu trúc (issue
+		// #26): những finding gắn được vào đúng dòng diff thật tách ra
+		// thành pendingComment (post riêng qua GitHub Reviews API, issue
+		// #5), phần còn lại (general) mới render vào display.
 		display := text
 		errMsg := ""
 		if err != nil {
@@ -311,7 +373,9 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 		} else {
 			fmt.Println("Review bundle", i+1, "/", len(bundles), "result:", text)
 			if findings, ok := parseFindings(text); ok {
-				display = renderFindings(findings)
+				bundleInline, general := splitFindingsForPosting(bundleDiff, findings)
+				inline = append(inline, bundleInline...)
+				display = renderBundleSummary(findings, general)
 			}
 		}
 
@@ -335,7 +399,7 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 		}
 	}
 
-	return strings.Join(sections, "\n\n"), hadError
+	return strings.Join(sections, "\n\n"), hadError, inline
 }
 
 // skippedNote render 1 dòng thông báo các file bị bundleDiffs bỏ qua

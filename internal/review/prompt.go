@@ -65,9 +65,11 @@ func BuildReviewPrompt(userCommand string, diff string, staticCheckNote string, 
 
 // resultFormatInstructions yêu cầu Claude trả kết quả dưới dạng JSON array
 // có cấu trúc thay vì văn xuôi tự do — mỗi phần tử là 1 finding với
-// category/severity/message/suggestion, để comment hiển thị phân loại rõ
-// ràng theo mức độ quan trọng thay vì 1 khối text người đọc phải tự đánh
-// giá (xem parseFindings/renderFindings, issue #26).
+// file/line/category/severity/message/suggestion, để comment hiển thị phân
+// loại rõ ràng theo mức độ quan trọng, và gắn được trực tiếp vào đúng dòng
+// code qua GitHub Reviews API khi xác định được vị trí (xem
+// parseFindings/renderFindings, issue #26; splitFindingsForPosting, issue
+// #5).
 //
 // Yêu cầu "CHỈ trả JSON, không bọc trong ```, không kèm giải thích ngoài
 // JSON" vì parseFindings cần parse được text; Claude đôi khi vẫn không tuân
@@ -75,8 +77,16 @@ func BuildReviewPrompt(userCommand string, diff string, staticCheckNote string, 
 // đã tự trích phần "[...]" để chịu được sai lệch nhỏ đó, và nếu vẫn không
 // parse được thì fallback hiển thị nguyên văn, không chặn/hỏng cả lần
 // review (xem Job.reviewBundles).
+//
+// "line" phải là số dòng trong FILE MỚI (sau khi áp dụng thay đổi của PR),
+// đúng như xuất hiện ở khối diff bên trên — không phải số thứ tự trong toàn
+// bộ file, và không suy đoán nếu không chắc. splitFindingsForPosting sẽ tự
+// đối chiếu lại với diff thật; file/line sai hoặc không khớp không làm hỏng
+// gì cả, finding đó chỉ đơn giản rơi về hiển thị trong comment tổng hợp
+// thay vì gắn inline — nên Claude cứ để trống nếu không chắc còn hơn đoán
+// bừa.
 const resultFormatInstructions = `Trả kết quả CHỈ dưới dạng 1 JSON array (không thêm giải thích ngoài JSON, không bọc trong markdown code fence), mỗi phần tử là 1 finding theo đúng format sau:
-[{"category":"bug|security|performance|maintainability|test|style|documentation","severity":"critical|high|medium|low","message":"mô tả ngắn gọn vấn đề","suggestion":"đoạn code gợi ý sửa cụ thể, để chuỗi rỗng nếu không áp dụng được"}]
+[{"file":"đường dẫn file đúng như trong diff, để trống nếu là nhận xét tổng quát không gắn với 1 dòng cụ thể","line":"số dòng trong file MỚI đúng như trong diff (số, không phải chuỗi), để trống/0 nếu không chắc hoặc là nhận xét tổng quát","category":"bug|security|performance|maintainability|test|style|documentation","severity":"critical|high|medium|low","message":"mô tả ngắn gọn vấn đề","suggestion":"đoạn code gợi ý sửa cụ thể, để chuỗi rỗng nếu không áp dụng được"}]
 Nếu code không có vấn đề gì đáng chú ý, trả về mảng rỗng: []
 `
 

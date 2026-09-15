@@ -34,6 +34,13 @@ import (
 // gì cả, khác repoInstructions ở trên. Đặt sau repoInstructions và có ghi
 // chú rõ độ ưu tiên thấp hơn, vì rule của repo (nếu có) phản ánh đúng ý
 // người maintain repo đó hơn rule chung bot tự đoán.
+//
+// Prompt cũng tự chèn danh sách symbol (hàm/type/method) trích best-effort
+// từ dòng thay đổi trong diff, kèm hướng dẫn tự grep tìm nơi dùng ở nơi
+// khác trong repo trước khi kết luận không có breaking change (xem
+// changedSymbolsNote, issue #19) — bù cho heuristic "cùng thư mục"
+// (groupByDirectory, diffsplit.go) vốn bỏ sót case 1 đổi signature ảnh
+// hưởng file ở package khác.
 func BuildReviewPrompt(userCommand string, diff string, staticCheckNote string, repoInstructions string) string {
 	var b strings.Builder
 
@@ -51,6 +58,11 @@ func BuildReviewPrompt(userCommand string, diff string, staticCheckNote string, 
 	if rules := languageRulesForDiff(diff); rules != "" {
 		b.WriteString("Ngoài ra, chú ý thêm các điểm sau theo từng loại file có trong diff (rule mặc định — nếu xung đột với hướng dẫn riêng của repo ở trên thì hướng dẫn của repo được ưu tiên hơn):\n")
 		b.WriteString(rules)
+		b.WriteString("\n\n")
+	}
+
+	if note := changedSymbolsNote(diff); note != "" {
+		b.WriteString(note)
 		b.WriteString("\n\n")
 	}
 

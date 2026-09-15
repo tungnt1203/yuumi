@@ -1,18 +1,28 @@
 package review
 
-import (
-	"fmt"
+import "fmt"
 
-	"github.com/tungnt1203/yuumi/internal/githubapi"
-	"github.com/tungnt1203/yuumi/internal/gitrepo"
-)
+// GitHubClient là tập con các method của githubapi.Client mà Job cần.
+// Khai báo interface riêng ở đây (thay vì phụ thuộc thẳng *githubapi.Client)
+// để test Job.Run bằng fake, không phải gọi API GitHub thật.
+type GitHubClient interface {
+	GetPullRequestHeadSHA(repoFullName string, pullRequestNumber int) (string, error)
+	GetPullRequestDiff(repoFullName string, pullRequestNumber int) (string, error)
+	EditComment(repoFullName string, commentID int64, body string) error
+}
+
+// Cloner khớp chữ ký gitrepo.CloneRepo — khai báo dạng func type để Job có
+// thể nhận vào gitrepo.CloneRepo (production) hoặc 1 fake (test) mà không
+// cần Job biết đến package gitrepo.
+type Cloner func(repoFullName string, sha string) (dir string, cleanup func(), err error)
 
 // Job đóng gói toàn bộ dữ liệu cần để thực hiện 1 lần review (clone repo,
 // lấy diff, gọi Reviewer, sửa lại comment placeholder). Tách ra khỏi
 // main.go để nơi nhận webhook (main.go) không cần biết chi tiết các bước
 // bên trong — chỉ cần dựng Job rồi chạy go job.Run().
 type Job struct {
-	GitHub        *githubapi.Client
+	GitHub        GitHubClient
+	Clone         Cloner
 	Reviewer      Reviewer
 	RepoFullName  string
 	IssueNumber   int
@@ -35,7 +45,7 @@ func (j *Job) Run() {
 		return
 	}
 
-	dir, cleanup, err := gitrepo.CloneRepo(j.RepoFullName, sha)
+	dir, cleanup, err := j.Clone(j.RepoFullName, sha)
 	if err != nil {
 		fmt.Println("Clone repo error:", err)
 		return

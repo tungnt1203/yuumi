@@ -11,6 +11,7 @@ import (
 	"github.com/tungnt1203/yuumi/internal/claudecli"
 	"github.com/tungnt1203/yuumi/internal/config"
 	"github.com/tungnt1203/yuumi/internal/githubapi"
+	"github.com/tungnt1203/yuumi/internal/gitrepo"
 	"github.com/tungnt1203/yuumi/internal/review"
 	"github.com/tungnt1203/yuumi/internal/webhook"
 )
@@ -87,6 +88,7 @@ func main() {
 
 		job := &review.Job{
 			GitHub:        ghClient,
+			Clone:         gitrepo.CloneRepo,
 			Reviewer:      reviewer,
 			RepoFullName:  payload.Repository.FullName,
 			IssueNumber:   payload.Issue.Number,

@@ -206,6 +206,15 @@ func (j *Job) Run() {
 		notes = append(notes, skippedNote(skipped))
 	}
 
+	// primer chỉ đáng tổng hợp khi PR THẬT SỰ bị chia nhiều bundle — PR bình
+	// thường (1 bundle, đại đa số) đã thấy nguyên diff của mình rồi, primer
+	// liệt kê lại đúng những file nó đang thấy không mang thêm giá trị gì
+	// (issue #18).
+	var primer string
+	if len(bundles) > 1 {
+		primer = buildPrimer(dir, changedFilePaths(diff, extraIgnoredPatterns))
+	}
+
 	var merged string
 	var hadError bool
 	var inline []pendingComment
@@ -219,9 +228,9 @@ func (j *Job) Run() {
 		// Diff rỗng thật (GetPullRequestDiff lỗi ở trên, hoặc PR không đổi
 		// gì) — vẫn review 1 lần với diff rỗng, để BuildReviewPrompt tự
 		// chèn hướng dẫn fallback (Claude tự đọc file state + commit message).
-		merged, hadError, inline = j.reviewBundles([]string{""}, dir, sha, staticReport, repoCfg.Instructions, validationDiff)
+		merged, hadError, inline = j.reviewBundles([]string{""}, dir, sha, staticReport, repoCfg.Instructions, validationDiff, primer)
 	default:
-		merged, hadError, inline = j.reviewBundles(bundles, dir, sha, staticReport, repoCfg.Instructions, validationDiff)
+		merged, hadError, inline = j.reviewBundles(bundles, dir, sha, staticReport, repoCfg.Instructions, validationDiff, primer)
 	}
 
 	if len(notes) > 0 {
@@ -371,7 +380,11 @@ func (j *Job) diffTruncationWarning(diff string) string {
 // đang xử lý: bundleDiff có thể chỉ là phần thay đổi mới so với lần review
 // trước (issue #21), có hunk khác với diff GitHub thực sự đối chiếu khi
 // nhận inline comment.
-func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticReport string, repoInstructions string, validationDiff string) (merged string, hadError bool, inline []pendingComment) {
+//
+// primer là ngữ cảnh dùng chung được build 1 lần cho cả PR (xem buildPrimer,
+// issue #18) — nhúng y hệt vào MỌI bundle, rỗng khi PR không bị chia bundle
+// (len(bundles) == 1, xem Run).
+func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticReport string, repoInstructions string, validationDiff string, primer string) (merged string, hadError bool, inline []pendingComment) {
 	single := len(bundles) == 1
 	sections := make([]string, len(bundles))
 
@@ -381,7 +394,7 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 			promptDiff = bundleNote(i+1, len(bundles)) + bundleDiff
 		}
 
-		prompt := BuildReviewPrompt(j.UserCommand, promptDiff, staticReport, repoInstructions)
+		prompt := BuildReviewPrompt(j.UserCommand, promptDiff, staticReport, repoInstructions, primer)
 		start := time.Now()
 		text, attempts, numTurns, err := j.Reviewer.Review(prompt, dir)
 		duration := time.Since(start)

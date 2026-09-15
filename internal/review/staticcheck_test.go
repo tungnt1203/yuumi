@@ -100,7 +100,7 @@ func main() {
 		t.Fatal("expected non-empty static check report as precondition")
 	}
 
-	prompt := BuildReviewPrompt("review", "diff --git a/main.go b/main.go\n+x", report, "")
+	prompt := BuildReviewPrompt("review", "diff --git a/main.go b/main.go\n+x", report, "", "")
 	if !strings.Contains(prompt, "gofmt") {
 		t.Errorf("expected prompt to include static check note, got:\n%s", prompt)
 	}

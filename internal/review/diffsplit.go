@@ -159,6 +159,26 @@ func truncateDiff(body string, budgetChars int) string {
 	return body[:budgetChars] + truncationNotice
 }
 
+// changedFilePaths trả về đường dẫn của mọi file còn lại trong diff SAU khi
+// lọc bỏ file không đáng review (cùng rule với bundleDiffs — xem
+// isIgnoredPath), theo đúng thứ tự xuất hiện trong diff gốc.
+//
+// Tách riêng khỏi bundleDiffs (thay vì để bundleDiffs trả thêm giá trị này)
+// để không phải đổi chữ ký 1 hàm đã có nhiều điểm gọi/test — buildPrimer
+// (issue #18) là điểm dùng duy nhất hiện tại, và cần biết TOÀN BỘ file của
+// PR trước khi bundleDiffs gộp chúng lại thành các nhóm theo thư mục.
+func changedFilePaths(diff string, extraIgnoredPatterns []string) []string {
+	var paths []string
+	for _, body := range splitDiffByFile(diff) {
+		p := extractFilePath(body)
+		if p == "" || isIgnoredPath(p, extraIgnoredPatterns) {
+			continue
+		}
+		paths = append(paths, p)
+	}
+	return paths
+}
+
 // bundleDiffs chia diff của cả PR thành các "bundle" — mỗi bundle là 1 nhóm
 // file sẽ được review riêng trong 1 lần gọi Reviewer.Review, để PR lớn không
 // bị nhồi nguyên vào 1 prompt (xem issue #3). skipped là danh sách path đã

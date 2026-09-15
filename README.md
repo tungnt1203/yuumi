@@ -92,6 +92,15 @@ Bot nhóm file review theo cùng thư mục (`groupByDirectory`), giải quyết
 
 Để bù lại mà không cần parser AST đầy đủ: bot trích best-effort tên symbol (hàm/type/method) xuất hiện ở dòng thay đổi trong diff, liệt kê vào prompt kèm hướng dẫn Claude tự `grep`/tìm kiếm các tên đó ở nơi khác trong repo trước khi kết luận không có breaking change — thay vì chỉ dựa vào diff hoặc heuristic thư mục.
 
+## Ngữ cảnh dùng chung giữa các phần khi PR bị chia bundle
+
+Khi 1 PR lớn bị chia thành nhiều bundle (mỗi bundle là 1 lần gọi `claude -p` riêng, xem phần bundle ở trên), bot tổng hợp sẵn 1 lần trước khi chia:
+
+- Danh sách **toàn bộ** file bị đổi trong PR (không chỉ file của riêng từng bundle).
+- Đường dẫn README/convention doc gần nhất tìm được trong repo (ở root và ở thư mục của từng file thay đổi).
+
+Ngữ cảnh này được nhúng y hệt vào đầu prompt của **mọi** bundle, thay cho việc chỉ dặn chung chung "hãy tự đọc thêm file liên quan" và để mỗi bundle tự quyết định lại — tránh mỗi phần của cùng 1 PR tự khám phá lại từ đầu (tốn turn/token) hoặc bỏ qua luôn (review thiếu ngữ cảnh, không nhất quán giữa các phần). PR không bị chia bundle (đa số) không tốn công build phần này.
+
 ## Tự động đọc `.gitignore` của repo
 
 Ngoài `exclude` ở `.yuumi.yml`, bot còn tự đọc file `.gitignore` thật ở root repo được review và **gộp thêm** pattern trong đó vào danh sách loại trừ (cộng dồn với default + `.yuumi.yml`, không thay thế) — repo nào đã tự đánh dấu 1 thư mục/file là "không cần track" (`coverage/`, `.turbo/`, `*.log`...) thì bot cũng không review nhầm nó.

@@ -364,14 +364,32 @@ func TestJobRun_LargeDiff_SplitsIntoBundlesAndMergesResults(t *testing.T) {
 	if len(reviewer.prompts) != 2 {
 		t.Fatalf("expected Reviewer.Review to be called 2 times (1 per bundle), got %d", len(reviewer.prompts))
 	}
-	if !strings.Contains(reviewer.prompts[0], "a.go") || strings.Contains(reviewer.prompts[0], "b.go") {
-		t.Errorf("bundle 1 prompt should contain only a.go, got: %s", reviewer.prompts[0])
+	// Phần diff thật (```diff ... ```) của mỗi bundle chỉ chứa file của
+	// riêng nó — primer (issue #18) liệt kê CẢ HAI file ở đầu prompt là chủ
+	// đích (ngữ cảnh dùng chung), nên không còn assert "chỉ chứa a.go"/"chỉ
+	// chứa b.go" trên toàn bộ prompt nữa, chỉ trên phần diff.
+	diffSection := func(prompt string) string {
+		_, rest, _ := strings.Cut(prompt, "```diff\n")
+		body, _, _ := strings.Cut(rest, "\n```")
+		return body
+	}
+	if body := diffSection(reviewer.prompts[0]); !strings.Contains(body, "a.go") || strings.Contains(body, "b.go") {
+		t.Errorf("bundle 1 diff section should contain only a.go, got: %s", body)
 	}
 	if !strings.Contains(reviewer.prompts[0], "phần 1/2") {
 		t.Errorf("bundle 1 prompt missing bundle note, got: %s", reviewer.prompts[0])
 	}
-	if !strings.Contains(reviewer.prompts[1], "b.go") || strings.Contains(reviewer.prompts[1], "a.go") {
-		t.Errorf("bundle 2 prompt should contain only b.go, got: %s", reviewer.prompts[1])
+	if body := diffSection(reviewer.prompts[1]); !strings.Contains(body, "b.go") || strings.Contains(body, "a.go") {
+		t.Errorf("bundle 2 diff section should contain only b.go, got: %s", body)
+	}
+	// Primer chia sẻ được nhúng y hệt vào MỌI bundle (issue #18).
+	for i, p := range reviewer.prompts {
+		if !strings.Contains(p, "a.go") || !strings.Contains(p, "b.go") {
+			t.Errorf("bundle %d prompt should contain primer listing both a.go and b.go, got: %s", i+1, p)
+		}
+	}
+	if reviewer.prompts[0][:strings.Index(reviewer.prompts[0], "```diff")] != reviewer.prompts[1][:strings.Index(reviewer.prompts[1], "```diff")] {
+		t.Errorf("expected identical primer (everything before the diff fence) across bundles of the same PR, got:\nbundle1: %s\nbundle2: %s", reviewer.prompts[0], reviewer.prompts[1])
 	}
 
 	if !gh.editCalled {
@@ -385,6 +403,25 @@ func TestJobRun_LargeDiff_SplitsIntoBundlesAndMergesResults(t *testing.T) {
 	}
 	if !cleanupCalled {
 		t.Error("expected clone cleanup to be called")
+	}
+}
+
+// TestJobRun_SingleBundle_NoPrimer đảm bảo PR bình thường (không bị chia
+// bundle) không tốn công build/nhúng primer (issue #18) — primer chỉ có giá
+// trị khi có NHIỀU bundle cần chia sẻ ngữ cảnh với nhau.
+func TestJobRun_SingleBundle_NoPrimer(t *testing.T) {
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: "diff --git a/main.go b/main.go\n+x"}
+	reviewer := &fakeReviewer{result: "trông ổn"}
+
+	job := &Job{
+		GitHub:   gh,
+		Clone:    fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer: reviewer,
+	}
+	job.Run()
+
+	if strings.Contains(reviewer.gotPrompt, "Ngữ cảnh dùng chung") {
+		t.Errorf("expected no primer for a single-bundle PR, got prompt: %s", reviewer.gotPrompt)
 	}
 }
 

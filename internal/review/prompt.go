@@ -41,10 +41,23 @@ import (
 // changedSymbolsNote, issue #19) — bù cho heuristic "cùng thư mục"
 // (groupByDirectory, diffsplit.go) vốn bỏ sót case 1 đổi signature ảnh
 // hưởng file ở package khác.
-func BuildReviewPrompt(userCommand string, diff string, staticCheckNote string, repoInstructions string) string {
+//
+// primer là ngữ cảnh dùng chung giữa mọi bundle của cùng 1 PR (danh sách
+// toàn bộ file bị đổi + README/convention doc tìm được — xem buildPrimer,
+// issue #18), rỗng khi PR không bị chia bundle (Job.Run chỉ build primer
+// khi len(bundles) > 1). Khi có, primer đứng ngay đầu prompt và THAY cho
+// hướng dẫn chung "hãy tự đọc thêm file liên quan" ở cuối hàm — mỗi bundle
+// nhận thẳng ngữ cảnh đã tổng hợp sẵn thay vì tự quyết định lại có nên đọc
+// thêm hay không mỗi lần gọi.
+func BuildReviewPrompt(userCommand string, diff string, staticCheckNote string, repoInstructions string, primer string) string {
 	var b strings.Builder
 
 	b.WriteString("Bạn đang review một Pull Request trong repo hiện tại (thư mục làm việc chính là repo đã checkout).\n\n")
+
+	if strings.TrimSpace(primer) != "" {
+		b.WriteString(primer)
+	}
+
 	b.WriteString("Yêu cầu từ người review: ")
 	b.WriteString(userCommand)
 	b.WriteString("\n\n")
@@ -80,7 +93,12 @@ func BuildReviewPrompt(userCommand string, diff string, staticCheckNote string, 
 		b.WriteString("\n\n")
 	}
 
-	b.WriteString("Trước khi kết luận, hãy đọc thêm các file liên quan trong repo (README, package/module xung quanh các file đã đổi) để hiểu đúng kiến trúc và convention của project — đừng chỉ nhìn diff một cách cô lập.\n\n")
+	if strings.TrimSpace(primer) == "" {
+		// Không có primer (PR không bị chia bundle) — vẫn cần dặn Claude tự
+		// đọc thêm, vì primer (khi có) đã thay thế đúng vai trò của dòng này
+		// bằng ngữ cảnh cụ thể hơn (danh sách file + README tìm được sẵn).
+		b.WriteString("Trước khi kết luận, hãy đọc thêm các file liên quan trong repo (README, package/module xung quanh các file đã đổi) để hiểu đúng kiến trúc và convention của project — đừng chỉ nhìn diff một cách cô lập.\n\n")
+	}
 
 	b.WriteString(resultFormatInstructions)
 

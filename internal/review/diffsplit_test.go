@@ -35,6 +35,34 @@ func TestSplitDiffByFile_GarbageWithoutHeader(t *testing.T) {
 	}
 }
 
+func TestChangedFilePaths(t *testing.T) {
+	diff := "diff --git a/a.go b/a.go\n+x\n" +
+		"diff --git a/go.sum b/go.sum\n+y\n" +
+		"diff --git a/b.go b/b.go\n+z"
+
+	got := changedFilePaths(diff, nil)
+	want := []string{"a.go", "b.go"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("changedFilePaths() = %v, want %v (go.sum should be filtered by default ignore rules)", got, want)
+	}
+}
+
+func TestChangedFilePaths_ExtraIgnoredPatterns(t *testing.T) {
+	diff := "diff --git a/a.go b/a.go\n+x\n" +
+		"diff --git a/testdata/fixture.go b/testdata/fixture.go\n+y"
+
+	got := changedFilePaths(diff, []string{"testdata/"})
+	if len(got) != 1 || got[0] != "a.go" {
+		t.Errorf("changedFilePaths() = %v, want [a.go]", got)
+	}
+}
+
+func TestChangedFilePaths_Empty(t *testing.T) {
+	if got := changedFilePaths("", nil); got != nil {
+		t.Errorf("changedFilePaths(\"\", nil) = %v, want nil", got)
+	}
+}
+
 func TestTruncateDiff(t *testing.T) {
 	short := "diff --git a/x b/x\n+ok"
 	if got := truncateDiff(short, 1000); got != short {

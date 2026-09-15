@@ -7,12 +7,13 @@ import (
 
 func TestBuildReviewPrompt(t *testing.T) {
 	tests := []struct {
-		name            string
-		userCommand     string
-		diff            string
-		staticCheckNote string
-		wantContain     []string
-		wantAbsent      []string
+		name             string
+		userCommand      string
+		diff             string
+		staticCheckNote  string
+		repoInstructions string
+		wantContain      []string
+		wantAbsent       []string
 	}{
 		{
 			name:        "has diff",
@@ -66,11 +67,30 @@ func TestBuildReviewPrompt(t *testing.T) {
 				"go vet",
 			},
 		},
+		{
+			name:             "repo instructions included when present",
+			userCommand:      "review",
+			diff:             "diff --git a/main.go b/main.go\n+fmt.Println(\"hi\")",
+			repoInstructions: "Luôn yêu cầu unit test cho hàm export.",
+			wantContain: []string{
+				"Luôn yêu cầu unit test cho hàm export.",
+				".yuumi.yml",
+			},
+		},
+		{
+			name:             "no repo instructions section when blank",
+			userCommand:      "review",
+			diff:             "diff --git a/main.go b/main.go\n+fmt.Println(\"hi\")",
+			repoInstructions: "   ",
+			wantAbsent: []string{
+				".yuumi.yml",
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := BuildReviewPrompt(tt.userCommand, tt.diff, tt.staticCheckNote)
+			got := BuildReviewPrompt(tt.userCommand, tt.diff, tt.staticCheckNote, tt.repoInstructions)
 
 			for _, want := range tt.wantContain {
 				if !strings.Contains(got, want) {

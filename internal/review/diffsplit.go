@@ -31,9 +31,21 @@ var defaultIgnoredPathPatterns = []string{
 	".pb.go", "_pb2.py",
 }
 
-// isIgnoredPath báo path có khớp defaultIgnoredPathPatterns không.
-func isIgnoredPath(path string) bool {
-	for _, pattern := range defaultIgnoredPathPatterns {
+// isIgnoredPath báo path có khớp defaultIgnoredPathPatterns hoặc
+// extraPatterns không. extraPatterns đến từ cấu hình riêng của repo
+// (.yuumi.yml "exclude" — xem loadRepoConfig, issue #7): GỘP THÊM vào
+// default chứ không thay thế, vì default vẫn luôn đúng (lock file/vendor
+// không đáng review ở mọi repo) — .yuumi.yml chỉ dùng để loại trừ thêm
+// những gì đặc thù riêng của repo đó.
+func isIgnoredPath(path string, extraPatterns []string) bool {
+	return matchesAnyPattern(path, defaultIgnoredPathPatterns) || matchesAnyPattern(path, extraPatterns)
+}
+
+// matchesAnyPattern kiểm tra path có khớp pattern nào trong patterns không,
+// theo cùng quy tắc match của isIgnoredPath (tách riêng để dùng chung cho
+// cả default lẫn extra patterns).
+func matchesAnyPattern(path string, patterns []string) bool {
+	for _, pattern := range patterns {
 		if strings.Contains(pattern, "/") {
 			if strings.Contains(path, pattern) {
 				return true
@@ -149,12 +161,14 @@ func truncateDiff(body string, budgetChars int) string {
 // bundleDiffs chia diff của cả PR thành các "bundle" — mỗi bundle là 1 nhóm
 // file sẽ được review riêng trong 1 lần gọi Reviewer.Review, để PR lớn không
 // bị nhồi nguyên vào 1 prompt (xem issue #3). skipped là danh sách path đã
-// bị loại vì khớp defaultIgnoredPathPatterns (không nằm trong bundle nào).
+// bị loại vì khớp defaultIgnoredPathPatterns hoặc extraIgnoredPatterns
+// (không nằm trong bundle nào). extraIgnoredPatterns đến từ .yuumi.yml của
+// repo (issue #7), nil nếu repo không có cấu hình riêng.
 //
 // Chiến lược, theo thứ tự ưu tiên:
-//  1. Tách theo file rồi lọc bỏ file không đáng review (defaultIgnoredPathPatterns)
-//     TRƯỚC khi tính budget — PR nhỏ có kèm go.sum/vendor cũng phải được lọc,
-//     không chỉ PR lớn.
+//  1. Tách theo file rồi lọc bỏ file không đáng review (defaultIgnoredPathPatterns
+//     + extraIgnoredPatterns) TRƯỚC khi tính budget — PR nhỏ có kèm go.sum/vendor
+//     cũng phải được lọc, không chỉ PR lớn.
 //  2. Nếu các file còn lại (sau lọc) đã nằm trong budgetChars: gộp thành 1
 //     bundle — tuyệt đại đa số PR (nhỏ/vừa, không dính file bị lọc) đi qua
 //     nhánh này, kết quả giống hệt hành vi trước khi có bundling.
@@ -164,7 +178,7 @@ func truncateDiff(body string, budgetChars int) string {
 //  4. Nếu 1 file tự nó đã vượt budget (vd file generated/lock lớn lọt lưới
 //     defaultIgnoredPathPatterns), file đó được tách thành bundle riêng và
 //     bị truncateDiff — đảm bảo không bao giờ có 1 bundle vượt budget.
-func bundleDiffs(diff string, budgetChars int) (bundles []string, skipped []string) {
+func bundleDiffs(diff string, budgetChars int, extraIgnoredPatterns []string) (bundles []string, skipped []string) {
 	if strings.TrimSpace(diff) == "" {
 		return nil, nil
 	}
@@ -180,7 +194,7 @@ func bundleDiffs(diff string, budgetChars int) (bundles []string, skipped []stri
 	keptFiles := make([]keptFile, 0, len(files))
 	for _, body := range files {
 		p := extractFilePath(body)
-		if p != "" && isIgnoredPath(p) {
+		if p != "" && isIgnoredPath(p, extraIgnoredPatterns) {
 			skipped = append(skipped, p)
 			continue
 		}

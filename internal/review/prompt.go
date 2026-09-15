@@ -22,13 +22,25 @@ import (
 // không có gì để báo cáo. Chèn vào prompt như context có sẵn để Claude khỏi
 // phải tự đọc code ra mới bắt được các lỗi máy đã bắt tốt hơn, tập trung
 // review logic/thiết kế.
-func BuildReviewPrompt(userCommand string, diff string, staticCheckNote string) string {
+//
+// repoInstructions là hướng dẫn review riêng của repo, đọc từ .yuumi.yml
+// (xem loadRepoConfig, issue #7) — rỗng nếu repo không có file cấu hình.
+// Chèn ngay sau yêu cầu của người review vì cùng là "cách review nên làm",
+// người review gõ trực tiếp lúc mention bot còn repoInstructions là mặc
+// định cố định của cả repo.
+func BuildReviewPrompt(userCommand string, diff string, staticCheckNote string, repoInstructions string) string {
 	var b strings.Builder
 
 	b.WriteString("Bạn đang review một Pull Request trong repo hiện tại (thư mục làm việc chính là repo đã checkout).\n\n")
 	b.WriteString("Yêu cầu từ người review: ")
 	b.WriteString(userCommand)
 	b.WriteString("\n\n")
+
+	if strings.TrimSpace(repoInstructions) != "" {
+		b.WriteString("Hướng dẫn review riêng cho repo này (cấu hình trong .yuumi.yml):\n")
+		b.WriteString(repoInstructions)
+		b.WriteString("\n\n")
+	}
 
 	if strings.TrimSpace(diff) != "" {
 		b.WriteString("Đây là diff thật của PR (unified diff), review tập trung vào đúng các dòng thay đổi này:\n\n")

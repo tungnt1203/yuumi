@@ -2,6 +2,7 @@ package review
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,17 @@ type fakeGitHubClient struct {
 	diff       string
 	diffErr    error
 	editErr    error
+
+	// compareDiff/compareDiffErr là kết quả GetCompareDiff trả về — dùng
+	// cho test issue #21 (review lần 2 trở đi chỉ lấy phần thay đổi mới).
+	compareDiff    string
+	compareDiffErr error
+
+	// gotCompareBase/gotCompareHead ghi lại tham số GetCompareDiff được gọi
+	// với gì, để test assert đúng SHA cũ/mới được dùng.
+	compareCalled  bool
+	gotCompareBase string
+	gotCompareHead string
 
 	// changedFilesCount mặc định 0 — vô hại với các test không quan tâm đến
 	// tính năng này: 0 luôn <= số file parse được (>=0), nên không bao giờ
@@ -34,6 +46,13 @@ func (f *fakeGitHubClient) GetPullRequestDiff(repoFullName string, pullRequestNu
 	return f.diff, f.diffErr
 }
 
+func (f *fakeGitHubClient) GetCompareDiff(repoFullName string, baseSHA string, headSHA string) (string, error) {
+	f.compareCalled = true
+	f.gotCompareBase = baseSHA
+	f.gotCompareHead = headSHA
+	return f.compareDiff, f.compareDiffErr
+}
+
 func (f *fakeGitHubClient) GetPullRequestChangedFilesCount(repoFullName string, pullRequestNumber int) (int, error) {
 	return f.changedFilesCount, f.changedFilesCountErr
 }
@@ -42,6 +61,50 @@ func (f *fakeGitHubClient) EditComment(repoFullName string, commentID int64, bod
 	f.editCalled = true
 	f.editedBody = body
 	return f.editErr
+}
+
+// fakeStateStore implement ReviewStateStore bằng 1 map trong bộ nhớ — dùng
+// cho test issue #21 thay vì phải ghi file thật (xem reviewstate.FileStore
+// cho implementation thật).
+type fakeStateStore struct {
+	shas map[string]string
+
+	lastSHAErr error
+	setSHAErr  error
+
+	// gotSetSHA/setCalled ghi lại lần SetLastReviewedSHA gần nhất được gọi,
+	// để test assert Run() có/không lưu state sau khi review xong.
+	setCalled bool
+	gotSetSHA string
+}
+
+func newFakeStateStore(seed map[string]string) *fakeStateStore {
+	if seed == nil {
+		seed = map[string]string{}
+	}
+	return &fakeStateStore{shas: seed}
+}
+
+func stateKey(repoFullName string, issueNumber int) string {
+	return fmt.Sprintf("%s#%d", repoFullName, issueNumber)
+}
+
+func (f *fakeStateStore) LastReviewedSHA(repoFullName string, issueNumber int) (string, bool, error) {
+	if f.lastSHAErr != nil {
+		return "", false, f.lastSHAErr
+	}
+	sha, found := f.shas[stateKey(repoFullName, issueNumber)]
+	return sha, found, nil
+}
+
+func (f *fakeStateStore) SetLastReviewedSHA(repoFullName string, issueNumber int, sha string) error {
+	f.setCalled = true
+	f.gotSetSHA = sha
+	if f.setSHAErr != nil {
+		return f.setSHAErr
+	}
+	f.shas[stateKey(repoFullName, issueNumber)] = sha
+	return nil
 }
 
 type fakeReviewer struct {
@@ -701,5 +764,194 @@ func TestJobRun_CombinesRepoConfigAndGitignoreIgnorePatterns(t *testing.T) {
 	}
 	if !strings.Contains(reviewer.gotPrompt, "main.go") {
 		t.Errorf("expected main.go to still be reviewed, got prompt:\n%s", reviewer.gotPrompt)
+	}
+}
+
+func TestJobRun_NoStateStore_UsesFullDiff(t *testing.T) {
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: "diff --git a/main.go b/main.go\n+fmt.Println(1)"}
+	reviewer := &fakeReviewer{result: "trông ổn"}
+
+	job := &Job{
+		GitHub:   gh,
+		Clone:    fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer: reviewer,
+		// StateStore không set (nil) — hành vi phải giống hệt trước issue #21.
+	}
+	job.Run()
+
+	if gh.compareCalled {
+		t.Error("GetCompareDiff should not be called when StateStore is nil")
+	}
+	if !strings.Contains(reviewer.gotPrompt, "main.go") {
+		t.Errorf("expected full diff to be reviewed, got prompt:\n%s", reviewer.gotPrompt)
+	}
+}
+
+func TestJobRun_NoPriorReview_UsesFullDiff(t *testing.T) {
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: "diff --git a/main.go b/main.go\n+fmt.Println(1)"}
+	reviewer := &fakeReviewer{result: "trông ổn"}
+	store := newFakeStateStore(nil) // chưa có PR nào được review trước đó
+
+	job := &Job{
+		GitHub:     gh,
+		Clone:      fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer:   reviewer,
+		StateStore: store,
+	}
+	job.Run()
+
+	if gh.compareCalled {
+		t.Error("GetCompareDiff should not be called on the first review of a PR")
+	}
+	if !strings.Contains(reviewer.gotPrompt, "main.go") {
+		t.Errorf("expected full diff to be reviewed, got prompt:\n%s", reviewer.gotPrompt)
+	}
+}
+
+func TestJobRun_PriorReviewFound_UsesCompareDiff(t *testing.T) {
+	gh := &fakeGitHubClient{
+		headSHA:     "sha-new",
+		diff:        "diff --git a/main.go b/main.go\n+everything from scratch",
+		compareDiff: "diff --git a/main.go b/main.go\n+only the new part",
+	}
+	reviewer := &fakeReviewer{result: "trông ổn"}
+	store := newFakeStateStore(map[string]string{stateKey("owner/repo", 7): "sha-old"})
+
+	job := &Job{
+		GitHub:       gh,
+		Clone:        fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer:     reviewer,
+		StateStore:   store,
+		RepoFullName: "owner/repo",
+		IssueNumber:  7,
+	}
+	job.Run()
+
+	if !gh.compareCalled {
+		t.Fatal("expected GetCompareDiff to be called when a prior review exists")
+	}
+	if gh.gotCompareBase != "sha-old" || gh.gotCompareHead != "sha-new" {
+		t.Errorf("GetCompareDiff called with (%q, %q), want (%q, %q)", gh.gotCompareBase, gh.gotCompareHead, "sha-old", "sha-new")
+	}
+	if !strings.Contains(reviewer.gotPrompt, "only the new part") {
+		t.Errorf("expected prompt to use the compare diff, got:\n%s", reviewer.gotPrompt)
+	}
+	if strings.Contains(reviewer.gotPrompt, "everything from scratch") {
+		t.Errorf("expected prompt NOT to contain the full PR diff, got:\n%s", reviewer.gotPrompt)
+	}
+	if !strings.Contains(gh.editedBody, "Chỉ review phần thay đổi mới") {
+		t.Errorf("expected comment to note incremental review, got: %s", gh.editedBody)
+	}
+}
+
+func TestJobRun_CompareDiffError_FallsBackToFullDiff(t *testing.T) {
+	gh := &fakeGitHubClient{
+		headSHA:        "sha-new",
+		diff:           "diff --git a/main.go b/main.go\n+full diff fallback",
+		compareDiffErr: errors.New("github api error"),
+	}
+	reviewer := &fakeReviewer{result: "trông ổn"}
+	store := newFakeStateStore(map[string]string{stateKey("owner/repo", 7): "sha-old"})
+
+	job := &Job{
+		GitHub:       gh,
+		Clone:        fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer:     reviewer,
+		StateStore:   store,
+		RepoFullName: "owner/repo",
+		IssueNumber:  7,
+	}
+	job.Run()
+
+	if !strings.Contains(reviewer.gotPrompt, "full diff fallback") {
+		t.Errorf("expected fallback to full diff on compare error, got prompt:\n%s", reviewer.gotPrompt)
+	}
+}
+
+func TestJobRun_LastReviewedSHALookupError_FallsBackToFullDiff(t *testing.T) {
+	gh := &fakeGitHubClient{headSHA: "sha-new", diff: "diff --git a/main.go b/main.go\n+full diff fallback"}
+	reviewer := &fakeReviewer{result: "trông ổn"}
+	store := newFakeStateStore(nil)
+	store.lastSHAErr = errors.New("state file corrupted")
+
+	job := &Job{
+		GitHub:     gh,
+		Clone:      fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer:   reviewer,
+		StateStore: store,
+	}
+	job.Run()
+
+	if gh.compareCalled {
+		t.Error("GetCompareDiff should not be called when the state lookup itself errors")
+	}
+	if !strings.Contains(reviewer.gotPrompt, "full diff fallback") {
+		t.Errorf("expected fallback to full diff on state lookup error, got prompt:\n%s", reviewer.gotPrompt)
+	}
+}
+
+func TestJobRun_SuccessfulReview_SavesLastReviewedSHA(t *testing.T) {
+	gh := &fakeGitHubClient{headSHA: "sha-new", diff: "diff --git a/main.go b/main.go\n+fmt.Println(1)"}
+	reviewer := &fakeReviewer{result: "trông ổn"}
+	store := newFakeStateStore(nil)
+
+	job := &Job{
+		GitHub:       gh,
+		Clone:        fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer:     reviewer,
+		StateStore:   store,
+		RepoFullName: "owner/repo",
+		IssueNumber:  7,
+	}
+	job.Run()
+
+	if !store.setCalled {
+		t.Fatal("expected SetLastReviewedSHA to be called after a successful review")
+	}
+	if store.gotSetSHA != "sha-new" {
+		t.Errorf("SetLastReviewedSHA called with %q, want %q", store.gotSetSHA, "sha-new")
+	}
+}
+
+func TestJobRun_ReviewerError_DoesNotSaveLastReviewedSHA(t *testing.T) {
+	gh := &fakeGitHubClient{headSHA: "sha-new", diff: "diff --git a/main.go b/main.go\n+fmt.Println(1)"}
+	reviewer := &fakeReviewer{err: errors.New("claude CLI timeout")}
+	store := newFakeStateStore(nil)
+
+	job := &Job{
+		GitHub:       gh,
+		Clone:        fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer:     reviewer,
+		StateStore:   store,
+		RepoFullName: "owner/repo",
+		IssueNumber:  7,
+	}
+	job.Run()
+
+	if !gh.editCalled {
+		t.Fatal("expected EditComment to still be called with the failure message")
+	}
+	if store.setCalled {
+		t.Error("expected SetLastReviewedSHA NOT to be called when the review itself failed")
+	}
+}
+
+func TestJobRun_EditCommentError_DoesNotSaveLastReviewedSHA(t *testing.T) {
+	gh := &fakeGitHubClient{headSHA: "sha-new", diff: "diff --git a/main.go b/main.go\n+fmt.Println(1)", editErr: errors.New("network error")}
+	reviewer := &fakeReviewer{result: "trông ổn"}
+	store := newFakeStateStore(nil)
+
+	job := &Job{
+		GitHub:       gh,
+		Clone:        fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer:     reviewer,
+		StateStore:   store,
+		RepoFullName: "owner/repo",
+		IssueNumber:  7,
+	}
+	job.Run()
+
+	if store.setCalled {
+		t.Error("expected SetLastReviewedSHA NOT to be called when posting the comment itself failed")
 	}
 }

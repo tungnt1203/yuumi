@@ -20,6 +20,7 @@ const defaultBundleBudgetChars = 12_000
 type GitHubClient interface {
 	GetPullRequestHeadSHA(repoFullName string, pullRequestNumber int) (string, error)
 	GetPullRequestDiff(repoFullName string, pullRequestNumber int) (string, error)
+	GetCompareDiff(repoFullName string, baseSHA string, headSHA string) (string, error)
 	GetPullRequestChangedFilesCount(repoFullName string, pullRequestNumber int) (int, error)
 	EditComment(repoFullName string, commentID int64, body string) error
 }
@@ -41,6 +42,20 @@ type Cloner func(repoFullName string, sha string) (dir string, cleanup func(), e
 // == nil nghĩa là "không ghi log", Run() vẫn hoạt động bình thường.
 type ReviewLogger interface {
 	LogReview(repoFullName string, issueNumber int, sha string, bundleIndex, bundleTotal int, prompt, response, errMsg string, duration time.Duration)
+}
+
+// ReviewStateStore tra cứu/lưu lại SHA đã review lần gần nhất cho 1 (repo,
+// PR) cụ thể, để Run() chỉ gửi diff phần thay đổi MỚI khi PR đã được review
+// trước đó, thay vì gửi lại toàn bộ diff so với base mỗi lần review thêm
+// (xem loadDiff, issue #21). Khai báo interface riêng theo đúng cách
+// GitHubClient/Cloner/ReviewLogger đã tách ở trên, để test bằng fake và để
+// Job không cần biết state lưu ở đâu (file, DB...).
+//
+// nil (Job.StateStore == nil) nghĩa là "chưa cấu hình tính năng này" —
+// Run() luôn lấy full diff so với base, giống hành vi trước issue #21.
+type ReviewStateStore interface {
+	LastReviewedSHA(repoFullName string, issueNumber int) (sha string, found bool, err error)
+	SetLastReviewedSHA(repoFullName string, issueNumber int, sha string) error
 }
 
 // Job đóng gói toàn bộ dữ liệu cần để thực hiện 1 lần review (clone repo,
@@ -66,6 +81,12 @@ type Job struct {
 	// Reviewer.Review (xem ReviewLogger, issue #9). nil nghĩa là "không ghi
 	// log" — Run() vẫn chạy bình thường, không bắt buộc phải cấu hình.
 	Logger ReviewLogger
+
+	// StateStore tra cứu/lưu SHA đã review lần gần nhất cho PR này (xem
+	// ReviewStateStore, issue #21). nil nghĩa là "không bật tính năng" —
+	// Run() luôn lấy full diff so với base, không tối ưu diff lần review
+	// thêm.
+	StateStore ReviewStateStore
 }
 
 // Run thực hiện review, nên luôn được gọi trong goroutine riêng
@@ -116,7 +137,7 @@ func (j *Job) Run() {
 	}
 	extraIgnoredPatterns := append(append([]string{}, repoCfg.Exclude...), gitignorePatterns...)
 
-	diff, err := j.GitHub.GetPullRequestDiff(j.RepoFullName, j.IssueNumber)
+	diff, incremental, err := j.loadDiff(sha)
 	if err != nil {
 		// Không chặn review nếu lấy diff lỗi — fallback về cách cũ
 		// (Claude tự đọc file state + commit message).
@@ -124,7 +145,15 @@ func (j *Job) Run() {
 	}
 
 	var notes []string
-	if strings.TrimSpace(diff) != "" {
+	if incremental {
+		// PR này đã được review trước đó (issue #21) — diff gửi đi chỉ là
+		// phần thay đổi mới, không phải toàn bộ PR, nên changed_files của cả
+		// PR (diffTruncationWarning) không áp dụng được ở đây: gần như luôn
+		// lệch (incremental luôn có ít file hơn cả PR) dù không có gì bị cắt
+		// thật. Báo rõ cho người đọc biết bot có tối ưu, tránh hiểu nhầm
+		// review sót phần cũ.
+		notes = append(notes, "_(Chỉ review phần thay đổi mới so với lần review trước, không phải toàn bộ PR.)_")
+	} else if strings.TrimSpace(diff) != "" {
 		if note := j.diffTruncationWarning(diff); note != "" {
 			notes = append(notes, note)
 		}
@@ -141,6 +170,7 @@ func (j *Job) Run() {
 	}
 
 	var merged string
+	var hadError bool
 	switch {
 	case len(bundles) == 0 && len(skipped) > 0:
 		// Diff CÓ nội dung nhưng toàn bộ file đều bị lọc (vd PR chỉ sửa
@@ -151,9 +181,9 @@ func (j *Job) Run() {
 		// Diff rỗng thật (GetPullRequestDiff lỗi ở trên, hoặc PR không đổi
 		// gì) — vẫn review 1 lần với diff rỗng, để BuildReviewPrompt tự
 		// chèn hướng dẫn fallback (Claude tự đọc file state + commit message).
-		merged = j.reviewBundles([]string{""}, dir, sha, staticReport, repoCfg.Instructions)
+		merged, hadError = j.reviewBundles([]string{""}, dir, sha, staticReport, repoCfg.Instructions)
 	default:
-		merged = j.reviewBundles(bundles, dir, sha, staticReport, repoCfg.Instructions)
+		merged, hadError = j.reviewBundles(bundles, dir, sha, staticReport, repoCfg.Instructions)
 	}
 
 	if len(notes) > 0 {
@@ -165,6 +195,43 @@ func (j *Job) Run() {
 		return
 	}
 	fmt.Println("Comment posted successfully")
+
+	// Chỉ ghi nhận "đã review tới SHA này" nếu KHÔNG có bundle nào lỗi —
+	// review thất bại (vd Claude CLI lỗi) không nên coi là đã xem qua code ở
+	// SHA đó, nếu không lần review kế (issue #21) sẽ bỏ sót đúng phần lẽ ra
+	// cần xem lại.
+	if !hadError && j.StateStore != nil {
+		if err := j.StateStore.SetLastReviewedSHA(j.RepoFullName, j.IssueNumber, sha); err != nil {
+			fmt.Println("Save last reviewed SHA error:", err)
+		}
+	}
+}
+
+// loadDiff quyết định lấy diff nào để review. Nếu StateStore có SHA đã
+// review lần trước cho đúng PR này, chỉ lấy phần thay đổi MỚI từ SHA đó
+// tới SHA hiện tại qua GetCompareDiff (incremental == true) — tránh gửi
+// lại toàn bộ diff cũ mỗi lần review thêm 1 PR đã review rồi (issue #21).
+//
+// Không tìm thấy lần review trước (lần đầu review PR này, StateStore chưa
+// cấu hình, hoặc tra cứu/GetCompareDiff lỗi) → fallback về hành vi cũ: lấy
+// full diff so với base qua GetPullRequestDiff, incremental == false.
+func (j *Job) loadDiff(sha string) (diff string, incremental bool, err error) {
+	if j.StateStore != nil {
+		lastSHA, found, stateErr := j.StateStore.LastReviewedSHA(j.RepoFullName, j.IssueNumber)
+		if stateErr != nil {
+			fmt.Println("Load last reviewed SHA error (dùng full diff):", stateErr)
+		} else if found {
+			compareDiff, compareErr := j.GitHub.GetCompareDiff(j.RepoFullName, lastSHA, sha)
+			if compareErr != nil {
+				fmt.Println("Get compare diff error (fallback full diff):", compareErr)
+			} else {
+				return compareDiff, true, nil
+			}
+		}
+	}
+
+	fullDiff, err := j.GitHub.GetPullRequestDiff(j.RepoFullName, j.IssueNumber)
+	return fullDiff, false, err
 }
 
 // diffTruncationWarning so số file parse được từ diff với "changed_files" mà
@@ -205,7 +272,11 @@ func (j *Job) diffTruncationWarning(diff string) string {
 // trong phần của nó, các bundle còn lại vẫn tiếp tục — PR lớn mà chỉ vì 1
 // phần bị lỗi (vd timeout) mà mất luôn kết quả của các phần đã review xong
 // thì phí hơn nhiều so với review PR nhỏ.
-func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticReport string, repoInstructions string) string {
+//
+// hadError báo có ÍT NHẤT 1 bundle lỗi không — Run() dùng để quyết định có
+// nên ghi nhận "đã review xong tới SHA này" vào StateStore không (issue
+// #21): review lỗi không nên tính là đã xem qua code ở SHA đó.
+func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticReport string, repoInstructions string) (merged string, hadError bool) {
 	single := len(bundles) == 1
 	sections := make([]string, len(bundles))
 
@@ -225,6 +296,7 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 			fmt.Println("Review bundle", i+1, "/", len(bundles), "error:", err)
 			errMsg = err.Error()
 			text = "❌ Review thất bại: " + errMsg
+			hadError = true
 		} else {
 			fmt.Println("Review bundle", i+1, "/", len(bundles), "result:", text)
 		}
@@ -247,7 +319,7 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 		}
 	}
 
-	return strings.Join(sections, "\n\n")
+	return strings.Join(sections, "\n\n"), hadError
 }
 
 // skippedNote render 1 dòng thông báo các file bị bundleDiffs bỏ qua

@@ -27,6 +27,11 @@ type Config struct {
 	// (xem reviewlog.FileLogger, issue #9) — rỗng nghĩa là "không set", để
 	// reviewlog tự dùng default của nó.
 	ReviewLogDir string
+
+	// ReviewStateFile override đường dẫn file lưu SHA đã review lần gần
+	// nhất cho mỗi PR (xem reviewstate.FileStore, issue #21) — rỗng nghĩa
+	// là "không set", để reviewstate tự dùng default của nó.
+	ReviewStateFile string
 }
 
 func Load() (Config, error) {
@@ -62,6 +67,7 @@ func Load() (Config, error) {
 		MaxDiffBundleChars:   maxDiffBundleChars,
 		MaxConcurrentReviews: maxConcurrentReviews,
 		ReviewLogDir:         os.Getenv("REVIEW_LOG_DIR"),
+		ReviewStateFile:      os.Getenv("REVIEW_STATE_FILE"),
 	}, nil
 }
 

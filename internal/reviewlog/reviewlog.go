@@ -35,6 +35,12 @@ type entry struct {
 	Response     string    `json:"response"`
 	Error        string    `json:"error,omitempty"`
 	DurationMs   int64     `json:"duration_ms"`
+
+	// Attempts là số lần Reviewer.Review thực sự tốn (gọi Claude CLI) để ra
+	// được kết quả/lỗi ở entry này — 1 nghĩa là không phải retry, >1 nghĩa
+	// là gặp lỗi tạm thời và phải thử lại (xem claudecli.Reviewer, issue
+	// #28). Dùng để dò tần suất lỗi tạm thời trong thực tế qua log.
+	Attempts int `json:"attempts"`
 }
 
 // FileLogger implement review.ReviewLogger bằng cách ghi mỗi lần gọi thành
@@ -55,7 +61,7 @@ func NewFileLogger(dir string) *FileLogger {
 	return &FileLogger{Dir: dir}
 }
 
-func (l *FileLogger) LogReview(repoFullName string, issueNumber int, sha string, bundleIndex, bundleTotal int, prompt, response, errMsg string, duration time.Duration) {
+func (l *FileLogger) LogReview(repoFullName string, issueNumber int, sha string, bundleIndex, bundleTotal int, prompt, response, errMsg string, duration time.Duration, attempts int) {
 	dir := l.Dir
 	if dir == "" {
 		dir = defaultDir
@@ -76,6 +82,7 @@ func (l *FileLogger) LogReview(repoFullName string, issueNumber int, sha string,
 		Response:     response,
 		Error:        errMsg,
 		DurationMs:   duration.Milliseconds(),
+		Attempts:     attempts,
 	}
 
 	data, err := json.MarshalIndent(e, "", "  ")

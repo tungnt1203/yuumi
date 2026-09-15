@@ -63,12 +63,15 @@ func TestReview_Success(t *testing.T) {
 echo '{"type":"result","subtype":"success","is_error":false,"result":"looks good"}'
 `)
 
-	got, err := (&Reviewer{}).Review("review this", t.TempDir())
+	got, attempts, err := (&Reviewer{}).Review("review this", t.TempDir())
 	if err != nil {
 		t.Fatalf("Review() unexpected error: %v", err)
 	}
 	if got != "looks good" {
 		t.Errorf("Review() = %q, want %q", got, "looks good")
+	}
+	if attempts != 1 {
+		t.Errorf("Review() attempts = %d, want 1 (no retry needed)", attempts)
 	}
 }
 
@@ -77,7 +80,7 @@ func TestReview_ClaudeReportsError_DoesNotRetry(t *testing.T) {
 	withFakeClaude(t, countingScript(counter, `echo '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"gave up"}'`))
 
 	r := &Reviewer{sleep: noSleep}
-	_, err := r.Review("review this", t.TempDir())
+	_, attempts, err := r.Review("review this", t.TempDir())
 	if err == nil {
 		t.Fatal("Review() expected error when is_error is true, got nil")
 	}
@@ -87,6 +90,9 @@ func TestReview_ClaudeReportsError_DoesNotRetry(t *testing.T) {
 	// is_error=true là lỗi Claude tự xác định rõ ràng — retry không giúp
 	// gì, không nên gọi lại (xem issue #11).
 	assertAttempts(t, counter, 1)
+	if attempts != 1 {
+		t.Errorf("Review() attempts = %d, want 1", attempts)
+	}
 }
 
 func TestReview_InvalidJSON_DoesNotRetry(t *testing.T) {
@@ -94,11 +100,14 @@ func TestReview_InvalidJSON_DoesNotRetry(t *testing.T) {
 	withFakeClaude(t, countingScript(counter, `echo 'not json'`))
 
 	r := &Reviewer{sleep: noSleep}
-	_, err := r.Review("review this", t.TempDir())
+	_, attempts, err := r.Review("review this", t.TempDir())
 	if err == nil {
 		t.Fatal("Review() expected error on invalid JSON output, got nil")
 	}
 	assertAttempts(t, counter, 1)
+	if attempts != 1 {
+		t.Errorf("Review() attempts = %d, want 1", attempts)
+	}
 }
 
 func TestReview_CommandFails_RetriesThenGivesUp(t *testing.T) {
@@ -107,7 +116,7 @@ func TestReview_CommandFails_RetriesThenGivesUp(t *testing.T) {
 exit 1`))
 
 	r := &Reviewer{sleep: noSleep}
-	_, err := r.Review("review this", t.TempDir())
+	_, attempts, err := r.Review("review this", t.TempDir())
 	if err == nil {
 		t.Fatal("Review() expected error when claude command exits non-zero, got nil")
 	}
@@ -117,6 +126,9 @@ exit 1`))
 	// Lỗi chạy lệnh (exec) là ứng viên retry — mặc định thử đủ
 	// defaultMaxAttempts lần rồi mới chịu thua.
 	assertAttempts(t, counter, defaultMaxAttempts)
+	if attempts != defaultMaxAttempts {
+		t.Errorf("Review() attempts = %d, want %d", attempts, defaultMaxAttempts)
+	}
 }
 
 func TestReview_CommandFails_RetriesThenSucceeds(t *testing.T) {
@@ -128,7 +140,7 @@ fi
 echo '{"type":"result","subtype":"success","is_error":false,"result":"ok after retry"}'`))
 
 	r := &Reviewer{sleep: noSleep}
-	got, err := r.Review("review this", t.TempDir())
+	got, attempts, err := r.Review("review this", t.TempDir())
 	if err != nil {
 		t.Fatalf("Review() unexpected error after retry: %v", err)
 	}
@@ -136,6 +148,9 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"ok after r
 		t.Errorf("Review() = %q, want %q", got, "ok after retry")
 	}
 	assertAttempts(t, counter, 2)
+	if attempts != 2 {
+		t.Errorf("Review() attempts = %d, want 2", attempts)
+	}
 }
 
 func TestReview_MaxAttempts_Override(t *testing.T) {
@@ -144,11 +159,14 @@ func TestReview_MaxAttempts_Override(t *testing.T) {
 exit 1`))
 
 	r := &Reviewer{MaxAttempts: 2, sleep: noSleep}
-	_, err := r.Review("review this", t.TempDir())
+	_, attempts, err := r.Review("review this", t.TempDir())
 	if err == nil {
 		t.Fatal("Review() expected error after exhausting retries, got nil")
 	}
 	assertAttempts(t, counter, 2)
+	if attempts != 2 {
+		t.Errorf("Review() attempts = %d, want 2", attempts)
+	}
 }
 
 func TestReview_PassesPromptAndDir(t *testing.T) {
@@ -163,7 +181,7 @@ fi
 `)
 
 	dir := t.TempDir()
-	got, err := (&Reviewer{}).Review("hello prompt", dir)
+	got, _, err := (&Reviewer{}).Review("hello prompt", dir)
 	if err != nil {
 		t.Fatalf("Review() unexpected error: %v", err)
 	}

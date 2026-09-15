@@ -54,7 +54,11 @@ func NewReviewer() *Reviewer {
 // Lỗi Claude tự báo rõ ràng (is_error=true kèm subtype cụ thể) hoặc output
 // không parse được KHÔNG được retry — đây là lỗi xác định trước, thử lại
 // với cùng input không giúp gì, chỉ tốn thêm thời gian (xem issue #11).
-func (r *Reviewer) Review(prompt string, dir string) (string, error) {
+//
+// attempts trả về số lần Claude CLI thực sự được gọi (1 nghĩa là thành công
+// hoặc thất bại ngay lần đầu, không phải retry) — để nơi gọi ghi nhận lại
+// tần suất phải retry trong thực tế (xem reviewlog, issue #28).
+func (r *Reviewer) Review(prompt string, dir string) (result string, attempts int, err error) {
 	maxAttempts := r.MaxAttempts
 	if maxAttempts <= 0 {
 		maxAttempts = defaultMaxAttempts
@@ -72,17 +76,17 @@ func (r *Reviewer) Review(prompt string, dir string) (string, error) {
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		result, err, retryable := runOnce(prompt, dir)
 		if err == nil {
-			return result, nil
+			return result, attempt, nil
 		}
 		lastErr = err
 		if !retryable || attempt == maxAttempts {
-			break
+			return "", attempt, lastErr
 		}
 		wait := backoff(attempt + 1)
 		fmt.Println("claude review attempt", attempt, "failed, retrying in", wait, ":", err)
 		sleep(wait)
 	}
-	return "", lastErr
+	return "", maxAttempts, lastErr
 }
 
 // runOnce gọi Claude CLI đúng 1 lần. retryable báo lỗi này có đáng thử lại

@@ -2,6 +2,8 @@ package review
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -633,5 +635,71 @@ func TestJobRun_InvalidRepoConfig_FallsBackToDefault(t *testing.T) {
 	}
 	if !strings.Contains(gh.editedBody, "trông ổn") {
 		t.Errorf("expected review to still run with default config, got: %s", gh.editedBody)
+	}
+}
+
+func TestJobRun_AppliesGitignore(t *testing.T) {
+	dir := writeGitignore(t, "generated/\n*.gen.go\n")
+
+	code := "diff --git a/main.go b/main.go\n+fmt.Println(1)"
+	generatedDir := "diff --git a/generated/api.go b/generated/api.go\n+package generated"
+	generatedExt := "diff --git a/models/user.gen.go b/models/user.gen.go\n+package models"
+	diff := strings.Join([]string{code, generatedDir, generatedExt}, "\n")
+
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: diff}
+	reviewer := &fakeReviewer{result: "trông ổn"}
+
+	job := &Job{
+		GitHub:   gh,
+		Clone:    fakeCloner(dir, nil, new(bool)),
+		Reviewer: reviewer,
+	}
+	job.Run()
+
+	if !reviewer.called {
+		t.Fatal("expected Reviewer.Review to still be called for main.go")
+	}
+	if strings.Contains(reviewer.gotPrompt, "generated/api.go") || strings.Contains(reviewer.gotPrompt, "user.gen.go") {
+		t.Errorf("expected files matching .gitignore to be excluded, got prompt:\n%s", reviewer.gotPrompt)
+	}
+	if !strings.Contains(gh.editedBody, "Đã bỏ qua") {
+		t.Errorf("expected comment to note skipped files, got: %s", gh.editedBody)
+	}
+}
+
+func TestJobRun_CombinesRepoConfigAndGitignoreIgnorePatterns(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, repoConfigFileName), []byte("exclude:\n  - \"testdata/\"\n"), 0o644); err != nil {
+		t.Fatalf("cannot write %s: %v", repoConfigFileName, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, gitignoreFileName), []byte("coverage/\n"), 0o644); err != nil {
+		t.Fatalf("cannot write %s: %v", gitignoreFileName, err)
+	}
+
+	code := "diff --git a/main.go b/main.go\n+fmt.Println(1)"
+	fromRepoConfig := "diff --git a/testdata/case1.json b/testdata/case1.json\n+{}"
+	fromGitignore := "diff --git a/coverage/report.out b/coverage/report.out\n+mode: set"
+	diff := strings.Join([]string{code, fromRepoConfig, fromGitignore}, "\n")
+
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: diff}
+	reviewer := &fakeReviewer{result: "trông ổn"}
+
+	job := &Job{
+		GitHub:   gh,
+		Clone:    fakeCloner(dir, nil, new(bool)),
+		Reviewer: reviewer,
+	}
+	job.Run()
+
+	// Cả 2 nguồn (.yuumi.yml exclude + .gitignore) phải cộng dồn, không cái
+	// nào lấn át cái nào.
+	if strings.Contains(reviewer.gotPrompt, "testdata") {
+		t.Errorf("expected .yuumi.yml exclude to still apply, got prompt:\n%s", reviewer.gotPrompt)
+	}
+	if strings.Contains(reviewer.gotPrompt, "coverage/report.out") {
+		t.Errorf("expected .gitignore pattern to also apply, got prompt:\n%s", reviewer.gotPrompt)
+	}
+	if !strings.Contains(reviewer.gotPrompt, "main.go") {
+		t.Errorf("expected main.go to still be reviewed, got prompt:\n%s", reviewer.gotPrompt)
 	}
 }

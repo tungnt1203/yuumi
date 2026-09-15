@@ -26,6 +26,8 @@ func main() {
 
 	ghClient := githubapi.NewClient(cfg.GitHubToken)
 	var reviewer review.Reviewer = claudecli.NewReviewer()
+	dispatcher := review.NewDispatcher(cfg.MaxConcurrentReviews)
+	seenComments := webhook.NewSeenComments()
 
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, "ok")
@@ -76,6 +78,12 @@ func main() {
 		fmt.Println("Command from", comment.Author, ":", cmd)
 		fmt.Println("Repo:", payload.Repository.FullName, "| Issue #:", payload.Issue.Number)
 
+		if !seenComments.MarkIfNew(payload.Comment.ID) {
+			fmt.Println("Ignored: duplicate comment ID", payload.Comment.ID)
+			fmt.Fprintln(w, "ignored")
+			return
+		}
+
 		if err := ghClient.AddReaction(payload.Repository.FullName, payload.Comment.ID); err != nil {
 			fmt.Println("Add reaction error:", err)
 		}
@@ -87,15 +95,16 @@ func main() {
 		}
 
 		job := &review.Job{
-			GitHub:        ghClient,
-			Clone:         gitrepo.CloneRepo,
-			Reviewer:      reviewer,
-			RepoFullName:  payload.Repository.FullName,
-			IssueNumber:   payload.Issue.Number,
-			PlaceholderID: placeholderID,
-			UserCommand:   cmd,
+			GitHub:            ghClient,
+			Clone:             gitrepo.CloneRepo,
+			Reviewer:          reviewer,
+			RepoFullName:      payload.Repository.FullName,
+			IssueNumber:       payload.Issue.Number,
+			PlaceholderID:     placeholderID,
+			UserCommand:       cmd,
+			BundleBudgetChars: cfg.MaxDiffBundleChars,
 		}
-		go job.Run()
+		dispatcher.Submit(job.Run)
 
 		fmt.Fprintln(w, "processing")
 	})

@@ -262,7 +262,7 @@ Cần `claude` CLI đã authenticate. Đây là công cụ chạy tay, **không*
 - [x] React 👀 lên comment trigger + post comment placeholder "Đang review..."
 - [x] Lấy PR head SHA, `git clone --depth 1` vào tmp dir riêng mỗi request
 - [x] Gọi Claude Code CLI review với `cmd.Dir` trỏ vào repo đã clone (không còn đọc nhầm repo `yuumi_review`)
-- [x] Edit lại đúng comment placeholder với kết quả hoặc lỗi (không để treo), dọn tmp dir sau khi xong
+- [x] Edit lại đúng comment placeholder với kết quả hoặc lỗi ở bước gọi Claude (lỗi ở bước lấy SHA/clone hiện chỉ log, placeholder vẫn treo — xem mục Độ ổn định), dọn tmp dir sau khi xong
 - [x] Chống panic làm sập server (`recover`)
 - [x] Tái cấu trúc theo layout `cmd/` + `internal/`
 - [x] Lấy diff thật của PR qua GitHub API (`application/vnd.github.v3.diff`) và đưa vào prompt, kèm hướng dẫn Claude đọc thêm file/README liên quan để hiểu kiến trúc & convention trước khi review, thay vì chỉ nhìn diff cô lập (`review.BuildReviewPrompt`)

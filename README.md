@@ -58,7 +58,7 @@ evalsuite/                # fixture bug cài sẵn + results.md theo dõi chất
 - Go 1.26+ (xem `go.mod` / `.tool-versions`)
 - [Claude Code CLI](https://docs.claude.com/claude-code) đã cài và authenticate (`claude --version` chạy được)
 - `git` CLI có sẵn trên máy chạy server (dùng để clone PR head vào tmp dir)
-- 1 GitHub Personal Access Token (fine-grained, quyền `Issues: Read and write` + `Pull requests: Read` trên repo mục tiêu)
+- 1 GitHub Personal Access Token (fine-grained, quyền `Issues: Read and write` + `Pull requests: Read and write` trên repo mục tiêu — cần write vì bot post finding inline qua Reviews API)
 - 1 webhook secret tự đặt (dùng để GitHub ký request, verify chống giả mạo)
 
 ## Cấu hình
@@ -234,7 +234,7 @@ curl -i -X POST localhost:8080/webhook \
 4. Tab **Recent Deliveries** của webhook: event `ping` đầu tiên phải có dấu tick xanh. Log server sẽ in `Ignored: unsupported X-GitHub-Event ping` — bình thường, server chỉ xử lý `issue_comment` và `pull_request`.
 5. Comment `@yuumi-bot review` trên 1 **Pull Request thật** bằng tài khoản có trong `ALLOWED_USERS`, hoặc mở PR mới / push thêm commit để thử auto-review (tác giả PR phải nằm trong `ALLOWED_USERS`). Bot sẽ react 👀, hiện "Đang review...", rồi sửa comment đó thành kết quả review.
 
-PAT trong `.env` cần quyền `Issues: Read and write` + `Pull requests: Read` **trên đúng repo đích**, nếu thiếu sẽ gặp 403.
+PAT trong `.env` cần quyền `Issues: Read and write` + `Pull requests: Read and write` **trên đúng repo đích**, nếu thiếu sẽ gặp 403.
 
 ## Unit test và CI
 
@@ -290,7 +290,7 @@ Cần `claude` CLI đã authenticate. Đây là công cụ chạy tay, **không*
    - [x] Lấy diff thật của PR qua GitHub API, đưa vào prompt review (`internal/review/prompt.go`)
 2. [ ] Deploy có URL public thật (thay vì chỉ test local qua curl) — vẫn dùng PAT trước cho chắc chắn hoạt động (issue #46). Đã thử được webhook GitHub thật qua ngrok (xem mục Test thật với GitHub qua ngrok); còn lại là deploy chạy lâu dài trên hạ tầng thật
 3. [ ] Chuyển từ PAT cá nhân sang **GitHub App** (issue #47) — để bot có identity riêng (`yuumi-bot[bot]`), token theo installation thay vì gắn với account cá nhân, scope đúng theo repo cài app. Việc cần làm:
-   - Đăng ký GitHub App trên GitHub (permissions `Issues: RW`, `Pull requests: R`, subscribe event `issue_comment` + `pull_request`)
+   - Đăng ký GitHub App trên GitHub (permissions `Issues: RW`, `Pull requests: RW`, subscribe event `issue_comment` + `pull_request`)
    - Thêm module ký JWT bằng private key của App + đổi lấy installation access token (`POST /app/installations/{id}/access_tokens`), cache tới khi hết hạn
    - Đổi `config.Load()`: bỏ `GITHUB_TOKEN` tĩnh, dùng `GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY`
    - Thêm field `installation.id` vào `webhook/payload.go`

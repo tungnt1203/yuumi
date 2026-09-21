@@ -1,11 +1,11 @@
 # Yuumi Review Bot
 
-Bot review code tự động: nhận mention `@yuumi-bot <lệnh>` trong comment trên GitHub PR/Issue, hoặc tự động chạy khi 1 PR mới mở/có commit mới (xem [Auto review](#auto-review-khi-pr-mới-mở--có-commit-mới)), gọi Claude Code CLI để review, rồi tự động post kết quả lại thành comment trên đúng PR đó.
+Bot review code tự động: nhận mention `@yuumi-review <lệnh>` trong comment trên GitHub PR/Issue, hoặc tự động chạy khi 1 PR mới mở/có commit mới (xem [Auto review](#auto-review-khi-pr-mới-mở--có-commit-mới)), gọi Claude Code CLI để review, rồi tự động post kết quả lại thành comment trên đúng PR đó.
 
 ## Kiến trúc
 
 ```
-GitHub PR comment "@yuumi-bot <lệnh>"        PR mới mở / có commit mới
+GitHub PR comment "@yuumi-review <lệnh>"        PR mới mở / có commit mới
         │  (event issue_comment)                 │  (event pull_request)
         │  (GitHub Webhook - HTTP POST, ký HMAC-SHA256, phân biệt qua header X-GitHub-Event)
         ▼                                         ▼
@@ -110,8 +110,8 @@ Diff của PR được xử lý trước khi gửi cho Claude (`internal/review/
 
 - **Retry**: `claude` CLI lỗi khi chạy lệnh (timeout 5 phút, lỗi mạng...) được thử lại tối đa 3 lần (gồm lần đầu) với backoff. Lỗi Claude tự báo (`is_error`) hoặc output không parse được **không** retry vì thử lại với cùng input không đổi được kết quả.
 - **Giới hạn đồng thời**: `Dispatcher` chạy mỗi job trong 1 goroutine riêng nhưng chỉ cho tối đa `MAX_CONCURRENT_REVIEWS` job chạy cùng lúc (mỗi job spawn `git` + `claude` thật). HTTP handler luôn trả lời webhook ngay, không bị chặn bởi hàng đợi.
-- **Chống xử lý trùng**: comment ID đã xử lý được nhớ trong memory (`webhook.SeenComments`), nên GitHub redeliver webhook hoặc mention trùng không tạo 2 job cùng edit 1 comment. Đây là lưu trong RAM, restart server thì mất và không có TTL — chấp nhận được với 1 instance nội bộ, cần lưu ngoài (Redis/DB) nếu chạy nhiều instance. **Lưu ý:** ID được đánh dấu "đã thấy" ngay khi nhận webhook, *trước* khi post comment placeholder ở `cmd/server/main.go`. Nếu bước post placeholder lỗi (token thiếu quyền, rate limit...) thì không có review nào chạy, và Redeliver đúng comment đó trên GitHub cũng bị bỏ qua vì trùng ID — cần comment mới (`@yuumi-bot review`) để thử lại.
-- **Xử lý lỗi**: lỗi ở bước gọi Claude CLI (hết số lần retry, Claude báo `is_error`, output sai định dạng) được ghi vào comment placeholder dưới dạng `❌ Review thất bại: ...`. **Giới hạn đã biết:** lỗi ở các bước đầu của `Job.Run()` (lấy head SHA, clone repo) và panic (được `recover` để không làm sập server) chỉ được in ra log server, **không** sửa lại placeholder — comment `Đang review...` sẽ treo, khi đó xem log server để biết nguyên nhân rồi comment lại `@yuumi-bot review`.
+- **Chống xử lý trùng**: comment ID đã xử lý được nhớ trong memory (`webhook.SeenComments`), nên GitHub redeliver webhook hoặc mention trùng không tạo 2 job cùng edit 1 comment. Đây là lưu trong RAM, restart server thì mất và không có TTL — chấp nhận được với 1 instance nội bộ, cần lưu ngoài (Redis/DB) nếu chạy nhiều instance. **Lưu ý:** ID được đánh dấu "đã thấy" ngay khi nhận webhook, *trước* khi post comment placeholder ở `cmd/server/main.go`. Nếu bước post placeholder lỗi (token thiếu quyền, rate limit...) thì không có review nào chạy, và Redeliver đúng comment đó trên GitHub cũng bị bỏ qua vì trùng ID — cần comment mới (`@yuumi-review review`) để thử lại.
+- **Xử lý lỗi**: lỗi ở bước gọi Claude CLI (hết số lần retry, Claude báo `is_error`, output sai định dạng) được ghi vào comment placeholder dưới dạng `❌ Review thất bại: ...`. **Giới hạn đã biết:** lỗi ở các bước đầu của `Job.Run()` (lấy head SHA, clone repo) và panic (được `recover` để không làm sập server) chỉ được in ra log server, **không** sửa lại placeholder — comment `Đang review...` sẽ treo, khi đó xem log server để biết nguyên nhân rồi comment lại `@yuumi-review review`.
 
 ## Check tĩnh trước khi review (repo Go)
 
@@ -155,7 +155,7 @@ Chỉ hỗ trợ các case phổ biến nhất, không phải toàn bộ spec `.
 
 ## Review lần 2 trở đi chỉ xem phần thay đổi mới
 
-Mỗi lần review xong, bot ghi lại SHA vừa review cho đúng PR đó (`internal/reviewstate`, mặc định `logs/review-state.json`, override qua `REVIEW_STATE_FILE`). Lần review kế tiếp trên **cùng PR** (vd tác giả push thêm commit rồi mention lại `@yuumi-bot review`) sẽ tự lấy diff qua GitHub compare API (`GET /compare/{sha_cũ}...{sha_mới}`) — chỉ chứa phần thay đổi MỚI — thay vì gửi lại toàn bộ diff so với base như trước, giúp tiết kiệm token/thời gian gọi Claude CLI đáng kể trên PR có nhiều vòng review.
+Mỗi lần review xong, bot ghi lại SHA vừa review cho đúng PR đó (`internal/reviewstate`, mặc định `logs/review-state.json`, override qua `REVIEW_STATE_FILE`). Lần review kế tiếp trên **cùng PR** (vd tác giả push thêm commit rồi mention lại `@yuumi-review review`) sẽ tự lấy diff qua GitHub compare API (`GET /compare/{sha_cũ}...{sha_mới}`) — chỉ chứa phần thay đổi MỚI — thay vì gửi lại toàn bộ diff so với base như trước, giúp tiết kiệm token/thời gian gọi Claude CLI đáng kể trên PR có nhiều vòng review.
 
 - Lần đầu review 1 PR (chưa có state) vẫn hoạt động như cũ: lấy full diff so với base.
 - Lấy state hoặc gọi compare API lỗi đều fallback về full diff, không chặn review.
@@ -173,11 +173,11 @@ Claude được yêu cầu trả kết quả dưới dạng JSON array các "fin
 
 ## Auto review khi PR mới mở / có commit mới
 
-Ngoài mention thủ công, bot còn tự chạy review khi nhận webhook event `pull_request` với action `opened` (PR mới tạo) hoặc `synchronize` (có commit mới push lên PR) — không cần ai gõ `@yuumi-bot review`.
+Ngoài mention thủ công, bot còn tự chạy review khi nhận webhook event `pull_request` với action `opened` (PR mới tạo) hoặc `synchronize` (có commit mới push lên PR) — không cần ai gõ `@yuumi-review review`.
 
 - **Setup webhook trên GitHub**: ngoài event `Issue comments` đã cấu hình cho luồng mention, cần bật thêm event **`Pull requests`** (Settings → Webhooks → chọn repo → "Let me select individual events"). Server phân biệt 2 loại event qua header `X-GitHub-Event` (không dựa vào field `action` trong body, vì cả 2 event đều có field này nhưng ý nghĩa khác nhau).
 - **Allowlist**: `ALLOWED_USERS` (biến môi trường vốn dùng để chặn ai được phép mention bot) được **tái dùng** cho auto-review — chỉ tự động review PR do chính tác giả (`pull_request.user.login`) nằm trong danh sách này tạo ra, để không tự ý review "miễn phí" mọi PR của bất kỳ ai gửi vào repo đã cài webhook.
-- **Dùng chung logic review** với luồng mention: cả 2 luồng cùng dựng `review.Job` như nhau (chỉ khác cách lấy `RepoFullName`/`IssueNumber`/comment đầu vào), và cùng dùng cơ chế tra cứu "SHA đã review lần trước" (`review.AlreadyReviewedSHA`, xem mục review lần 2 trở đi ở trên) để tránh review trùng: PR đã được auto-review lúc mở, sau đó có người mention `@yuumi-bot review` lại đúng SHA đó (hoặc GitHub redeliver webhook trùng) sẽ bị bỏ qua thay vì tốn thêm 1 lần gọi Claude CLI cho việc không có gì mới.
+- **Dùng chung logic review** với luồng mention: cả 2 luồng cùng dựng `review.Job` như nhau (chỉ khác cách lấy `RepoFullName`/`IssueNumber`/comment đầu vào), và cùng dùng cơ chế tra cứu "SHA đã review lần trước" (`review.AlreadyReviewedSHA`, xem mục review lần 2 trở đi ở trên) để tránh review trùng: PR đã được auto-review lúc mở, sau đó có người mention `@yuumi-review review` lại đúng SHA đó (hoặc GitHub redeliver webhook trùng) sẽ bị bỏ qua thay vì tốn thêm 1 lần gọi Claude CLI cho việc không có gì mới.
 - Action khác `opened`/`synchronize` của event `pull_request` (`closed`, `reopened`, `edited`, `labeled`...) không kích hoạt gì cả.
 
 ## Chạy local
@@ -197,7 +197,7 @@ Server lắng nghe cổng `:8080`, có 2 route:
 ## Test thủ công (giả lập webhook GitHub)
 
 ```bash
-BODY='{"action":"created","comment":{"id":1,"body":"@yuumi-bot review","user":{"login":"<username>"}},"repository":{"full_name":"<owner>/<repo>"},"issue":{"number":<số PR>}}'
+BODY='{"action":"created","comment":{"id":1,"body":"@yuumi-review review","user":{"login":"<username>"}},"repository":{"full_name":"<owner>/<repo>"},"issue":{"number":<số PR>}}'
 SIG=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "$GITHUB_WEBHOOK_SECRET" | sed 's/^.* //')
 curl -i -X POST localhost:8080/webhook \
   -H "Content-Type: application/json" \
@@ -232,7 +232,7 @@ curl -i -X POST localhost:8080/webhook \
    - **Secret**: đúng giá trị `GITHUB_WEBHOOK_SECRET` trong `.env` (sai secret server trả `401`).
    - **Events**: chọn "Let me select individual events" → **Issue comments** + **Pull requests**.
 4. Tab **Recent Deliveries** của webhook: event `ping` đầu tiên phải có dấu tick xanh. Log server sẽ in `Ignored: unsupported X-GitHub-Event ping` — bình thường, server chỉ xử lý `issue_comment` và `pull_request`.
-5. Comment `@yuumi-bot review` trên 1 **Pull Request thật** bằng tài khoản có trong `ALLOWED_USERS`, hoặc mở PR mới / push thêm commit để thử auto-review (tác giả PR phải nằm trong `ALLOWED_USERS`). Bot sẽ react 👀, hiện "Đang review...", rồi sửa comment đó thành kết quả review.
+5. Comment `@yuumi-review review` trên 1 **Pull Request thật** bằng tài khoản có trong `ALLOWED_USERS`, hoặc mở PR mới / push thêm commit để thử auto-review (tác giả PR phải nằm trong `ALLOWED_USERS`). Bot sẽ react 👀, hiện "Đang review...", rồi sửa comment đó thành kết quả review.
 
 PAT trong `.env` cần quyền `Issues: Read and write` + `Pull requests: Read and write` **trên đúng repo đích**, nếu thiếu sẽ gặp 403.
 
@@ -289,7 +289,7 @@ Cần `claude` CLI đã authenticate. Đây là công cụ chạy tay, **không*
 1. [x] Unit test (`go test`) cho phần logic thuần (`review`, `webhook`)
    - [x] Lấy diff thật của PR qua GitHub API, đưa vào prompt review (`internal/review/prompt.go`)
 2. [ ] Deploy có URL public thật (thay vì chỉ test local qua curl) — vẫn dùng PAT trước cho chắc chắn hoạt động (issue #46). Đã thử được webhook GitHub thật qua ngrok (xem mục Test thật với GitHub qua ngrok); còn lại là deploy chạy lâu dài trên hạ tầng thật
-3. [ ] Chuyển từ PAT cá nhân sang **GitHub App** (issue #47) — để bot có identity riêng (`yuumi-bot[bot]`), token theo installation thay vì gắn với account cá nhân, scope đúng theo repo cài app. Việc cần làm:
+3. [ ] Chuyển từ PAT cá nhân sang **GitHub App** (issue #47) — để bot có identity riêng (`yuumi-review[bot]`), token theo installation thay vì gắn với account cá nhân, scope đúng theo repo cài app. Việc cần làm:
    - Đăng ký GitHub App trên GitHub (permissions `Issues: RW`, `Pull requests: RW`, subscribe event `issue_comment` + `pull_request`)
    - Thêm module ký JWT bằng private key của App + đổi lấy installation access token (`POST /app/installations/{id}/access_tokens`), cache tới khi hết hạn
    - Đổi `config.Load()`: bỏ `GITHUB_TOKEN` tĩnh, dùng `GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY`

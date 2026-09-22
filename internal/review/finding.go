@@ -26,6 +26,13 @@ type Finding struct {
 	Severity   string `json:"severity"`
 	Message    string `json:"message"`
 	Suggestion string `json:"suggestion,omitempty"`
+	// EndLine là dòng CUỐI (file mới) của đoạn suggestion thay thế, chỉ khi
+	// suggestion thay nhiều dòng liên tiếp và end_line > line. 0 nghĩa là
+	// suggestion chỉ thay đúng Finding.Line (kể cả khi nội dung suggestion
+	// dài nhiều dòng — GitHub thay 1 dòng đó bằng cả khối). Dùng để gắn
+	// review comment multi-line (start_line/line) cho khối ```suggestion,
+	// xem splitFindingsForPosting.
+	EndLine int `json:"end_line,omitempty"`
 }
 
 // severityRank xếp hạng độ ưu tiên hiển thị dùng cho renderFindings —
@@ -234,10 +241,24 @@ func renderReviewHeader(findings []Finding, partial bool) string {
 	return b.String()
 }
 
-// renderFinding render 1 finding thành 1 đoạn markdown: icon severity +
-// label severity + category (nếu có) + message, kèm khối code gợi ý sửa
-// nếu Claude có cung cấp.
+// renderFinding render 1 finding thành 1 đoạn markdown cho comment tổng hợp
+// (không gắn đúng 1 dòng diff): icon severity + label + category (nếu có)
+// + message, kèm khối code thường nếu có suggestion. Khối ```suggestion
+// của GitHub chỉ hợp lệ trong review comment gắn dòng — dùng
+// renderInlineFinding cho đường đó.
 func renderFinding(f Finding) string {
+	return renderFindingText(f, false)
+}
+
+// renderInlineFinding giống renderFinding nhưng suggestion không rỗng được
+// bọc bằng cú pháp GitHub suggested change (```suggestion) thay vì code
+// block thường — GitHub hiện nút "Commit suggestion" trên đúng comment
+// inline này (issue #58).
+func renderInlineFinding(f Finding) string {
+	return renderFindingText(f, true)
+}
+
+func renderFindingText(f Finding, suggestedChange bool) string {
 	var b strings.Builder
 
 	icon, ok := severityIcon[strings.ToLower(f.Severity)]
@@ -254,13 +275,87 @@ func renderFinding(f Finding) string {
 	b.WriteString(": ")
 	b.WriteString(f.Message)
 
-	if strings.TrimSpace(f.Suggestion) != "" {
-		b.WriteString("\n\n**Gợi ý sửa:**\n```\n")
-		b.WriteString(f.Suggestion)
-		b.WriteString("\n```")
+	if strings.TrimSpace(f.Suggestion) == "" {
+		return b.String()
 	}
 
+	b.WriteString("\n\n")
+	if suggestedChange {
+		if block, ok := formatSuggestion(f.Suggestion); ok {
+			b.WriteString(block)
+			return b.String()
+		}
+	}
+	b.WriteString("**Gợi ý sửa:**\n")
+	b.WriteString(plainSuggestionBlock(f.Suggestion))
+
 	return b.String()
+}
+
+// plainSuggestionBlock bọc suggestion bằng code fence thường. Số backtick
+// của fence ngoài dài hơn mọi dòng chỉ toàn backtick trong nội dung, để
+// một dòng ``` bên trong không đóng khối sớm (CommonMark: fence đóng phải
+// dài ít nhất bằng fence mở).
+func plainSuggestionBlock(content string) string {
+	fence := strings.Repeat("`", plainFenceLen(content))
+	return fence + "\n" + content + "\n" + fence
+}
+
+func plainFenceLen(content string) int {
+	n := 3
+	for _, line := range strings.Split(content, "\n") {
+		if ticks, ok := backtickRun(line); ok && ticks >= n {
+			n = ticks + 1
+		}
+	}
+	return n
+}
+
+// formatSuggestion bọc nội dung thay thế bằng fence ```suggestion mà GitHub
+// nhận ra trong review comment gắn dòng. ok=false khi suggestion rỗng, chỉ
+// toàn khoảng trắng, hoặc có dòng fence đóng (chỉ toàn backtick) — dòng đó
+// đóng khối suggestion sớm và GitHub không hiện "Commit suggestion". Dòng
+// kiểu ```python không đóng fence (còn info string), vẫn dùng được.
+// Caller khi ok=false giữ code block thường. Nội dung giữ nguyên (kể cả
+// thụt đầu dòng); chỉ bỏ newline thừa ở cuối để fence đóng không tạo thêm
+// 1 dòng trống.
+func formatSuggestion(suggestion string) (block string, ok bool) {
+	if strings.TrimSpace(suggestion) == "" {
+		return "", false
+	}
+	body := strings.ReplaceAll(suggestion, "\r\n", "\n")
+	body = strings.TrimRight(body, "\n")
+	if suggestionContainsFence(body) {
+		return "", false
+	}
+	return "```suggestion\n" + body + "\n```", true
+}
+
+// suggestionContainsFence báo body có dòng đóng được fence ```suggestion.
+// CommonMark: fence đóng chỉ được có backtick rồi khoảng trắng, không có
+// info string — ```go không đóng fence đang mở.
+func suggestionContainsFence(body string) bool {
+	for _, line := range strings.Split(body, "\n") {
+		if ticks, ok := backtickRun(line); ok && ticks >= 3 {
+			return true
+		}
+	}
+	return false
+}
+
+// backtickRun nhận dòng chỉ gồm backtick (thụt tối đa 3 space, phần sau
+// backtick chỉ là khoảng trắng). ok=false nếu dòng không phải fence đóng.
+func backtickRun(line string) (ticks int, ok bool) {
+	trimmed := strings.TrimLeft(line, " ")
+	if len(line)-len(trimmed) > 3 {
+		return 0, false
+	}
+	rest := strings.TrimLeft(trimmed, "`")
+	ticks = len(trimmed) - len(rest)
+	if ticks == 0 || strings.TrimSpace(rest) != "" {
+		return 0, false
+	}
+	return ticks, true
 }
 
 func severityRankOf(severity string) int {

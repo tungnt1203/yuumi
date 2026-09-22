@@ -176,6 +176,7 @@ func TestBuildReviewPrompt_IncludesResultFormatInstructions(t *testing.T) {
 		`"severity"`,
 		`"message"`,
 		`"suggestion"`,
+		`"end_line"`,
 		"critical|high|medium|low",
 	} {
 		if !strings.Contains(got, want) {

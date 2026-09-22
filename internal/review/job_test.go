@@ -958,11 +958,47 @@ func TestJobRun_InlineFinding_PostedViaCreateReview_NotDuplicatedInComment(t *te
 	if !gh.editCalled {
 		t.Fatal("expected EditComment to be called")
 	}
+	if strings.Contains(call.commentsJSON, "start_line") || strings.Contains(call.commentsJSON, "start_side") {
+		t.Errorf("CreateReview commentsJSON = %q, want no start_line for a single-line comment", call.commentsJSON)
+	}
+
 	if strings.Contains(gh.editedBody, "unused import fmt") {
 		t.Errorf("expected the inline finding NOT to be duplicated in the summary comment, got: %s", gh.editedBody)
 	}
 	if !strings.Contains(gh.editedBody, "gắn trực tiếp") {
 		t.Errorf("expected the summary comment to note the finding went inline, got: %s", gh.editedBody)
+	}
+}
+
+// TestJobRun_MultiLineSuggestion_SendsStartLineAndSuggestionFence đảm bảo
+// finding có end_line hợp lệ được gửi thành review comment phủ khoảng dòng
+// (start_line/start_side) và body dùng fence ```suggestion (issue #58).
+func TestJobRun_MultiLineSuggestion_SendsStartLineAndSuggestionFence(t *testing.T) {
+	rawJSON := `[{"file":"main.go","line":2,"end_line":3,"category":"style","severity":"low","message":"gộp import","suggestion":"import (\n\t\"fmt\"\n)"}]`
+
+	gh := &fakeGitHubClient{headSHA: "sha-abc", diff: wellFormedDiff}
+	reviewer := &fakeReviewer{result: rawJSON}
+
+	job := &Job{
+		GitHub:       gh,
+		Clone:        fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer:     reviewer,
+		RepoFullName: "owner/repo",
+		IssueNumber:  7,
+	}
+	job.Run()
+
+	if len(gh.createReviewCalls) != 1 {
+		t.Fatalf("expected CreateReview to be called once, got %d", len(gh.createReviewCalls))
+	}
+	comments := gh.createReviewCalls[0].commentsJSON
+	for _, want := range []string{`"start_line":2`, `"line":3`, `"start_side":"RIGHT"`, "```suggestion", "import ("} {
+		if !strings.Contains(comments, want) {
+			t.Errorf("CreateReview commentsJSON = %q, missing %q", comments, want)
+		}
+	}
+	if strings.Contains(gh.editedBody, "gộp import") {
+		t.Errorf("expected the inline finding NOT to be duplicated in the summary comment, got: %s", gh.editedBody)
 	}
 }
 

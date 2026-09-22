@@ -20,7 +20,8 @@ const defaultBundleBudgetChars = 12_000
 // để test Job.Run bằng fake, không phải gọi API GitHub thật.
 //
 // CreateReview nhận comments đã marshal sẵn thành JSON ([]byte, dạng mảng
-// object {"path","line","side","body"}) thay vì 1 struct type riêng — để
+// object {"path","line","side","body"}, thêm "start_line"/"start_side" khi
+// suggestion thay một khoảng dòng) thay vì 1 struct type riêng — để
 // GitHubClient tiếp tục chỉ dùng tham số cơ bản (string/int/[]byte) như mọi
 // method khác ở đây, GitHubClient (và implementation githubapi.Client)
 // không cần biết/import bất cứ gì về Finding hay pendingComment (xem
@@ -333,11 +334,17 @@ const inlineReviewBody = "Góp ý chi tiết theo từng dòng — xem tổng h�
 // splitFindingsForPosting/FileDiff.LineAtNew) — finding gắn vào dòng bị xoá
 // (chỉ tồn tại ở file cũ) không bao giờ tới được đây vì LineAtNew không
 // khớp dòng removed.
+//
+// StartLine/StartSide chỉ gửi khi suggestion thay một khoảng nhiều dòng
+// (pendingComment.StartLine > 0). GitHub bắt buộc start_side đi kèm
+// start_line; bỏ trống với comment 1 dòng để omitempty không gửi 0.
 type reviewCommentPayload struct {
-	Path string `json:"path"`
-	Line int    `json:"line"`
-	Side string `json:"side"`
-	Body string `json:"body"`
+	Path      string `json:"path"`
+	StartLine int    `json:"start_line,omitempty"`
+	Line      int    `json:"line"`
+	Side      string `json:"side"`
+	StartSide string `json:"start_side,omitempty"`
+	Body      string `json:"body"`
 }
 
 // postInlineComments gộp mọi pendingComment (từ mọi bundle, xem
@@ -346,7 +353,12 @@ type reviewCommentPayload struct {
 func (j *Job) postInlineComments(commitSHA string, inline []pendingComment) error {
 	payload := make([]reviewCommentPayload, len(inline))
 	for i, c := range inline {
-		payload[i] = reviewCommentPayload{Path: c.Path, Line: c.Line, Side: "RIGHT", Body: c.Body}
+		item := reviewCommentPayload{Path: c.Path, Line: c.Line, Side: "RIGHT", Body: c.Body}
+		if c.StartLine > 0 && c.StartLine < c.Line {
+			item.StartLine = c.StartLine
+			item.StartSide = "RIGHT"
+		}
+		payload[i] = item
 	}
 
 	commentsJSON, err := json.Marshal(payload)

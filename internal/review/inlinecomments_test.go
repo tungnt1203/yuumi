@@ -155,6 +155,104 @@ func TestSplitFindingsForPosting_EmptyDiff_EverythingGeneral(t *testing.T) {
 	}
 }
 
+func TestSplitFindingsForPosting_Suggestion_UsesSuggestionFence(t *testing.T) {
+	findings := []Finding{
+		{File: "main.go", Line: 2, Severity: "high", Message: "unused import", Suggestion: `import "fmt"`},
+	}
+
+	inline, general := splitFindingsForPosting(sampleDiff, findings)
+
+	if len(inline) != 1 || len(general) != 0 {
+		t.Fatalf("got %d inline %d general, want 1 and 0", len(inline), len(general))
+	}
+	if inline[0].StartLine != 0 || inline[0].Line != 2 {
+		t.Errorf("inline range = %d..%d, want single line 2", inline[0].StartLine, inline[0].Line)
+	}
+	if !strings.Contains(inline[0].Body, "```suggestion\nimport \"fmt\"\n```") {
+		t.Errorf("inline body = %q, want a suggestion fence", inline[0].Body)
+	}
+}
+
+func TestSplitFindingsForPosting_MultiLineSuggestionWithoutEndLine_StaysSingleLine(t *testing.T) {
+	findings := []Finding{
+		{File: "main.go", Line: 2, Severity: "high", Message: "m", Suggestion: "a\nb"},
+	}
+
+	inline, _ := splitFindingsForPosting(sampleDiff, findings)
+
+	if len(inline) != 1 {
+		t.Fatalf("got %d inline, want 1", len(inline))
+	}
+	if inline[0].StartLine != 0 || inline[0].Line != 2 {
+		t.Errorf("inline range = %d..%d, want single line 2 (no end_line)", inline[0].StartLine, inline[0].Line)
+	}
+	if !strings.Contains(inline[0].Body, "```suggestion\na\nb\n```") {
+		t.Errorf("inline body = %q, want multi-line suggestion fence", inline[0].Body)
+	}
+}
+
+func TestSplitFindingsForPosting_EndLineInSameHunk_SetsRange(t *testing.T) {
+	diff := "diff --git a/main.go b/main.go\n" +
+		"--- a/main.go\n" +
+		"+++ b/main.go\n" +
+		"@@ -1,2 +1,4 @@\n" +
+		" package main\n" +
+		"+import \"fmt\"\n" +
+		"+import \"os\"\n" +
+		" var x = 1"
+	findings := []Finding{
+		{File: "main.go", Line: 2, EndLine: 3, Severity: "high", Message: "m", Suggestion: "import (\n\t\"fmt\"\n\t\"os\"\n)"},
+	}
+
+	inline, general := splitFindingsForPosting(diff, findings)
+
+	if len(general) != 0 || len(inline) != 1 {
+		t.Fatalf("got %d inline %d general, want 1 and 0", len(inline), len(general))
+	}
+	if inline[0].StartLine != 2 || inline[0].Line != 3 {
+		t.Errorf("inline range = %d..%d, want 2..3", inline[0].StartLine, inline[0].Line)
+	}
+}
+
+func TestSplitFindingsForPosting_EndLineOutsideHunk_FallsBackToSingleLine(t *testing.T) {
+	findings := []Finding{
+		{File: "main.go", Line: 2, EndLine: 99, Severity: "high", Message: "m", Suggestion: "a\nb"},
+	}
+
+	inline, general := splitFindingsForPosting(sampleDiff, findings)
+
+	if len(general) != 0 || len(inline) != 1 {
+		t.Fatalf("got %d inline %d general, want 1 and 0", len(inline), len(general))
+	}
+	if inline[0].StartLine != 0 || inline[0].Line != 2 {
+		t.Errorf("inline range = %d..%d, want single line 2 when end_line is not in the diff", inline[0].StartLine, inline[0].Line)
+	}
+}
+
+func TestSplitFindingsForPosting_EndLineAcrossHunks_FallsBackToSingleLine(t *testing.T) {
+	diff := "diff --git a/main.go b/main.go\n" +
+		"--- a/main.go\n" +
+		"+++ b/main.go\n" +
+		"@@ -1,1 +1,1 @@\n" +
+		"-old\n" +
+		"+new1\n" +
+		"@@ -10,1 +10,1 @@\n" +
+		"-old2\n" +
+		"+new2"
+	findings := []Finding{
+		{File: "main.go", Line: 1, EndLine: 10, Severity: "high", Message: "m", Suggestion: "x\ny"},
+	}
+
+	inline, _ := splitFindingsForPosting(diff, findings)
+
+	if len(inline) != 1 {
+		t.Fatalf("got %d inline, want 1", len(inline))
+	}
+	if inline[0].StartLine != 0 || inline[0].Line != 1 {
+		t.Errorf("inline range = %d..%d, want single line 1 when end_line crosses hunks", inline[0].StartLine, inline[0].Line)
+	}
+}
+
 func TestBuildFileDiffIndex_IndexesByNewPath(t *testing.T) {
 	diff := sampleDiff + "\n" +
 		"diff --git a/other.go b/other.go\n" +

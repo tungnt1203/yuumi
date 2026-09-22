@@ -53,6 +53,30 @@ type FileDiff struct {
 	Hunks   []Hunk
 }
 
+// coversNewLineRange báo mọi dòng file mới từ start đến end (kể cả hai đầu)
+// đều là dòng comment được (context hoặc added) và nằm trong CÙNG một hunk.
+// GitHub từ chối cả review — request atomic, sai một comment mất hết — nếu
+// multi-line comment vượt hunk hoặc trỏ dòng không có trong diff.
+func (fd FileDiff) coversNewLineRange(start, end int) bool {
+	if start <= 0 || end < start {
+		return false
+	}
+	want := end - start + 1
+	for _, h := range fd.Hunks {
+		count := 0
+		for _, l := range h.Lines {
+			if l.Kind == LineRemoved || l.NewLine < start || l.NewLine > end {
+				continue
+			}
+			count++
+		}
+		if count == want {
+			return true
+		}
+	}
+	return false
+}
+
 // LineAtNew tìm dòng tương ứng với số dòng n trong file MỚI (chỉ context
 // hoặc added — dòng removed không tồn tại ở file mới nên không bao giờ
 // khớp). ok=false nếu n không nằm trong hunk nào đã parse được (context xa

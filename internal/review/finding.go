@@ -286,19 +286,39 @@ func renderFindingText(f Finding, suggestedChange bool) string {
 			return b.String()
 		}
 	}
-	b.WriteString("**Gợi ý sửa:**\n```\n")
-	b.WriteString(f.Suggestion)
-	b.WriteString("\n```")
+	b.WriteString("**Gợi ý sửa:**\n")
+	b.WriteString(plainSuggestionBlock(f.Suggestion))
 
 	return b.String()
 }
 
+// plainSuggestionBlock bọc suggestion bằng code fence thường. Số backtick
+// của fence ngoài dài hơn mọi dòng chỉ toàn backtick trong nội dung, để
+// một dòng ``` bên trong không đóng khối sớm (CommonMark: fence đóng phải
+// dài ít nhất bằng fence mở).
+func plainSuggestionBlock(content string) string {
+	fence := strings.Repeat("`", plainFenceLen(content))
+	return fence + "\n" + content + "\n" + fence
+}
+
+func plainFenceLen(content string) int {
+	n := 3
+	for _, line := range strings.Split(content, "\n") {
+		if ticks, ok := backtickRun(line); ok && ticks >= n {
+			n = ticks + 1
+		}
+	}
+	return n
+}
+
 // formatSuggestion bọc nội dung thay thế bằng fence ```suggestion mà GitHub
 // nhận ra trong review comment gắn dòng. ok=false khi suggestion rỗng, chỉ
-// toàn khoảng trắng, hoặc có một dòng mở bằng ``` — fence đó sẽ đóng khối
-// suggestion sớm và GitHub không hiện "Commit suggestion". Caller khi đó
-// giữ code block thường. Nội dung giữ nguyên (kể cả thụt đầu dòng); chỉ bỏ
-// newline thừa ở cuối để fence đóng không tạo thêm 1 dòng trống.
+// toàn khoảng trắng, hoặc có dòng fence đóng (chỉ toàn backtick) — dòng đó
+// đóng khối suggestion sớm và GitHub không hiện "Commit suggestion". Dòng
+// kiểu ```python không đóng fence (còn info string), vẫn dùng được.
+// Caller khi ok=false giữ code block thường. Nội dung giữ nguyên (kể cả
+// thụt đầu dòng); chỉ bỏ newline thừa ở cuối để fence đóng không tạo thêm
+// 1 dòng trống.
 func formatSuggestion(suggestion string) (block string, ok bool) {
 	if strings.TrimSpace(suggestion) == "" {
 		return "", false
@@ -311,19 +331,31 @@ func formatSuggestion(suggestion string) (block string, ok bool) {
 	return "```suggestion\n" + body + "\n```", true
 }
 
-// suggestionContainsFence báo body có dòng mà markdown coi là fence đóng
-// (dòng bắt đầu bằng ```, cho phép tối đa 3 space thụt vào theo CommonMark).
+// suggestionContainsFence báo body có dòng đóng được fence ```suggestion.
+// CommonMark: fence đóng chỉ được có backtick rồi khoảng trắng, không có
+// info string — ```go không đóng fence đang mở.
 func suggestionContainsFence(body string) bool {
 	for _, line := range strings.Split(body, "\n") {
-		trimmed := strings.TrimLeft(line, " ")
-		if len(line)-len(trimmed) > 3 {
-			continue
-		}
-		if strings.HasPrefix(trimmed, "```") {
+		if ticks, ok := backtickRun(line); ok && ticks >= 3 {
 			return true
 		}
 	}
 	return false
+}
+
+// backtickRun nhận dòng chỉ gồm backtick (thụt tối đa 3 space, phần sau
+// backtick chỉ là khoảng trắng). ok=false nếu dòng không phải fence đóng.
+func backtickRun(line string) (ticks int, ok bool) {
+	trimmed := strings.TrimLeft(line, " ")
+	if len(line)-len(trimmed) > 3 {
+		return 0, false
+	}
+	rest := strings.TrimLeft(trimmed, "`")
+	ticks = len(trimmed) - len(rest)
+	if ticks == 0 || strings.TrimSpace(rest) != "" {
+		return 0, false
+	}
+	return ticks, true
 }
 
 func severityRankOf(severity string) int {

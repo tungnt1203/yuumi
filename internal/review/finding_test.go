@@ -210,16 +210,25 @@ func TestFormatSuggestion_BodyContainsFence_RefusesSuggestionBlock(t *testing.T)
 	}
 }
 
+func TestFormatSuggestion_InfoStringDoesNotCloseFence(t *testing.T) {
+	got, ok := formatSuggestion("ví dụ\n```python\nprint(1)")
+	want := "```suggestion\nví dụ\n```python\nprint(1)\n```"
+	if !ok || got != want {
+		t.Errorf("formatSuggestion() = %q, %v, want %q, true", got, ok, want)
+	}
+}
+
 func TestRenderInlineFinding_FenceInSuggestion_FallsBackToPlainBlock(t *testing.T) {
 	f := Finding{Severity: "low", Message: "m", Suggestion: "giữ\n```\nkhối\n```"}
 
 	got := renderInlineFinding(f)
 
-	if strings.Contains(got, "```suggestion") {
-		t.Errorf("renderInlineFinding() = %q, want a plain code block when suggestion contains a fence", got)
+	want := "**Gợi ý sửa:**\n````\ngiữ\n```\nkhối\n```\n````"
+	if !strings.Contains(got, want) {
+		t.Errorf("renderInlineFinding() = %q, want outer fence longer than the inner ``` so the block stays intact", got)
 	}
-	if !strings.Contains(got, "Gợi ý sửa") || !strings.Contains(got, "```\nkhối\n```") {
-		t.Errorf("renderInlineFinding() = %q, want the plain suggestion block", got)
+	if strings.Contains(got, "```suggestion") {
+		t.Errorf("renderInlineFinding() = %q, want a plain code block when suggestion contains a closing fence", got)
 	}
 }
 

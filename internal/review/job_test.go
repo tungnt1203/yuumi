@@ -766,6 +766,32 @@ func TestJobRun_StructuredFindings_RenderedInComment_RawJSONLogged(t *testing.T)
 	}
 }
 
+// TestJobRun_StructuredFindings_IncludesReviewHeader đảm bảo comment tổng
+// hợp có banner tổng quan (renderReviewHeader) ngay khi có ít nhất 1 bundle
+// parse được JSON — khác TestJobRun_UnparsableResult_FallsBackToRawText bên
+// dưới, nơi Claude trả văn xuôi tự do và KHÔNG có banner này (xem cờ
+// anyParsed, Job.reviewBundles).
+func TestJobRun_StructuredFindings_IncludesReviewHeader(t *testing.T) {
+	rawJSON := `[{"category":"bug","severity":"critical","message":"nil pointer dereference"}]`
+
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: "diff --git a/main.go b/main.go\n+fmt.Println(1)"}
+	reviewer := &fakeReviewer{result: rawJSON}
+
+	job := &Job{
+		GitHub:   gh,
+		Clone:    fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer: reviewer,
+	}
+	job.Run()
+
+	if !strings.Contains(gh.editedBody, "## 🟣 Yuumi Review") {
+		t.Errorf("expected comment to include the review header, got: %s", gh.editedBody)
+	}
+	if !strings.Contains(gh.editedBody, "Tổng: 1 góp ý") {
+		t.Errorf("expected review header to count the 1 parsed finding, got: %s", gh.editedBody)
+	}
+}
+
 // TestJobRun_UnparsableResult_FallsBackToRawText đảm bảo Job không phá vỡ
 // hành vi hiện có khi Claude không tuân theo format JSON (bất chấp hướng
 // dẫn trong prompt) — comment vẫn hiển thị nguyên văn text như trước khi có
@@ -785,6 +811,9 @@ func TestJobRun_UnparsableResult_FallsBackToRawText(t *testing.T) {
 
 	if !strings.Contains(gh.editedBody, "Code trông ổn, không có vấn đề gì đáng chú ý.") {
 		t.Errorf("expected raw text fallback in comment, got: %s", gh.editedBody)
+	}
+	if strings.Contains(gh.editedBody, "## 🟣 Yuumi Review") {
+		t.Errorf("expected no review header when Claude falls back to freeform text (no structured data to summarize), got: %s", gh.editedBody)
 	}
 }
 

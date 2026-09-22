@@ -218,24 +218,46 @@ func (j *Job) Run() {
 	var merged string
 	var hadError bool
 	var inline []pendingComment
+	var header string
 	switch {
 	case len(bundles) == 0 && len(skipped) > 0:
 		// Diff CÓ nội dung nhưng toàn bộ file đều bị lọc (vd PR chỉ sửa
 		// go.sum) — không có gì đáng review, không tốn 1 lần gọi Claude CLI
-		// chỉ để nó nói "không có gì để xem".
+		// chỉ để nó nói "không có gì để xem". Không có finding nào để tổng
+		// hợp nên bỏ qua header luôn, tránh 1 banner "0 góp ý" thừa thãi.
 		merged = "Không có file nào cần review."
 	case len(bundles) == 0:
 		// Diff rỗng thật (GetPullRequestDiff lỗi ở trên, hoặc PR không đổi
 		// gì) — vẫn review 1 lần với diff rỗng, để BuildReviewPrompt tự
 		// chèn hướng dẫn fallback (Claude tự đọc file state + commit message).
-		merged, hadError, inline = j.reviewBundles([]string{""}, dir, sha, staticReport, repoCfg.Instructions, validationDiff, primer)
+		var allFindings []Finding
+		var anyParsed bool
+		merged, hadError, inline, allFindings, anyParsed = j.reviewBundles([]string{""}, dir, sha, staticReport, repoCfg.Instructions, validationDiff, primer)
+		if anyParsed {
+			header = renderReviewHeader(allFindings)
+		}
 	default:
-		merged, hadError, inline = j.reviewBundles(bundles, dir, sha, staticReport, repoCfg.Instructions, validationDiff, primer)
+		var allFindings []Finding
+		var anyParsed bool
+		merged, hadError, inline, allFindings, anyParsed = j.reviewBundles(bundles, dir, sha, staticReport, repoCfg.Instructions, validationDiff, primer)
+		if anyParsed {
+			header = renderReviewHeader(allFindings)
+		}
 	}
 
-	if len(notes) > 0 {
-		merged = strings.Join(notes, "\n") + "\n\n" + merged
+	// Thứ tự hiển thị: header tổng quan (nếu có) trước tiên, rồi tới các
+	// ghi chú meta (incremental review, file bị bỏ qua, diff bị cắt...),
+	// cuối cùng mới tới nội dung review chi tiết — giống bố cục 1 báo cáo
+	// review điển hình: tóm tắt trước, chi tiết sau.
+	var parts []string
+	if header != "" {
+		parts = append(parts, header)
 	}
+	if len(notes) > 0 {
+		parts = append(parts, strings.Join(notes, "\n"))
+	}
+	parts = append(parts, merged)
+	merged = strings.Join(parts, "\n\n")
 
 	if err := j.GitHub.EditComment(j.RepoFullName, j.PlaceholderID, merged); err != nil {
 		fmt.Println("Post comment error:", err)
@@ -384,7 +406,20 @@ func (j *Job) diffTruncationWarning(diff string) string {
 // primer là ngữ cảnh dùng chung được build 1 lần cho cả PR (xem buildPrimer,
 // issue #18) — nhúng y hệt vào MỌI bundle, rỗng khi PR không bị chia bundle
 // (len(bundles) == 1, xem Run).
-func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticReport string, repoInstructions string, validationDiff string, primer string) (merged string, hadError bool, inline []pendingComment) {
+//
+// allFindings gộp TOÀN BỘ finding parse được của MỌI bundle (kể cả những
+// finding đã tách ra post inline riêng, khác `inline` ở trên vốn chỉ có
+// pendingComment) — Run() dùng để render header tổng quan (renderReviewHeader)
+// một lần cho cả comment, thay vì mỗi bundle tự có 1 mini-summary rời rạc.
+//
+// anyParsed báo có ÍT NHẤT 1 bundle parse JSON thành công hay không —
+// header CHỈ nên hiện khi có dữ liệu có cấu trúc để tổng hợp; nếu Claude
+// trả toàn văn xuôi tự do (bất chấp hướng dẫn) thì allFindings rỗng dù
+// review không hề "sạch", hiện header "0 góp ý" lúc đó sẽ gây hiểu lầm —
+// Run() dựa vào cờ này để giữ nguyên hành vi fallback raw-text cũ (không
+// thêm header) thay vì suy diễn từ len(allFindings) == 0 (không phân biệt
+// được "parse ra rỗng thật" với "chưa từng parse được").
+func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticReport string, repoInstructions string, validationDiff string, primer string) (merged string, hadError bool, inline []pendingComment, allFindings []Finding, anyParsed bool) {
 	single := len(bundles) == 1
 	sections := make([]string, len(bundles))
 
@@ -415,6 +450,8 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 		} else {
 			fmt.Println("Review bundle", i+1, "/", len(bundles), "result:", text)
 			if findings, ok := parseFindings(text); ok {
+				anyParsed = true
+				allFindings = append(allFindings, findings...)
 				bundleInline, general := splitFindingsForPosting(validationDiff, findings)
 				inline = append(inline, bundleInline...)
 				display = renderBundleSummary(findings, general)
@@ -441,7 +478,7 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 		}
 	}
 
-	return strings.Join(sections, "\n\n"), hadError, inline
+	return strings.Join(sections, "\n\n"), hadError, inline, allFindings, anyParsed
 }
 
 // skippedNote render 1 dòng thông báo các file bị bundleDiffs bỏ qua

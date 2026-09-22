@@ -156,7 +156,7 @@ test webhook bằng curl hoặc test thật với GitHub qua ngrok, xem
 
 ## Cách hoạt động chi tiết
 
-<details>
+<details id="lọc-file-rác-và-chia-bundle-diff">
 <summary><strong>Lọc file rác và chia bundle diff</strong></summary>
 
 Diff của PR được xử lý trước khi gửi cho Claude (`internal/review/diffsplit.go`):
@@ -167,7 +167,7 @@ Diff của PR được xử lý trước khi gửi cho Claude (`internal/review/
 
 </details>
 
-<details>
+<details id="độ-ổn-định-retry-giới-hạn-đồng-thời-chống-xử-lý-trùng">
 <summary><strong>Độ ổn định: retry, giới hạn đồng thời, chống xử lý trùng</strong></summary>
 
 - **Retry**: `claude` CLI lỗi khi chạy lệnh (timeout 5 phút, lỗi mạng...) được thử lại tối đa 3 lần (gồm lần đầu) với backoff. Lỗi Claude tự báo (`is_error`) hoặc output không parse được **không** retry vì thử lại với cùng input không đổi được kết quả.
@@ -177,21 +177,21 @@ Diff của PR được xử lý trước khi gửi cho Claude (`internal/review/
 
 </details>
 
-<details>
+<details id="check-tĩnh-trước-khi-review-repo-go">
 <summary><strong>Check tĩnh trước khi review (repo Go)</strong></summary>
 
 Nếu repo được review có `go.mod`, bot chạy `gofmt` và `go vet` trên bản checkout và chèn báo cáo vào prompt, để Claude tập trung nhận xét logic/thiết kế thay vì lặp lại lỗi format/vet mà máy đã bắt được. Repo không phải Go thì bước này tự bỏ qua; chưa hỗ trợ tool của ngôn ngữ khác.
 
 </details>
 
-<details>
+<details id="log-mỗi-lần-review">
 <summary><strong>Log mỗi lần review</strong></summary>
 
 Mỗi lần gọi Claude CLI được ghi thành 1 file JSON trong `logs/reviews/` (đổi bằng `REVIEW_LOG_DIR`) gồm: thời gian, repo, số PR, SHA, chỉ số bundle, **prompt và response nguyên văn**, lỗi (nếu có), thời gian xử lý (`duration_ms`), số lần thử (`attempts`) và số turn Claude dùng (`num_turns`, thấp bất thường trên bundle nhiều file là dấu hiệu Claude review mù trên diff). Dùng để truy vết khi review lỗi hoặc kết quả lạ. Lỗi ghi log chỉ in ra console, không chặn review. Thư mục `logs/` đã nằm trong `.gitignore`; prompt/response được ghi nguyên văn nên chú ý nếu code review chứa thông tin nhạy cảm.
 
 </details>
 
-<details>
+<details id="rule-mặc-định-theo-loại-file">
 <summary><strong>Rule mặc định theo loại file</strong></summary>
 
 Ngoài `instructions` của `.yuumi.yml` (repo tự khai báo), bot tự có sẵn 1 bộ rule mặc định gắn theo đuôi file có trong diff — không cần repo nào cấu hình gì cả:
@@ -205,7 +205,7 @@ Bundle có nhiều loại file khác nhau thì rule của TẤT CẢ loại có 
 
 </details>
 
-<details>
+<details id="gợi-ý-symbol-thay-đổi-để-bắt-breaking-change-ở-package-khác">
 <summary><strong>Gợi ý symbol thay đổi để bắt breaking change ở package khác</strong></summary>
 
 Bot nhóm file review theo cùng thư mục (`groupByDirectory`), giải quyết tốt case impl + test cùng thư mục nhưng bỏ sót case 1 thay đổi ảnh hưởng file ở **package khác** (vd đổi signature 1 method nhưng nơi gọi nằm ở package khác — đặc biệt rủi ro với Go do interface ngầm định).
@@ -214,7 +214,7 @@ Bot nhóm file review theo cùng thư mục (`groupByDirectory`), giải quyết
 
 </details>
 
-<details>
+<details id="ngữ-cảnh-dùng-chung-giữa-các-phần-khi-pr-bị-chia-bundle">
 <summary><strong>Ngữ cảnh dùng chung giữa các phần khi PR bị chia bundle</strong></summary>
 
 Khi 1 PR lớn bị chia thành nhiều bundle (mỗi bundle là 1 lần gọi `claude -p` riêng), bot tổng hợp sẵn 1 lần trước khi chia:
@@ -226,7 +226,7 @@ Ngữ cảnh này được nhúng y hệt vào đầu prompt của **mọi** bun
 
 </details>
 
-<details>
+<details id="tự-động-đọc-gitignore-của-repo">
 <summary><strong>Tự động đọc <code>.gitignore</code> của repo</strong></summary>
 
 Ngoài `exclude` ở `.yuumi.yml`, bot còn tự đọc file `.gitignore` thật ở root repo được review và **gộp thêm** pattern trong đó vào danh sách loại trừ (cộng dồn với default + `.yuumi.yml`, không thay thế) — repo nào đã tự đánh dấu 1 thư mục/file là "không cần track" (`coverage/`, `.turbo/`, `*.log`...) thì bot cũng không review nhầm nó.
@@ -235,7 +235,7 @@ Chỉ hỗ trợ các case phổ biến nhất, không phải toàn bộ spec `.
 
 </details>
 
-<details>
+<details id="review-lần-2-trở-đi-chỉ-xem-phần-thay-đổi-mới">
 <summary><strong>Review lần 2 trở đi chỉ xem phần thay đổi mới</strong></summary>
 
 Mỗi lần review xong, bot ghi lại SHA vừa review cho đúng PR đó (`internal/reviewstate`, mặc định `logs/review-state.json`, override qua `REVIEW_STATE_FILE`). Lần review kế tiếp trên **cùng PR** (vd tác giả push thêm commit rồi mention lại `@yuumi-review review`) sẽ tự lấy diff qua GitHub compare API (`GET /compare/{sha_cũ}...{sha_mới}`) — chỉ chứa phần thay đổi MỚI — thay vì gửi lại toàn bộ diff so với base như trước, giúp tiết kiệm token/thời gian gọi Claude CLI đáng kể trên PR có nhiều vòng review.
@@ -247,7 +247,7 @@ Mỗi lần review xong, bot ghi lại SHA vừa review cho đúng PR đó (`int
 
 </details>
 
-<details>
+<details id="kết-quả-review-có-phân-loại--comment-inline-theo-đúng-dòng-code">
 <summary><strong>Kết quả review có phân loại + comment inline theo đúng dòng code</strong></summary>
 
 Claude được yêu cầu trả kết quả dưới dạng JSON array các "finding" (`category`, `severity`, `message`, `suggestion`, kèm `file`/`line` nếu áp dụng được cho 1 dòng cụ thể) thay vì 1 khối text tự do.
@@ -259,7 +259,7 @@ Claude được yêu cầu trả kết quả dưới dạng JSON array các "fin
 
 </details>
 
-<details>
+<details id="auto-review-khi-pr-mới-mở--có-commit-mới">
 <summary><strong>Auto review khi PR mới mở / có commit mới</strong></summary>
 
 Ngoài mention thủ công, bot còn tự chạy review khi nhận webhook event `pull_request` với action `opened` (PR mới tạo) hoặc `synchronize` (có commit mới push lên PR) — không cần ai gõ `@yuumi-review review`.

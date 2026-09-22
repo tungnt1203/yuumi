@@ -45,7 +45,8 @@ internal/
   claudecli/              # gọi `claude` CLI (chạy trong repo đã clone), retry, parse kết quả
   githubapi/              # gọi GitHub REST API: reaction, post/edit comment, diff, compare, Reviews API
   gitrepo/                # clone PR head SHA vào tmp dir, trả cleanup() để dọn dẹp
-  healthcheck/            # check claude CLI + GITHUB_TOKEN còn dùng được, cache cho /health
+  healthcheck/            # check claude CLI + GitHub App auth còn dùng được, cache cho /health
+  githubapp/              # xác thực GitHub App: ký JWT, đổi/cache installation access token (issue #47)
   reviewstate/            # lưu SHA đã review lần gần nhất cho mỗi PR, để review lần sau chỉ lấy phần đổi mới
   reviewlog/              # ghi log JSON (prompt/response/lỗi/thời gian) mỗi lần gọi Claude CLI
   evalrunner/             # dựng diff từ fixture before/after rồi chạy review, phục vụ cmd/evalrun
@@ -58,20 +59,23 @@ evalsuite/                # fixture bug cài sẵn + results.md theo dõi chất
 - Go 1.26+ (xem `go.mod` / `.tool-versions`)
 - [Claude Code CLI](https://docs.claude.com/claude-code) đã cài và authenticate (`claude --version` chạy được)
 - `git` CLI có sẵn trên máy chạy server (dùng để clone PR head vào tmp dir)
-- 1 GitHub Personal Access Token (fine-grained, quyền `Issues: Read and write` + `Pull requests: Read and write` trên repo mục tiêu — cần write vì bot post finding inline qua Reviews API)
-- 1 webhook secret tự đặt (dùng để GitHub ký request, verify chống giả mạo)
+- 1 [GitHub App](https://github.com/settings/apps) đã đăng ký (không dùng Personal Access Token nữa, xem issue #47), quyền `Issues: Read and write` + `Pull requests: Read and write` (cần write vì bot post finding inline qua Reviews API), subscribe event `Issue comments` + `Pull request`, đã **cài (Install App)** vào repo mục tiêu
+- 1 webhook secret tự đặt (dùng để GitHub ký request, verify chống giả mạo — khai báo trong cấu hình webhook của chính App, không phải trên từng repo)
 
 ## Cấu hình
 
 Tạo file `.env` ở thư mục gốc (đã có trong `.gitignore`, **không commit file này**):
 
 ```
-GITHUB_TOKEN=<personal access token>
-GITHUB_WEBHOOK_SECRET=<secret bạn tự đặt, khai báo trùng khi setup webhook trên GitHub>
+GITHUB_APP_ID=<App ID, xem trang settings của App>
+GITHUB_APP_PRIVATE_KEY_PATH=<đường dẫn tới file .pem tải về lúc tạo App>   # dùng khi chạy local
+# HOẶC (thay vì _PATH ở trên) — tiện hơn khi deploy (Docker/AWS...), tránh lỗi escape newline của PEM:
+# GITHUB_APP_PRIVATE_KEY=<nội dung file .pem encode base64 thành 1 dòng, vd: base64 < private-key.pem>
+GITHUB_WEBHOOK_SECRET=<secret bạn tự đặt, khai báo trùng trong cấu hình webhook của App>
 ALLOWED_USERS=<username1,username2,...>   # danh sách GitHub username được phép trigger bot
 ```
 
-3 biến trên là **bắt buộc** (thiếu 1 biến server không khởi động). Ngoài ra có các biến **tuỳ chọn**, không set thì dùng default:
+`GITHUB_APP_ID`, `GITHUB_WEBHOOK_SECRET`, `ALLOWED_USERS`, và **1 trong 2** biến private key ở trên là **bắt buộc** (thiếu là server không khởi động). Ngoài ra có các biến **tuỳ chọn**, không set thì dùng default:
 
 | Biến | Default | Ý nghĩa |
 |------|---------|---------|
@@ -189,15 +193,17 @@ go run ./cmd/server
 
 Server lắng nghe cổng `:8080`, có 2 route:
 
-- `GET /health` — trả trạng thái thật của các dependency (check lúc khởi động, cache lại, không gọi CLI/API mỗi request): `200` kèm JSON `{"claude_cli":{"ok":true,...},"github_token":{"ok":true,...},"checked_at":"..."}` nếu mọi thứ OK, `503` nếu có dependency lỗi.
+- `GET /health` — trả trạng thái thật của các dependency (check lúc khởi động, cache lại, không gọi CLI/API mỗi request): `200` kèm JSON `{"claude_cli":{"ok":true,...},"github_app":{"ok":true,...},"checked_at":"..."}` nếu mọi thứ OK, `503` nếu có dependency lỗi.
 - `POST /webhook` — endpoint nhận GitHub webhook (event `issue_comment` cho mention thủ công, `pull_request` cho auto-review — phân biệt qua header `X-GitHub-Event`, xem mục Auto review ở trên).
 
 **Lưu ý:** `issue.number` trong payload phải là số của 1 **Pull Request thật** (không phải Issue thường), vì bước lấy head SHA gọi API `/pulls/{number}` — trên Issue thường API này trả 404.
 
 ## Test thủ công (giả lập webhook GitHub)
 
+**Lưu ý (issue #47):** khác với trước đây, `<installation id>` phải là ID **thật** của lần cài App vào 1 repo — server sẽ gọi GitHub thật để đổi lấy installation token trước khi làm gì khác, không còn "giả lập hoàn toàn offline" được nữa. Lấy ID này ở App settings → **Advanced** → chọn 1 delivery bất kỳ → xem field `installation.id`, hoặc từ URL trang cài đặt của installation (`.../installations/<id>`).
+
 ```bash
-BODY='{"action":"created","comment":{"id":1,"body":"@yuumi-review review","user":{"login":"<username>"}},"repository":{"full_name":"<owner>/<repo>"},"issue":{"number":<số PR>}}'
+BODY='{"action":"created","comment":{"id":1,"body":"@yuumi-review review","user":{"login":"<username>"}},"repository":{"full_name":"<owner>/<repo>"},"issue":{"number":<số PR>},"installation":{"id":<installation id thật>}}'
 SIG=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "$GITHUB_WEBHOOK_SECRET" | sed 's/^.* //')
 curl -i -X POST localhost:8080/webhook \
   -H "Content-Type: application/json" \
@@ -211,7 +217,7 @@ curl -i -X POST localhost:8080/webhook \
 Giả lập auto-review (event `pull_request`, xem mục Auto review ở trên — `<username>` phải nằm trong `ALLOWED_USERS`):
 
 ```bash
-BODY='{"action":"opened","repository":{"full_name":"<owner>/<repo>"},"pull_request":{"number":<số PR>,"head":{"sha":"<head sha>"},"user":{"login":"<username>"}}}'
+BODY='{"action":"opened","repository":{"full_name":"<owner>/<repo>"},"pull_request":{"number":<số PR>,"head":{"sha":"<head sha>"},"user":{"login":"<username>"}},"installation":{"id":<installation id thật>}}'
 SIG=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "$GITHUB_WEBHOOK_SECRET" | sed 's/^.* //')
 curl -i -X POST localhost:8080/webhook \
   -H "Content-Type: application/json" \
@@ -226,15 +232,13 @@ curl -i -X POST localhost:8080/webhook \
 
 1. Chạy server: `set -a && source .env && set +a && go run ./cmd/server`, rồi kiểm tra `curl -i localhost:8080/health` trả `200`.
 2. Mở tunnel ở terminal khác: `ngrok http 8080` (hoặc `ngrok http --url=<domain-cố-định> 8080` nếu có domain ngrok cố định, để không phải sửa lại webhook mỗi lần chạy lại). Có thể xem từng request GitHub gửi tới ở `http://127.0.0.1:4040`.
-3. Trên repo đích: **Settings → Webhooks → Add webhook**:
-   - **Payload URL**: `https://<domain-ngrok>/webhook` (viết liền, không có khoảng trắng, phải có `/webhook`).
-   - **Content type**: `application/json`. Mặc định của GitHub là `application/x-www-form-urlencoded`, khi đó server trả `400 invalid JSON`.
-   - **Secret**: đúng giá trị `GITHUB_WEBHOOK_SECRET` trong `.env` (sai secret server trả `401`).
-   - **Events**: chọn "Let me select individual events" → **Issue comments** + **Pull requests**.
-4. Tab **Recent Deliveries** của webhook: event `ping` đầu tiên phải có dấu tick xanh. Log server sẽ in `Ignored: unsupported X-GitHub-Event ping` — bình thường, server chỉ xử lý `issue_comment` và `pull_request`.
-5. Comment `@yuumi-review review` trên 1 **Pull Request thật** bằng tài khoản có trong `ALLOWED_USERS`, hoặc mở PR mới / push thêm commit để thử auto-review (tác giả PR phải nằm trong `ALLOWED_USERS`). Bot sẽ react 👀, hiện "Đang review...", rồi sửa comment đó thành kết quả review.
-
-PAT trong `.env` cần quyền `Issues: Read and write` + `Pull requests: Read and write` **trên đúng repo đích**, nếu thiếu sẽ gặp 403.
+3. Khác với PAT + webhook per-repo trước đây: với GitHub App, webhook chỉ cấu hình **1 lần trên chính App** (không phải trên từng repo). Vào App settings (**Settings → Developer settings → GitHub Apps → \<tên App\>**):
+   - **Webhook URL**: `https://<domain-ngrok>/webhook` (viết liền, không có khoảng trắng, phải có `/webhook`) — sửa lại mỗi khi domain ngrok đổi.
+   - **Webhook secret**: đúng giá trị `GITHUB_WEBHOOK_SECRET` trong `.env` (sai secret server trả `401`).
+   - **Permissions & events**: `Issues: Read and write`, `Pull requests: Read and write`, subscribe **Issue comment** + **Pull request**.
+   - Nếu App chưa cài vào repo đích: **Install App** (menu bên trái) → chọn repo.
+4. Tab **Advanced** của App: xem **Recent Deliveries**, event `ping` đầu tiên phải có dấu tick xanh. Log server sẽ in `Ignored: unsupported X-GitHub-Event ping` — bình thường, server chỉ xử lý `issue_comment` và `pull_request`.
+5. Comment `@yuumi-review review` trên 1 **Pull Request thật** bằng tài khoản có trong `ALLOWED_USERS`, hoặc mở PR mới / push thêm commit để thử auto-review (tác giả PR phải nằm trong `ALLOWED_USERS`). Bot sẽ react 👀, hiện "Đang review...", rồi sửa comment đó thành kết quả review — giờ dưới tên **`<tên App>[bot]`** thay vì tài khoản cá nhân.
 
 ## Unit test và CI
 
@@ -267,7 +271,7 @@ Cần `claude` CLI đã authenticate. Đây là công cụ chạy tay, **không*
 - [x] Tái cấu trúc theo layout `cmd/` + `internal/`
 - [x] Lấy diff thật của PR qua GitHub API (`application/vnd.github.v3.diff`) và đưa vào prompt, kèm hướng dẫn Claude đọc thêm file/README liên quan để hiểu kiến trúc & convention trước khi review, thay vì chỉ nhìn diff cô lập (`review.BuildReviewPrompt`)
 - [x] Cấu hình review riêng cho từng repo qua file `.yuumi.yml` ở root repo được review (thêm pattern loại trừ, hướng dẫn review riêng)
-- [x] `/health` phản ánh đúng trạng thái claude CLI + GITHUB_TOKEN (check lúc khởi động, cache lại) thay vì luôn trả "ok"
+- [x] `/health` phản ánh đúng trạng thái claude CLI + GitHub App auth (check lúc khởi động, cache lại) thay vì luôn trả "ok"
 - [x] Tự đọc `.gitignore` thật của repo được review, gộp thêm vào danh sách loại trừ (cộng dồn với default + `.yuumi.yml`, không thay thế)
 - [x] Review lần 2 trở đi trên cùng 1 PR chỉ gửi diff phần thay đổi mới (so với SHA đã review lần trước), không gửi lại toàn bộ diff cũ
 - [x] Kết quả review có `category`/`severity`/gợi ý sửa (JSON có cấu trúc thay vì text tự do), finding gắn đúng vào dòng code qua GitHub Reviews API khi xác định được vị trí, còn lại hiển thị trong comment tổng hợp
@@ -281,6 +285,7 @@ Cần `claude` CLI đã authenticate. Đây là công cụ chạy tay, **không*
 - [x] Chia sẻ ngữ cảnh/primer dùng chung giữa các bundle của cùng 1 PR
 - [x] Eval suite (`evalsuite/`, `cmd/evalrun`) với 4 fixture bug cài sẵn để theo dõi chất lượng review theo thời gian
 - [x] CI (`.github/workflows/ci.yml`): build + vet + test trên mỗi PR và push vào `main`
+- [x] Xác thực qua **GitHub App** (JWT RS256 + installation access token, cache/tự làm mới, issue #47) thay cho Personal Access Token tĩnh — bot post comment/review dưới identity riêng `<tên App>[bot]`, không còn gắn với tài khoản cá nhân nào (package `internal/githubapp`)
 
 **Đã fix limitation cũ:** trước đây clone `--depth 1` nên Claude không `git diff` được, chỉ đoán qua commit message. Giờ diff thật lấy trực tiếp từ GitHub API (không phụ thuộc git history), nên vẫn giữ `--depth 1` khi clone bình thường (chỉ cần file state để Claude đọc code, không cần history) — nếu gọi GitHub API lỗi thì fallback về cách cũ (đọc file + commit message).
 
@@ -288,13 +293,9 @@ Cần `claude` CLI đã authenticate. Đây là công cụ chạy tay, **không*
 
 1. [x] Unit test (`go test`) cho phần logic thuần (`review`, `webhook`)
    - [x] Lấy diff thật của PR qua GitHub API, đưa vào prompt review (`internal/review/prompt.go`)
-2. [ ] Deploy có URL public thật (thay vì chỉ test local qua curl) — vẫn dùng PAT trước cho chắc chắn hoạt động (issue #46). Đã thử được webhook GitHub thật qua ngrok (xem mục Test thật với GitHub qua ngrok); còn lại là deploy chạy lâu dài trên hạ tầng thật
-3. [ ] Chuyển từ PAT cá nhân sang **GitHub App** (issue #47) — để bot có identity riêng (`yuumi-review[bot]`), token theo installation thay vì gắn với account cá nhân, scope đúng theo repo cài app. Việc cần làm:
-   - Đăng ký GitHub App trên GitHub (permissions `Issues: RW`, `Pull requests: RW`, subscribe event `issue_comment` + `pull_request`)
-   - Thêm module ký JWT bằng private key của App + đổi lấy installation access token (`POST /app/installations/{id}/access_tokens`), cache tới khi hết hạn
-   - Đổi `config.Load()`: bỏ `GITHUB_TOKEN` tĩnh, dùng `GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY`
-   - Thêm field `installation.id` vào `webhook/payload.go`
-   - `gitrepo.CloneRepo` cần nhúng token vào URL khi fetch nếu sau này review repo private (hiện chỉ work với repo public) — theo dõi riêng ở issue #48
+2. [x] Chuyển từ PAT cá nhân sang **GitHub App** (issue #47) — bot có identity riêng (`<tên App>[bot]`), token theo installation thay vì gắn với account cá nhân (`internal/githubapp`, xem mục Cấu hình + Test thật với GitHub qua ngrok)
+   - [ ] `gitrepo.CloneRepo` cần nhúng token vào URL khi fetch nếu sau này review repo private (hiện chỉ work với repo public) — theo dõi riêng ở issue #48, CHƯA làm trong #47
+3. [ ] Deploy có URL public thật (thay vì chỉ test local qua curl) (issue #46). Đã thử được webhook GitHub thật qua ngrok (xem mục Test thật với GitHub qua ngrok); còn lại là deploy chạy lâu dài trên hạ tầng thật
 4. [ ] Đóng gói Docker (issue #49)
 5. [ ] Deploy AWS (issue #50)
 

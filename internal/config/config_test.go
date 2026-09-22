@@ -1,14 +1,68 @@
 package config
 
-import "testing"
+import (
+	"encoding/base64"
+	"os"
+	"testing"
+)
 
-// setRequiredEnv set 3 biến bắt buộc để Load() không fail vì thiếu chúng —
+// setRequiredEnv set các biến bắt buộc để Load() không fail vì thiếu chúng —
 // dùng chung cho các test chỉ muốn kiểm tra 1 biến optional cụ thể.
 func setRequiredEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("GITHUB_WEBHOOK_SECRET", "secret")
-	t.Setenv("GITHUB_TOKEN", "token")
+	t.Setenv("GITHUB_APP_ID", "12345")
+	t.Setenv("GITHUB_APP_PRIVATE_KEY", base64.StdEncoding.EncodeToString([]byte("fake-pem-content")))
 	t.Setenv("ALLOWED_USERS", "octocat")
+}
+
+func TestLoad_GitHubAppPrivateKey_FromBase64Env(t *testing.T) {
+	setRequiredEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if string(cfg.GitHubAppPrivateKey) != "fake-pem-content" {
+		t.Errorf("GitHubAppPrivateKey = %q, want %q", cfg.GitHubAppPrivateKey, "fake-pem-content")
+	}
+}
+
+func TestLoad_GitHubAppPrivateKey_FromFile_TakesPrecedenceOverEnv(t *testing.T) {
+	setRequiredEnv(t)
+
+	path := t.TempDir() + "/key.pem"
+	if err := os.WriteFile(path, []byte("pem-from-file"), 0o600); err != nil {
+		t.Fatalf("cannot write test key file: %v", err)
+	}
+	t.Setenv("GITHUB_APP_PRIVATE_KEY_PATH", path)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if string(cfg.GitHubAppPrivateKey) != "pem-from-file" {
+		t.Errorf("GitHubAppPrivateKey = %q, want %q (file phải ưu tiên hơn base64 env)", cfg.GitHubAppPrivateKey, "pem-from-file")
+	}
+}
+
+func TestLoad_GitHubAppPrivateKey_Missing(t *testing.T) {
+	t.Setenv("GITHUB_WEBHOOK_SECRET", "secret")
+	t.Setenv("GITHUB_APP_ID", "12345")
+	t.Setenv("ALLOWED_USERS", "octocat")
+
+	if _, err := Load(); err == nil {
+		t.Error("Load() with no private key source: expected error, got nil")
+	}
+}
+
+func TestLoad_GitHubAppPrivateKey_InvalidBase64(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("GITHUB_APP_PRIVATE_KEY", "not valid base64!!")
+
+	if _, err := Load(); err == nil {
+		t.Error("Load() with invalid base64 GITHUB_APP_PRIVATE_KEY: expected error, got nil")
+	}
 }
 
 func TestLoad_MaxDiffBundleChars_UnsetDefaultsToZero(t *testing.T) {

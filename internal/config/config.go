@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"strconv"
@@ -9,8 +10,13 @@ import (
 
 type Config struct {
 	WebhookSecret string
-	GitHubToken   string
 	AllowedUsers  []string
+
+	// GitHubAppID + GitHubAppPrivateKey xác thực bot với GitHub qua GitHub
+	// App (JWT + installation access token, xem package githubapp) thay vì
+	// 1 Personal Access Token tĩnh dùng chung cho mọi repo (issue #47).
+	GitHubAppID         string
+	GitHubAppPrivateKey []byte
 
 	// MaxDiffBundleChars override ngưỡng chia bundle của review.Job (xem
 	// review.defaultBundleBudgetChars) — 0 nghĩa là "không set", để review
@@ -40,9 +46,14 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("GITHUB_WEBHOOK_SECRET environment variable is required")
 	}
 
-	token, ok := os.LookupEnv("GITHUB_TOKEN")
+	appID, ok := os.LookupEnv("GITHUB_APP_ID")
 	if !ok {
-		return Config{}, fmt.Errorf("GITHUB_TOKEN environment variable is required")
+		return Config{}, fmt.Errorf("GITHUB_APP_ID environment variable is required")
+	}
+
+	privateKey, err := loadGitHubAppPrivateKey()
+	if err != nil {
+		return Config{}, err
 	}
 
 	allowedUsersRaw, ok := os.LookupEnv("ALLOWED_USERS")
@@ -62,13 +73,46 @@ func Load() (Config, error) {
 
 	return Config{
 		WebhookSecret:        secret,
-		GitHubToken:          token,
+		GitHubAppID:          appID,
+		GitHubAppPrivateKey:  privateKey,
 		AllowedUsers:         strings.Split(allowedUsersRaw, ","),
 		MaxDiffBundleChars:   maxDiffBundleChars,
 		MaxConcurrentReviews: maxConcurrentReviews,
 		ReviewLogDir:         os.Getenv("REVIEW_LOG_DIR"),
 		ReviewStateFile:      os.Getenv("REVIEW_STATE_FILE"),
 	}, nil
+}
+
+// loadGitHubAppPrivateKey đọc private key (PEM) của GitHub App từ 1 trong 2
+// nguồn, ưu tiên file trước:
+//   - GITHUB_APP_PRIVATE_KEY_PATH: đường dẫn tới file .pem thô, đúng như
+//     GitHub cho tải về lúc tạo App — tiện cho local dev, không cần encode
+//     gì thêm.
+//   - GITHUB_APP_PRIVATE_KEY: nội dung PEM encode base64 thành 1 dòng —
+//     tiện set qua biến môi trường trên các nền tảng deploy (Docker, AWS...)
+//     vì PEM gốc có xuống dòng, dễ bị escape sai nếu nhét thẳng vào env.
+//
+// Thiếu cả 2 hoặc GITHUB_APP_PRIVATE_KEY không phải base64 hợp lệ đều là lỗi
+// cấu hình rõ ràng, fail ngay lúc khởi động thay vì để lỗi lộ ra khi có
+// webhook đầu tiên.
+func loadGitHubAppPrivateKey() ([]byte, error) {
+	if path, ok := os.LookupEnv("GITHUB_APP_PRIVATE_KEY_PATH"); ok {
+		key, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("cannot read GITHUB_APP_PRIVATE_KEY_PATH: %w", err)
+		}
+		return key, nil
+	}
+
+	if encoded, ok := os.LookupEnv("GITHUB_APP_PRIVATE_KEY"); ok {
+		key, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return nil, fmt.Errorf("GITHUB_APP_PRIVATE_KEY must be base64-encoded PEM: %w", err)
+		}
+		return key, nil
+	}
+
+	return nil, fmt.Errorf("GITHUB_APP_PRIVATE_KEY_PATH or GITHUB_APP_PRIVATE_KEY environment variable is required")
 }
 
 // parseOptionalPositiveIntEnv đọc 1 biến môi trường optional dạng số nguyên

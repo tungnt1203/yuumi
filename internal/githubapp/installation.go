@@ -1,12 +1,22 @@
 package githubapp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"time"
 )
+
+// installationTokenHTTPTimeout giới hạn thời gian chờ gọi
+// POST /app/installations/{id}/access_tokens — http.DefaultClient mặc định
+// KHÔNG có timeout, nên nếu GitHub API treo, request sẽ block vô thời hạn.
+// Provider.Token() gọi hàm này trong lúc giữ mutex cache (xem provider.go),
+// nên 1 request treo mãi sẽ chặn theo mọi installation khác đang cần đọc
+// cache — cần timeout rõ ràng để tránh deadlock/goroutine leak thực tế dưới
+// tải đồng thời (phát hiện qua yuumi-review tự review PR #47).
+const installationTokenHTTPTimeout = 10 * time.Second
 
 // InstallationToken là token GitHub cấp cho 1 installation cụ thể (App đã
 // cài vào repo nào) — token này mới gọi được API thật trên repo đó (post
@@ -36,10 +46,17 @@ type installationTokenResponse struct {
 // hardcode 1h). Việc cache/tự làm mới token này để khỏi gọi lại API mỗi lần
 // xử lý webhook là việc của bước sau (xem issue #47), hàm này chỉ lo đúng 1
 // việc: đổi JWT lấy 1 token.
-func GetInstallationToken(appJWT string, installationID int64) (InstallationToken, error) {
+//
+// ctx nhận từ request webhook gọi xuống (xem Provider.Token), để có thể huỷ
+// theo đúng vòng đời request đó, cộng với timeout riêng
+// (installationTokenHTTPTimeout) phòng trường hợp ctx không có deadline.
+func GetInstallationToken(ctx context.Context, appJWT string, installationID int64) (InstallationToken, error) {
+	ctx, cancel := context.WithTimeout(ctx, installationTokenHTTPTimeout)
+	defer cancel()
+
 	url := fmt.Sprintf("%s/app/installations/%d/access_tokens", apiBaseURL, installationID)
 
-	req, err := http.NewRequest("POST", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
 	if err != nil {
 		return InstallationToken{}, fmt.Errorf("cannot create request: %w", err)
 	}

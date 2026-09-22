@@ -1,6 +1,7 @@
 package githubapp
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"sync/atomic"
@@ -33,11 +34,11 @@ func TestProvider_Token_CachesUntilNearExpiry(t *testing.T) {
 
 	p := NewProvider("app-id", generateTestPrivateKeyPEM(t))
 
-	token1, err := p.Token(999)
+	token1, err := p.Token(context.Background(), 999)
 	if err != nil {
 		t.Fatalf("Token() error = %v", err)
 	}
-	token2, err := p.Token(999)
+	token2, err := p.Token(context.Background(), 999)
 	if err != nil {
 		t.Fatalf("Token() error = %v", err)
 	}
@@ -59,11 +60,11 @@ func TestProvider_Token_RefreshesWhenNearExpiry(t *testing.T) {
 
 	p := NewProvider("app-id", generateTestPrivateKeyPEM(t))
 
-	token1, err := p.Token(999)
+	token1, err := p.Token(context.Background(), 999)
 	if err != nil {
 		t.Fatalf("Token() error = %v", err)
 	}
-	token2, err := p.Token(999)
+	token2, err := p.Token(context.Background(), 999)
 	if err != nil {
 		t.Fatalf("Token() error = %v", err)
 	}
@@ -81,10 +82,10 @@ func TestProvider_Token_SeparateCachePerInstallation(t *testing.T) {
 
 	p := NewProvider("app-id", generateTestPrivateKeyPEM(t))
 
-	if _, err := p.Token(111); err != nil {
+	if _, err := p.Token(context.Background(), 111); err != nil {
 		t.Fatalf("Token(111) error = %v", err)
 	}
-	if _, err := p.Token(222); err != nil {
+	if _, err := p.Token(context.Background(), 222); err != nil {
 		t.Fatalf("Token(222) error = %v", err)
 	}
 

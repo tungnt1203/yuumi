@@ -89,7 +89,7 @@ func main() {
 	// ("@yuumi-review review" trong comment PR) — hành vi giữ nguyên như trước
 	// issue #32, chỉ tách ra khỏi handler chính để handler chính route được
 	// theo loại event (xem handlePullRequest cho luồng auto-review mới).
-	handleIssueComment := func(w http.ResponseWriter, payload webhook.Payload) {
+	handleIssueComment := func(w http.ResponseWriter, r *http.Request, payload webhook.Payload) {
 		if payload.Action != "created" {
 			fmt.Println("Ignored: action is", payload.Action)
 			fmt.Fprintln(w, "ignored")
@@ -126,7 +126,7 @@ func main() {
 		// trên đều rẻ và không cần gọi GitHub, để request bị ignore/reject
 		// (sai user, comment cũ, action khác "created"...) không tốn thêm 1
 		// lần gọi mạng đổi token vô ích (xem githubapp.Provider, issue #47).
-		token, err := tokenProvider.Token(payload.Installation.ID)
+		token, err := tokenProvider.Token(r.Context(), payload.Installation.ID)
 		if err != nil {
 			fmt.Println("Get installation token error:", err)
 			http.Error(w, "cannot authenticate with github", http.StatusInternalServerError)
@@ -170,7 +170,7 @@ func main() {
 	// dụng cho PR của AI — chỉ auto-review PR do chính người trong danh
 	// sách này tạo, tránh review "miễn phí" mọi PR của bất kỳ ai gửi vào
 	// repo đã cài webhook (xem README mục "Auto review").
-	handlePullRequest := func(w http.ResponseWriter, payload webhook.Payload) {
+	handlePullRequest := func(w http.ResponseWriter, r *http.Request, payload webhook.Payload) {
 		if !webhook.PullRequestAutoReviewActions[payload.Action] {
 			fmt.Println("Ignored: pull_request action is", payload.Action)
 			fmt.Fprintln(w, "ignored")
@@ -200,7 +200,7 @@ func main() {
 
 		// Xin installation token đúng lúc này, sau khi mọi check rẻ đã qua —
 		// cùng lý do với handleIssueComment ở trên (xem issue #47).
-		token, err := tokenProvider.Token(payload.Installation.ID)
+		token, err := tokenProvider.Token(r.Context(), payload.Installation.ID)
 		if err != nil {
 			fmt.Println("Get installation token error:", err)
 			http.Error(w, "cannot authenticate with github", http.StatusInternalServerError)
@@ -243,9 +243,9 @@ func main() {
 		// có "action" nhưng giá trị/ý nghĩa khác nhau — xem webhook.Payload).
 		switch eventType := r.Header.Get("X-GitHub-Event"); eventType {
 		case "issue_comment":
-			handleIssueComment(w, payload)
+			handleIssueComment(w, r, payload)
 		case "pull_request":
-			handlePullRequest(w, payload)
+			handlePullRequest(w, r, payload)
 		default:
 			fmt.Println("Ignored: unsupported X-GitHub-Event", eventType)
 			fmt.Fprintln(w, "ignored")

@@ -1,6 +1,7 @@
 package githubapp
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -47,14 +48,19 @@ func NewProvider(appID string, privateKeyPEM []byte) *Provider {
 // Token trả về installation access token còn hạn dùng cho installationID,
 // lấy từ cache nếu còn tốt, hoặc xin token mới từ GitHub nếu chưa có/sắp hết
 // hạn (trong vòng refreshBuffer).
-func (p *Provider) Token(installationID int64) (string, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if cached, ok := p.cache[installationID]; ok {
-		if now().Before(cached.ExpiresAt.Add(-refreshBuffer)) {
-			return cached.Token, nil
-		}
+//
+// CHỈ giữ p.mu lúc đọc/ghi cache, KHÔNG giữ trong lúc gọi mạng
+// (GenerateAppJWT/GetInstallationToken) — giữ mutex xuyên suốt lúc gọi mạng
+// (như bản trước) khiến 1 request treo/chậm chặn theo MỌI installation khác
+// đang cần Token(), kể cả những installation đã có token hợp lệ sẵn trong
+// cache, mâu thuẫn với chính mục tiêu concurrency-safe của Provider (phát
+// hiện qua yuumi-review tự review PR #47). Cái giá phải trả: nếu 2 goroutine
+// cùng lúc xin token cho CÙNG 1 installationID đang miss cache, cả 2 có thể
+// cùng gọi mạng (thay vì 1 cái chờ cái kia) — chấp nhận được vì hiếm gặp và
+// chỉ tốn thêm 1 request thừa, không sai kết quả.
+func (p *Provider) Token(ctx context.Context, installationID int64) (string, error) {
+	if cached, ok := p.cachedToken(installationID); ok {
+		return cached, nil
 	}
 
 	appJWT, err := GenerateAppJWT(p.appID, p.privateKeyPEM)
@@ -62,11 +68,28 @@ func (p *Provider) Token(installationID int64) (string, error) {
 		return "", fmt.Errorf("cannot generate app jwt: %w", err)
 	}
 
-	token, err := GetInstallationToken(appJWT, installationID)
+	token, err := GetInstallationToken(ctx, appJWT, installationID)
 	if err != nil {
 		return "", fmt.Errorf("cannot get installation token for installation %d: %w", installationID, err)
 	}
 
+	p.mu.Lock()
 	p.cache[installationID] = token
+	p.mu.Unlock()
+
 	return token.Token, nil
+}
+
+// cachedToken đọc cache dưới lock, trả về (token, true) nếu còn tốt (chưa
+// hết hạn/sắp hết hạn trong vòng refreshBuffer) — tách riêng để Token() giữ
+// lock đúng khoảng thời gian ngắn nhất cần thiết (xem comment ở Token()).
+func (p *Provider) cachedToken(installationID int64) (string, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	cached, ok := p.cache[installationID]
+	if !ok || !now().Before(cached.ExpiresAt.Add(-refreshBuffer)) {
+		return "", false
+	}
+	return cached.Token, true
 }

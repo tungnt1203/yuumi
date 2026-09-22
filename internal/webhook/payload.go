@@ -38,6 +38,16 @@ type Payload struct {
 			Login string `json:"login"`
 		} `json:"user"`
 	} `json:"pull_request"`
+
+	// Installation là ID của lần cài GitHub App vào 1 repo/org — GitHub tự
+	// đính kèm field này vào MỌI webhook payload khi App đã được cài (issue
+	// #47), dùng để đổi lấy đúng installation access token cho repo gửi
+	// webhook (xem githubapp.Provider.Token). Không có mặt nếu bot còn xác
+	// thực bằng PAT (không áp dụng cho webhook thật vì App bắt buộc theo
+	// issue #47).
+	Installation struct {
+		ID int64 `json:"id"`
+	} `json:"installation"`
 }
 
 // PullRequestAutoReviewActions liệt kê action của event "pull_request" nên

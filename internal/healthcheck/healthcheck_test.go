@@ -33,9 +33,8 @@ func withFakeClaude(t *testing.T, exitCode int) {
 
 func TestMonitor_Check_AllOK(t *testing.T) {
 	m := &Monitor{
-		CheckClaudeCLI:   func() error { return nil },
-		CheckGitHubToken: func(token string) error { return nil },
-		GitHubToken:      "irrelevant",
+		CheckClaudeCLI: func() error { return nil },
+		CheckGitHubApp: func() error { return nil },
 	}
 
 	report := m.Check()
@@ -46,8 +45,8 @@ func TestMonitor_Check_AllOK(t *testing.T) {
 	if !report.ClaudeCLI.OK || report.ClaudeCLI.Message != "ok" {
 		t.Errorf("ClaudeCLI = %+v, want OK with message %q", report.ClaudeCLI, "ok")
 	}
-	if !report.GitHubToken.OK || report.GitHubToken.Message != "ok" {
-		t.Errorf("GitHubToken = %+v, want OK with message %q", report.GitHubToken, "ok")
+	if !report.GitHubApp.OK || report.GitHubApp.Message != "ok" {
+		t.Errorf("GitHubApp = %+v, want OK with message %q", report.GitHubApp, "ok")
 	}
 	if report.CheckedAt.IsZero() {
 		t.Error("CheckedAt is zero, want set")
@@ -57,8 +56,8 @@ func TestMonitor_Check_AllOK(t *testing.T) {
 func TestMonitor_Check_ClaudeCLIFails(t *testing.T) {
 	wantErr := errors.New("claude: command not found")
 	m := &Monitor{
-		CheckClaudeCLI:   func() error { return wantErr },
-		CheckGitHubToken: func(token string) error { return nil },
+		CheckClaudeCLI: func() error { return wantErr },
+		CheckGitHubApp: func() error { return nil },
 	}
 
 	report := m.Check()
@@ -72,56 +71,38 @@ func TestMonitor_Check_ClaudeCLIFails(t *testing.T) {
 	if report.ClaudeCLI.Message != wantErr.Error() {
 		t.Errorf("ClaudeCLI.Message = %q, want %q", report.ClaudeCLI.Message, wantErr.Error())
 	}
-	// GitHub token vẫn phải được check độc lập, không bị bỏ qua vì claude
-	// CLI đã fail trước đó.
-	if !report.GitHubToken.OK {
-		t.Error("GitHubToken.OK = false, want true (must not short-circuit)")
+	// GitHub App vẫn phải được check độc lập, không bị bỏ qua vì claude CLI
+	// đã fail trước đó.
+	if !report.GitHubApp.OK {
+		t.Error("GitHubApp.OK = false, want true (must not short-circuit)")
 	}
 }
 
-func TestMonitor_Check_GitHubTokenFails(t *testing.T) {
-	wantErr := errors.New("GITHUB_TOKEN không hợp lệ")
+func TestMonitor_Check_GitHubAppFails(t *testing.T) {
+	wantErr := errors.New("xác thực GitHub App thất bại")
 	m := &Monitor{
-		CheckClaudeCLI:   func() error { return nil },
-		CheckGitHubToken: func(token string) error { return wantErr },
+		CheckClaudeCLI: func() error { return nil },
+		CheckGitHubApp: func() error { return wantErr },
 	}
 
 	report := m.Check()
 
 	if report.Healthy() {
-		t.Fatal("Healthy() = true, want false when GitHub token check fails")
+		t.Fatal("Healthy() = true, want false when GitHub App check fails")
 	}
-	if report.GitHubToken.OK {
-		t.Error("GitHubToken.OK = true, want false")
+	if report.GitHubApp.OK {
+		t.Error("GitHubApp.OK = true, want false")
 	}
-	if report.GitHubToken.Message != wantErr.Error() {
-		t.Errorf("GitHubToken.Message = %q, want %q", report.GitHubToken.Message, wantErr.Error())
-	}
-}
-
-func TestMonitor_Check_PassesConfiguredToken(t *testing.T) {
-	var gotToken string
-	m := &Monitor{
-		CheckClaudeCLI: func() error { return nil },
-		CheckGitHubToken: func(token string) error {
-			gotToken = token
-			return nil
-		},
-		GitHubToken: "my-token",
-	}
-
-	m.Check()
-
-	if gotToken != "my-token" {
-		t.Errorf("CheckGitHubToken called with token %q, want %q", gotToken, "my-token")
+	if report.GitHubApp.Message != wantErr.Error() {
+		t.Errorf("GitHubApp.Message = %q, want %q", report.GitHubApp.Message, wantErr.Error())
 	}
 }
 
 func TestMonitor_Last_ReturnsCachedResultWithoutRechecking(t *testing.T) {
 	calls := 0
 	m := &Monitor{
-		CheckClaudeCLI:   func() error { calls++; return nil },
-		CheckGitHubToken: func(token string) error { return nil },
+		CheckClaudeCLI: func() error { calls++; return nil },
+		CheckGitHubApp: func() error { return nil },
 	}
 
 	// Chưa Check() lần nào: Last() phải trả zero-value, không tự chạy check.
@@ -148,15 +129,12 @@ func TestMonitor_Last_ReturnsCachedResultWithoutRechecking(t *testing.T) {
 }
 
 func TestNewMonitor_UsesDefaultChecks(t *testing.T) {
-	m := NewMonitor("some-token")
+	m := NewMonitor("some-app-id", []byte("some-key"))
 	if m.CheckClaudeCLI == nil {
 		t.Error("CheckClaudeCLI is nil, want DefaultClaudeCLICheck")
 	}
-	if m.CheckGitHubToken == nil {
-		t.Error("CheckGitHubToken is nil, want DefaultGitHubTokenCheck")
-	}
-	if m.GitHubToken != "some-token" {
-		t.Errorf("GitHubToken = %q, want %q", m.GitHubToken, "some-token")
+	if m.CheckGitHubApp == nil {
+		t.Error("CheckGitHubApp is nil, want a check wrapping DefaultGitHubAppCheck")
 	}
 }
 
@@ -183,7 +161,7 @@ func TestDefaultClaudeCLICheck(t *testing.T) {
 	})
 }
 
-func TestDefaultGitHubTokenCheck(t *testing.T) {
+func TestCheckBearerTokenAgainst(t *testing.T) {
 	tests := []struct {
 		name       string
 		statusCode int
@@ -201,10 +179,18 @@ func TestDefaultGitHubTokenCheck(t *testing.T) {
 			}))
 			defer server.Close()
 
-			err := checkTokenAgainst(server.URL, "fake-token")
+			err := checkBearerTokenAgainst(server.URL, "fake-token")
 			if (err != nil) != tt.wantErr {
-				t.Errorf("checkTokenAgainst() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("checkBearerTokenAgainst() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestDefaultGitHubAppCheck_InvalidPrivateKey(t *testing.T) {
+	// Không cần gọi API thật: private key sai phải fail ngay ở bước ký JWT.
+	err := DefaultGitHubAppCheck("app-id", []byte("not a valid pem"))
+	if err == nil {
+		t.Error("DefaultGitHubAppCheck() with invalid private key: expected error, got nil")
 	}
 }

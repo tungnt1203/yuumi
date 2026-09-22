@@ -11,6 +11,7 @@ import (
 	"github.com/tungnt1203/yuumi/internal/claudecli"
 	"github.com/tungnt1203/yuumi/internal/config"
 	"github.com/tungnt1203/yuumi/internal/githubapi"
+	"github.com/tungnt1203/yuumi/internal/githubapp"
 	"github.com/tungnt1203/yuumi/internal/gitrepo"
 	"github.com/tungnt1203/yuumi/internal/healthcheck"
 	"github.com/tungnt1203/yuumi/internal/review"
@@ -27,26 +28,30 @@ func main() {
 
 	fmt.Println("Yuumi review bot starting...")
 
-	ghClient := githubapi.NewClient(cfg.GitHubToken)
+	// tokenProvider giữ App ID + private key cố định suốt vòng đời server,
+	// tự ký JWT/xin installation token và cache theo installationID (xem
+	// package githubapp, issue #47) — KHÔNG còn 1 ghClient dùng chung, vì
+	// token giờ gắn theo installation của từng webhook (xem newJob).
+	tokenProvider := githubapp.NewProvider(cfg.GitHubAppID, cfg.GitHubAppPrivateKey)
 	var reviewer review.Reviewer = claudecli.NewReviewer()
 	dispatcher := review.NewDispatcher(cfg.MaxConcurrentReviews)
 	seenComments := webhook.NewSeenComments()
 	reviewLogger := reviewlog.NewFileLogger(cfg.ReviewLogDir)
 	reviewStateStore := reviewstate.NewFileStore(cfg.ReviewStateFile)
 
-	// Check claude CLI + GITHUB_TOKEN thật sự dùng được ngay lúc khởi động,
-	// thay vì chỉ tin biến môi trường đã set là đủ — nếu không, lỗi (CLI
-	// chưa authenticate, token hết hạn...) chỉ lộ ra khi có webhook thật
-	// tới (xem issue #29). Không Fatal ở đây: tránh crash loop nếu chỉ là
-	// sự cố mạng thoáng qua lúc deploy, nhưng phải log đủ rõ để không bị
-	// bỏ sót.
-	healthMonitor := healthcheck.NewMonitor(cfg.GitHubToken)
+	// Check claude CLI + GitHub App auth thật sự dùng được ngay lúc khởi
+	// động, thay vì chỉ tin biến môi trường đã set là đủ — nếu không, lỗi
+	// (CLI chưa authenticate, App ID/private key sai...) chỉ lộ ra khi có
+	// webhook thật tới (xem issue #29). Không Fatal ở đây: tránh crash loop
+	// nếu chỉ là sự cố mạng thoáng qua lúc deploy, nhưng phải log đủ rõ để
+	// không bị bỏ sót.
+	healthMonitor := healthcheck.NewMonitor(cfg.GitHubAppID, cfg.GitHubAppPrivateKey)
 	if report := healthMonitor.Check(); !report.Healthy() {
 		if !report.ClaudeCLI.OK {
 			log.Println("WARNING: claude CLI check thất bại:", report.ClaudeCLI.Message)
 		}
-		if !report.GitHubToken.OK {
-			log.Println("WARNING: GITHUB_TOKEN check thất bại:", report.GitHubToken.Message)
+		if !report.GitHubApp.OK {
+			log.Println("WARNING: GitHub App auth check thất bại:", report.GitHubApp.Message)
 		}
 	}
 
@@ -59,12 +64,13 @@ func main() {
 		json.NewEncoder(w).Encode(report)
 	})
 
-	// newJob dựng 1 review.Job dùng chung cấu hình (GitHub client, cloner,
-	// reviewer, budget, logger, state store) cho CẢ 2 luồng trigger (mention
-	// thủ công lẫn auto-review, issue #32) — chỉ khác nhau ở
+	// newJob dựng 1 review.Job dùng chung cấu hình (cloner, reviewer, budget,
+	// logger, state store) cho CẢ 2 luồng trigger (mention thủ công lẫn
+	// auto-review, issue #32) — chỉ khác nhau ở ghClient (token riêng theo
+	// installation của từng webhook, xem githubapp.Provider, issue #47) và
 	// RepoFullName/IssueNumber/PlaceholderID/UserCommand, tránh 2 luồng tự
 	// xây dựng Job lệch nhau.
-	newJob := func(repoFullName string, issueNumber int, placeholderID int64, userCommand string) *review.Job {
+	newJob := func(ghClient *githubapi.Client, repoFullName string, issueNumber int, placeholderID int64, userCommand string) *review.Job {
 		return &review.Job{
 			GitHub:            ghClient,
 			Clone:             gitrepo.CloneRepo,
@@ -83,7 +89,7 @@ func main() {
 	// ("@yuumi-review review" trong comment PR) — hành vi giữ nguyên như trước
 	// issue #32, chỉ tách ra khỏi handler chính để handler chính route được
 	// theo loại event (xem handlePullRequest cho luồng auto-review mới).
-	handleIssueComment := func(w http.ResponseWriter, payload webhook.Payload) {
+	handleIssueComment := func(w http.ResponseWriter, r *http.Request, payload webhook.Payload) {
 		if payload.Action != "created" {
 			fmt.Println("Ignored: action is", payload.Action)
 			fmt.Fprintln(w, "ignored")
@@ -116,6 +122,18 @@ func main() {
 			return
 		}
 
+		// Xin installation token đúng lúc này (không sớm hơn): mọi check ở
+		// trên đều rẻ và không cần gọi GitHub, để request bị ignore/reject
+		// (sai user, comment cũ, action khác "created"...) không tốn thêm 1
+		// lần gọi mạng đổi token vô ích (xem githubapp.Provider, issue #47).
+		token, err := tokenProvider.Token(r.Context(), payload.Installation.ID)
+		if err != nil {
+			fmt.Println("Get installation token error:", err)
+			http.Error(w, "cannot authenticate with github", http.StatusInternalServerError)
+			return
+		}
+		ghClient := githubapi.NewClient(token)
+
 		// PR đã được review xong tới đúng head SHA hiện tại (vd auto-review
 		// đã chạy lúc mở/push, giờ có người mention lại) — không có gì mới,
 		// tốn thêm 1 lần gọi Claude CLI chỉ để nhận ra vậy là phí (issue
@@ -139,7 +157,7 @@ func main() {
 			return
 		}
 
-		dispatcher.Submit(newJob(payload.Repository.FullName, payload.Issue.Number, placeholderID, cmd).Run)
+		dispatcher.Submit(newJob(ghClient, payload.Repository.FullName, payload.Issue.Number, placeholderID, cmd).Run)
 
 		fmt.Fprintln(w, "processing")
 	}
@@ -152,7 +170,7 @@ func main() {
 	// dụng cho PR của AI — chỉ auto-review PR do chính người trong danh
 	// sách này tạo, tránh review "miễn phí" mọi PR của bất kỳ ai gửi vào
 	// repo đã cài webhook (xem README mục "Auto review").
-	handlePullRequest := func(w http.ResponseWriter, payload webhook.Payload) {
+	handlePullRequest := func(w http.ResponseWriter, r *http.Request, payload webhook.Payload) {
 		if !webhook.PullRequestAutoReviewActions[payload.Action] {
 			fmt.Println("Ignored: pull_request action is", payload.Action)
 			fmt.Fprintln(w, "ignored")
@@ -180,13 +198,23 @@ func main() {
 			return
 		}
 
+		// Xin installation token đúng lúc này, sau khi mọi check rẻ đã qua —
+		// cùng lý do với handleIssueComment ở trên (xem issue #47).
+		token, err := tokenProvider.Token(r.Context(), payload.Installation.ID)
+		if err != nil {
+			fmt.Println("Get installation token error:", err)
+			http.Error(w, "cannot authenticate with github", http.StatusInternalServerError)
+			return
+		}
+		ghClient := githubapi.NewClient(token)
+
 		placeholderID, err := ghClient.PostComment(repoFullName, issueNumber, "Đang review... _(tự động khi PR được mở/cập nhật)_")
 		if err != nil {
 			fmt.Println("Post comment error:", err)
 			return
 		}
 
-		dispatcher.Submit(newJob(repoFullName, issueNumber, placeholderID, "review").Run)
+		dispatcher.Submit(newJob(ghClient, repoFullName, issueNumber, placeholderID, "review").Run)
 
 		fmt.Fprintln(w, "processing")
 	}
@@ -215,9 +243,9 @@ func main() {
 		// có "action" nhưng giá trị/ý nghĩa khác nhau — xem webhook.Payload).
 		switch eventType := r.Header.Get("X-GitHub-Event"); eventType {
 		case "issue_comment":
-			handleIssueComment(w, payload)
+			handleIssueComment(w, r, payload)
 		case "pull_request":
-			handlePullRequest(w, payload)
+			handlePullRequest(w, r, payload)
 		default:
 			fmt.Println("Ignored: unsupported X-GitHub-Event", eventType)
 			fmt.Fprintln(w, "ignored")

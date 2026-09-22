@@ -85,7 +85,8 @@ func TestPayload_UnmarshalPullRequestEvent(t *testing.T) {
 			"number": 7,
 			"head": {"sha": "abc123"},
 			"user": {"login": "author1"}
-		}
+		},
+		"installation": {"id": 555}
 	}`)
 
 	var p Payload
@@ -107,6 +108,9 @@ func TestPayload_UnmarshalPullRequestEvent(t *testing.T) {
 	}
 	if p.PullRequest.User.Login != "author1" {
 		t.Errorf("PullRequest.User.Login = %q, want %q", p.PullRequest.User.Login, "author1")
+	}
+	if p.Installation.ID != 555 {
+		t.Errorf("Installation.ID = %d, want 555", p.Installation.ID)
 	}
 }
 

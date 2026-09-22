@@ -58,8 +58,9 @@ type entry struct {
 // phụ trợ: hỏng ghi log không được phép làm hỏng/chặn review.
 //
 // Không log secret: prompt/response được ghi nguyên văn, nhưng bản thân
-// chúng chỉ chứa diff code + hướng dẫn review, không chứa GITHUB_TOKEN hay
-// webhook secret (những giá trị đó không bao giờ đi vào prompt).
+// chúng chỉ chứa diff code + hướng dẫn review, không chứa GitHub App private
+// key, installation token hay webhook secret (những giá trị đó không bao
+// giờ đi vào prompt).
 type FileLogger struct {
 	Dir string
 }

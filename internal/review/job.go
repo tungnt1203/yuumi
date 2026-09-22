@@ -311,12 +311,12 @@ const reviewSetupFailureComment = "❌ Review thất bại — xem log server đ
 // review chạy xong (head SHA, clone, panic). Lỗi EditComment chỉ được log:
 // không còn comment nào khác để báo.
 func (j *Job) reportFailure(err error) {
-	fmt.Println("Job failed:", err)
+	fmt.Println("Job failed:", j.RepoFullName, "PR", j.IssueNumber, "comment", j.PlaceholderID, err)
 	if j.GitHub == nil {
 		return
 	}
 	if editErr := j.GitHub.EditComment(j.RepoFullName, j.PlaceholderID, reviewSetupFailureComment); editErr != nil {
-		fmt.Println("Edit comment with failure error:", editErr)
+		fmt.Println("Edit comment with failure error:", j.RepoFullName, "PR", j.IssueNumber, "comment", j.PlaceholderID, editErr)
 	}
 }
 

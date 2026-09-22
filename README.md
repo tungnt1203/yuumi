@@ -11,7 +11,7 @@
 
 </div>
 
-Nhận mention `@yuumi-review <lệnh>` trong comment trên GitHub PR/Issue, hoặc tự
+Nhận mention `@yuumi <lệnh>` trong comment trên GitHub PR/Issue, hoặc tự
 động chạy khi 1 PR mới mở/có commit mới, gọi [Claude Code CLI](https://docs.claude.com/claude-code)
 để review, rồi post kết quả lại thành comment + inline comment đúng dòng code
 trên chính PR đó.
@@ -33,7 +33,7 @@ trên chính PR đó.
 
 ## Tính năng
 
-- **Review qua mention hoặc tự động**: comment `@yuumi-review review`, hoặc bot tự chạy khi PR mới mở/có commit mới (allowlist theo tác giả).
+- **Review qua mention hoặc tự động**: comment `@yuumi review`, hoặc bot tự chạy khi PR mới mở/có commit mới (allowlist theo tác giả).
 - **Xác thực qua GitHub App**: JWT RS256 + installation access token (tự cache/làm mới), bot có identity riêng `<tên App>[bot]`, không gắn với tài khoản cá nhân.
 - **Finding có phân loại + comment inline**: kết quả trả về JSON có `category`/`severity`/gợi ý sửa; finding khớp đúng dòng diff được post inline qua Reviews API, còn lại gộp vào comment tổng hợp.
 - **Rule mặc định theo ngôn ngữ**: Go, JavaScript/TypeScript, Python, SQL — tự chèn vào prompt theo đuôi file có trong diff, không cần repo cấu hình gì.
@@ -46,7 +46,7 @@ trên chính PR đó.
 ## Kiến trúc
 
 ```
-GitHub PR comment "@yuumi-review <lệnh>"        PR mới mở / có commit mới
+GitHub PR comment "@yuumi <lệnh>"        PR mới mở / có commit mới
         │  (event issue_comment)                 │  (event pull_request)
         │  (GitHub Webhook - HTTP POST, ký HMAC-SHA256, phân biệt qua header X-GitHub-Event)
         ▼                                         ▼
@@ -172,8 +172,8 @@ Diff của PR được xử lý trước khi gửi cho Claude (`internal/review/
 
 - **Retry**: `claude` CLI lỗi khi chạy lệnh (timeout 5 phút, lỗi mạng...) được thử lại tối đa 3 lần (gồm lần đầu) với backoff. Lỗi Claude tự báo (`is_error`) hoặc output không parse được **không** retry vì thử lại với cùng input không đổi được kết quả.
 - **Giới hạn đồng thời**: `Dispatcher` chạy mỗi job trong 1 goroutine riêng nhưng chỉ cho tối đa `MAX_CONCURRENT_REVIEWS` job chạy cùng lúc (mỗi job spawn `git` + `claude` thật). HTTP handler luôn trả lời webhook ngay, không bị chặn bởi hàng đợi.
-- **Chống xử lý trùng**: comment ID đã xử lý được nhớ trong memory (`webhook.SeenComments`), nên GitHub redeliver webhook hoặc mention trùng không tạo 2 job cùng edit 1 comment. Đây là lưu trong RAM, restart server thì mất và không có TTL — chấp nhận được với 1 instance nội bộ, cần lưu ngoài (Redis/DB) nếu chạy nhiều instance. **Lưu ý:** ID được đánh dấu "đã thấy" ngay khi nhận webhook, *trước* khi post comment placeholder ở `cmd/server/main.go`. Nếu bước post placeholder lỗi (token thiếu quyền, rate limit...) thì không có review nào chạy, và Redeliver đúng comment đó trên GitHub cũng bị bỏ qua vì trùng ID — cần comment mới (`@yuumi-review review`) để thử lại.
-- **Xử lý lỗi**: lỗi ở bước gọi Claude CLI (hết số lần retry, Claude báo `is_error`, output sai định dạng) được ghi vào comment placeholder dưới dạng `❌ Review thất bại: ...`. **Giới hạn đã biết:** lỗi ở các bước đầu của `Job.Run()` (lấy head SHA, clone repo) và panic (được `recover` để không làm sập server) chỉ được in ra log server, **không** sửa lại placeholder — comment `Đang review...` sẽ treo, khi đó xem log server để biết nguyên nhân rồi comment lại `@yuumi-review review`.
+- **Chống xử lý trùng**: comment ID đã xử lý được nhớ trong memory (`webhook.SeenComments`), nên GitHub redeliver webhook hoặc mention trùng không tạo 2 job cùng edit 1 comment. Đây là lưu trong RAM, restart server thì mất và không có TTL — chấp nhận được với 1 instance nội bộ, cần lưu ngoài (Redis/DB) nếu chạy nhiều instance. **Lưu ý:** ID được đánh dấu "đã thấy" ngay khi nhận webhook, *trước* khi post comment placeholder ở `cmd/server/main.go`. Nếu bước post placeholder lỗi (token thiếu quyền, rate limit...) thì không có review nào chạy, và Redeliver đúng comment đó trên GitHub cũng bị bỏ qua vì trùng ID — cần comment mới (`@yuumi review`) để thử lại.
+- **Xử lý lỗi**: lỗi ở bước gọi Claude CLI (hết số lần retry, Claude báo `is_error`, output sai định dạng) được ghi vào comment placeholder dưới dạng `❌ Review thất bại: ...`. **Giới hạn đã biết:** lỗi ở các bước đầu của `Job.Run()` (lấy head SHA, clone repo) và panic (được `recover` để không làm sập server) chỉ được in ra log server, **không** sửa lại placeholder — comment `Đang review...` sẽ treo, khi đó xem log server để biết nguyên nhân rồi comment lại `@yuumi review`.
 
 </details>
 
@@ -238,7 +238,7 @@ Chỉ hỗ trợ các case phổ biến nhất, không phải toàn bộ spec `.
 <details id="review-lần-2-trở-đi-chỉ-xem-phần-thay-đổi-mới">
 <summary><strong>Review lần 2 trở đi chỉ xem phần thay đổi mới</strong></summary>
 
-Mỗi lần review xong, bot ghi lại SHA vừa review cho đúng PR đó (`internal/reviewstate`, mặc định `logs/review-state.json`, override qua `REVIEW_STATE_FILE`). Lần review kế tiếp trên **cùng PR** (vd tác giả push thêm commit rồi mention lại `@yuumi-review review`) sẽ tự lấy diff qua GitHub compare API (`GET /compare/{sha_cũ}...{sha_mới}`) — chỉ chứa phần thay đổi MỚI — thay vì gửi lại toàn bộ diff so với base như trước, giúp tiết kiệm token/thời gian gọi Claude CLI đáng kể trên PR có nhiều vòng review.
+Mỗi lần review xong, bot ghi lại SHA vừa review cho đúng PR đó (`internal/reviewstate`, mặc định `logs/review-state.json`, override qua `REVIEW_STATE_FILE`). Lần review kế tiếp trên **cùng PR** (vd tác giả push thêm commit rồi mention lại `@yuumi review`) sẽ tự lấy diff qua GitHub compare API (`GET /compare/{sha_cũ}...{sha_mới}`) — chỉ chứa phần thay đổi MỚI — thay vì gửi lại toàn bộ diff so với base như trước, giúp tiết kiệm token/thời gian gọi Claude CLI đáng kể trên PR có nhiều vòng review.
 
 - Lần đầu review 1 PR (chưa có state) vẫn hoạt động như cũ: lấy full diff so với base.
 - Lấy state hoặc gọi compare API lỗi đều fallback về full diff, không chặn review.
@@ -262,11 +262,11 @@ Claude được yêu cầu trả kết quả dưới dạng JSON array các "fin
 <details id="auto-review-khi-pr-mới-mở--có-commit-mới">
 <summary><strong>Auto review khi PR mới mở / có commit mới</strong></summary>
 
-Ngoài mention thủ công, bot còn tự chạy review khi nhận webhook event `pull_request` với action `opened` (PR mới tạo) hoặc `synchronize` (có commit mới push lên PR) — không cần ai gõ `@yuumi-review review`.
+Ngoài mention thủ công, bot còn tự chạy review khi nhận webhook event `pull_request` với action `opened` (PR mới tạo) hoặc `synchronize` (có commit mới push lên PR) — không cần ai gõ `@yuumi review`.
 
 - **Setup webhook trên GitHub**: ngoài event `Issue comments` đã cấu hình cho luồng mention, cần bật thêm event **`Pull requests`** (Settings → Webhooks → chọn repo → "Let me select individual events"). Server phân biệt 2 loại event qua header `X-GitHub-Event` (không dựa vào field `action` trong body, vì cả 2 event đều có field này nhưng ý nghĩa khác nhau).
 - **Allowlist**: `ALLOWED_USERS` (biến môi trường vốn dùng để chặn ai được phép mention bot) được **tái dùng** cho auto-review — chỉ tự động review PR do chính tác giả (`pull_request.user.login`) nằm trong danh sách này tạo ra, để không tự ý review "miễn phí" mọi PR của bất kỳ ai gửi vào repo đã cài webhook.
-- **Dùng chung logic review** với luồng mention: cả 2 luồng cùng dựng `review.Job` như nhau (chỉ khác cách lấy `RepoFullName`/`IssueNumber`/comment đầu vào), và cùng dùng cơ chế tra cứu "SHA đã review lần trước" (`review.AlreadyReviewedSHA`) để tránh review trùng: PR đã được auto-review lúc mở, sau đó có người mention `@yuumi-review review` lại đúng SHA đó (hoặc GitHub redeliver webhook trùng) sẽ bị bỏ qua thay vì tốn thêm 1 lần gọi Claude CLI cho việc không có gì mới.
+- **Dùng chung logic review** với luồng mention: cả 2 luồng cùng dựng `review.Job` như nhau (chỉ khác cách lấy `RepoFullName`/`IssueNumber`/comment đầu vào), và cùng dùng cơ chế tra cứu "SHA đã review lần trước" (`review.AlreadyReviewedSHA`) để tránh review trùng: PR đã được auto-review lúc mở, sau đó có người mention `@yuumi review` lại đúng SHA đó (hoặc GitHub redeliver webhook trùng) sẽ bị bỏ qua thay vì tốn thêm 1 lần gọi Claude CLI cho việc không có gì mới.
 - Action khác `opened`/`synchronize` của event `pull_request` (`closed`, `reopened`, `edited`, `labeled`...) không kích hoạt gì cả.
 
 </details>

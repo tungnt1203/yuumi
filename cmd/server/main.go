@@ -121,6 +121,16 @@ func main() {
 			fmt.Fprintln(w, "ignored")
 			return
 		}
+		// Đánh dấu trước để hai webhook cùng comment không tạo hai job.
+		// Nếu thoát vì lỗi trước khi post placeholder, Forget để GitHub
+		// redeliver (response 5xx) được xử lý lại. SHA đã review thì giữ
+		// dấu: gửi lại comment đó không có việc mới.
+		keepSeen := false
+		defer func() {
+			if !keepSeen {
+				seenComments.Forget(payload.Comment.ID)
+			}
+		}()
 
 		// Xin installation token đúng lúc này (không sớm hơn): mọi check ở
 		// trên đều rẻ và không cần gọi GitHub, để request bị ignore/reject
@@ -142,6 +152,7 @@ func main() {
 		if headSHA, err := ghClient.GetPullRequestHeadSHA(payload.Repository.FullName, payload.Issue.Number); err == nil {
 			if review.AlreadyReviewedSHA(reviewStateStore, payload.Repository.FullName, payload.Issue.Number, headSHA) {
 				fmt.Println("Ignored: PR already reviewed at SHA", headSHA)
+				keepSeen = true
 				fmt.Fprintln(w, "ignored")
 				return
 			}
@@ -154,9 +165,11 @@ func main() {
 		placeholderID, err := ghClient.PostComment(payload.Repository.FullName, payload.Issue.Number, "Đang review...")
 		if err != nil {
 			fmt.Println("Post comment error:", err)
+			http.Error(w, "cannot post placeholder", http.StatusInternalServerError)
 			return
 		}
 
+		keepSeen = true
 		dispatcher.Submit(newJob(ghClient, payload.Repository.FullName, payload.Issue.Number, placeholderID, cmd).Run)
 
 		fmt.Fprintln(w, "processing")
@@ -211,6 +224,7 @@ func main() {
 		placeholderID, err := ghClient.PostComment(repoFullName, issueNumber, "Đang review... _(tự động khi PR được mở/cập nhật)_")
 		if err != nil {
 			fmt.Println("Post comment error:", err)
+			http.Error(w, "cannot post placeholder", http.StatusInternalServerError)
 			return
 		}
 

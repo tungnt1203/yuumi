@@ -111,21 +111,29 @@ type Job struct {
 // (issue #3) — với PR bình thường (đa số), bundleDiffs trả về đúng 1 bundle
 // chứa nguyên diff, hành vi giống hệt trước khi có bundling.
 func (j *Job) Run() {
+	// posted ngăn recover ghi đè comment đã post thành công. Panic sau
+	// EditComment (inline comment, lưu SHA) không được đổi kết quả review
+	// đã hiện trên PR thành dòng thất bại.
+	var posted bool
 	defer func() {
 		if r := recover(); r != nil {
-			fmt.Println("Recovered from panic:", r)
+			if posted {
+				fmt.Println("Recovered from panic:", r)
+				return
+			}
+			j.reportFailure(fmt.Errorf("panic: %v", r))
 		}
 	}()
 
 	sha, err := j.GitHub.GetPullRequestHeadSHA(j.RepoFullName, j.IssueNumber)
 	if err != nil {
-		fmt.Println("Get pull request head SHA error:", err)
+		j.reportFailure(fmt.Errorf("không lấy được head SHA: %w", err))
 		return
 	}
 
 	dir, cleanup, err := j.Clone(j.RepoFullName, sha)
 	if err != nil {
-		fmt.Println("Clone repo error:", err)
+		j.reportFailure(fmt.Errorf("không clone được repo: %w", err))
 		return
 	}
 	defer cleanup()
@@ -268,6 +276,7 @@ func (j *Job) Run() {
 		fmt.Println("Post comment error:", err)
 		return
 	}
+	posted = true
 	fmt.Println("Comment posted successfully")
 
 	if len(inline) > 0 {
@@ -288,6 +297,26 @@ func (j *Job) Run() {
 		if err := j.StateStore.SetLastReviewedSHA(j.RepoFullName, j.IssueNumber, sha); err != nil {
 			fmt.Println("Save last reviewed SHA error:", err)
 		}
+	}
+}
+
+// reviewSetupFailureComment là body duy nhất được post khi review fail trước
+// lúc có kết quả. err.Error() chỉ được in ra log server: lỗi GitHub, clone
+// và panic có thể chứa đường dẫn máy hoặc token (clone URL nhúng token khi
+// hỗ trợ repo private, issue #48).
+const reviewSetupFailureComment = "❌ Review thất bại — xem log server để biết chi tiết."
+
+// reportFailure ghi một câu chung lên comment placeholder thay vì để
+// "Đang review..." treo, và in err đầy đủ ra log. Dùng cho lỗi trước khi
+// review chạy xong (head SHA, clone, panic). Lỗi EditComment chỉ được log:
+// không còn comment nào khác để báo.
+func (j *Job) reportFailure(err error) {
+	fmt.Printf("Job failed: repo=%s pr=%d comment=%d err=%v\n", j.RepoFullName, j.IssueNumber, j.PlaceholderID, err)
+	if j.GitHub == nil {
+		return
+	}
+	if editErr := j.GitHub.EditComment(j.RepoFullName, j.PlaceholderID, reviewSetupFailureComment); editErr != nil {
+		fmt.Printf("Edit comment with failure error: repo=%s pr=%d comment=%d err=%v\n", j.RepoFullName, j.IssueNumber, j.PlaceholderID, editErr)
 	}
 }
 

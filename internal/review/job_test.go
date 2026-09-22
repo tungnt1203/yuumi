@@ -233,7 +233,8 @@ func TestJobRun_HeadSHAError_StopsEarly(t *testing.T) {
 	cloneCalled := false
 
 	job := &Job{
-		GitHub: gh,
+		GitHub:        gh,
+		PlaceholderID: 42,
 		Clone: func(repoFullName, sha string) (string, func(), error) {
 			cloneCalled = true
 			return "", nil, nil
@@ -248,8 +249,11 @@ func TestJobRun_HeadSHAError_StopsEarly(t *testing.T) {
 	if reviewer.called {
 		t.Error("expected Reviewer not to be called when getting head SHA fails")
 	}
-	if gh.editCalled {
-		t.Error("expected EditComment not to be called when getting head SHA fails")
+	if !gh.editCalled || gh.editedBody != reviewSetupFailureComment {
+		t.Errorf("expected generic failure comment, got called=%v body=%q", gh.editCalled, gh.editedBody)
+	}
+	if strings.Contains(gh.editedBody, "boom") {
+		t.Errorf("comment leaked the head SHA error: %s", gh.editedBody)
 	}
 }
 
@@ -259,17 +263,21 @@ func TestJobRun_CloneError_StopsEarly(t *testing.T) {
 	cleanupCalled := false
 
 	job := &Job{
-		GitHub:   gh,
-		Clone:    fakeCloner("", errors.New("clone failed"), &cleanupCalled),
-		Reviewer: reviewer,
+		GitHub:        gh,
+		PlaceholderID: 42,
+		Clone:         fakeCloner("", errors.New("fetch https://x-access-token:ghs_supersecret@github.com/owner/repo.git failed"), &cleanupCalled),
+		Reviewer:      reviewer,
 	}
 	job.Run()
 
 	if reviewer.called {
 		t.Error("expected Reviewer not to be called when clone fails")
 	}
-	if gh.editCalled {
-		t.Error("expected EditComment not to be called when clone fails")
+	if !gh.editCalled || gh.editedBody != reviewSetupFailureComment {
+		t.Errorf("expected generic failure comment, got called=%v body=%q", gh.editCalled, gh.editedBody)
+	}
+	if strings.Contains(gh.editedBody, "ghs_supersecret") {
+		t.Errorf("comment leaked the clone error: %s", gh.editedBody)
 	}
 }
 
@@ -324,8 +332,9 @@ func TestJobRun_ReviewerPanic_Recovered(t *testing.T) {
 	cleanupCalled := false
 
 	job := &Job{
-		GitHub: gh,
-		Clone:  fakeCloner("/tmp/fake-dir", nil, &cleanupCalled),
+		GitHub:        gh,
+		PlaceholderID: 42,
+		Clone:         fakeCloner("/tmp/fake-dir", nil, &cleanupCalled),
 		Reviewer: reviewerFunc(func(prompt, dir string) (string, int, int, error) {
 			panic("unexpected panic")
 		}),
@@ -334,6 +343,48 @@ func TestJobRun_ReviewerPanic_Recovered(t *testing.T) {
 	// Không được panic ra ngoài Run() — job chạy trong goroutine riêng nên
 	// panic không recover sẽ crash cả process.
 	job.Run()
+
+	if !cleanupCalled {
+		t.Error("expected clone cleanup to be called when review panics")
+	}
+	if !gh.editCalled || gh.editedBody != reviewSetupFailureComment {
+		t.Errorf("expected generic failure comment, got called=%v body=%q", gh.editCalled, gh.editedBody)
+	}
+	if strings.Contains(gh.editedBody, "unexpected panic") {
+		t.Errorf("comment leaked the panic value: %s", gh.editedBody)
+	}
+}
+
+func TestJobRun_PanicAfterCommentPosted_DoesNotOverwrite(t *testing.T) {
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: "diff --git a/x b/x"}
+	reviewer := &fakeReviewer{result: "trông ổn"}
+	cleanupCalled := false
+
+	job := &Job{
+		GitHub:        gh,
+		PlaceholderID: 42,
+		Clone:         fakeCloner("/tmp/fake-dir", nil, &cleanupCalled),
+		Reviewer:      reviewer,
+		RepoFullName:  "owner/repo",
+		IssueNumber:   7,
+		StateStore:    panickingStateStore{},
+	}
+	job.Run()
+
+	if gh.editedBody != "trông ổn" {
+		t.Errorf("posted review was overwritten after a later panic, body=%q", gh.editedBody)
+	}
+}
+
+// panickingStateStore nổ lúc lưu SHA, sau khi comment kết quả đã được post.
+type panickingStateStore struct{}
+
+func (panickingStateStore) LastReviewedSHA(string, int) (string, bool, error) {
+	return "", false, nil
+}
+
+func (panickingStateStore) SetLastReviewedSHA(string, int, string) error {
+	panic("state store exploded")
 }
 
 // reviewerFunc cho phép dựng 1 Reviewer từ closure, dùng riêng cho test panic.

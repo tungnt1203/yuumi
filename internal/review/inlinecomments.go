@@ -3,12 +3,16 @@ package review
 // pendingComment là 1 finding đã được XÁC THỰC khớp đúng với 1 dòng thật
 // trong diff (qua parseFileHunks/FileDiff.LineAtNew, issue #24) — sẵn sàng
 // gửi thành 1 inline comment qua GitHub Reviews API (issue #5). Body đã
-// được render sẵn (renderFinding) để Job.postInlineComments không cần biết
+// được render sẵn (renderInlineFinding) để Job.postInlineComments không cần biết
 // gì về Finding, chỉ việc gửi đi.
 type pendingComment struct {
 	Path string
-	Line int
-	Body string
+	// StartLine > 0 và nhỏ hơn Line nghĩa là comment phủ một khoảng dòng
+	// (GitHub start_line/line) — chỉ set khi suggestion thay nhiều dòng và
+	// mọi dòng trong khoảng đều nằm trong cùng một hunk. 0 = comment 1 dòng.
+	StartLine int
+	Line      int
+	Body      string
 }
 
 // splitFindingsForPosting tách findings thành 2 nhóm:
@@ -43,10 +47,34 @@ func splitFindingsForPosting(diff string, findings []Finding) (inline []pendingC
 			general = append(general, f)
 			continue
 		}
-		inline = append(inline, pendingComment{Path: f.File, Line: f.Line, Body: renderFinding(f)})
+		start, line := suggestionLineRange(fd, f)
+		inline = append(inline, pendingComment{
+			Path:      f.File,
+			StartLine: start,
+			Line:      line,
+			Body:      renderInlineFinding(f),
+		})
 	}
 
 	return inline, general
+}
+
+// suggestionLineRange quyết định khoảng dòng review comment sẽ thay.
+// Suggestion 1 dòng, hoặc không khai báo EndLine, chỉ gắn đúng Finding.Line
+// (StartLine trả về 0). Suggestion nhiều dòng chỉ phủ start_line..line khi
+// EndLine > Line và coversNewLineRange xác nhận cả khoảng nằm trong cùng
+// một hunk — nếu không, giữ comment 1 dòng: nội dung ```suggestion vẫn có
+// thể dài nhiều dòng và GitHub sẽ thay đúng dòng đó, không xoá nhầm các
+// dòng kế bên.
+func suggestionLineRange(fd FileDiff, f Finding) (startLine, line int) {
+	line = f.Line
+	if f.EndLine <= f.Line {
+		return 0, line
+	}
+	if !fd.coversNewLineRange(f.Line, f.EndLine) {
+		return 0, line
+	}
+	return f.Line, f.EndLine
 }
 
 // buildFileDiffIndex parse hunk-level từng file trong diff, index theo

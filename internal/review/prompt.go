@@ -133,10 +133,11 @@ func BuildReviewPrompt(userCommand string, diff string, staticCheckNote string, 
 // khác (file/category/severity/message/suggestion), Claude rất dễ bắt
 // chước style đó và trả "line":"12" (chuỗi), làm hỏng luôn cả json.Unmarshal
 // của TOÀN BỘ array (không chỉ finding đó) — đây từng là bug thật, xem PR
-// review issue #5.
-const resultFormatInstructions = `Trả kết quả CHỈ dưới dạng 1 JSON array (không thêm giải thích ngoài JSON, không bọc trong markdown code fence), mỗi phần tử là 1 finding theo đúng format sau — chú ý "line" LUÔN là số, KHÔNG bọc trong dấu ngoặc kép:
-[{"file":"đường dẫn file đúng như trong diff, chuỗi rỗng nếu là nhận xét tổng quát không gắn với 1 dòng cụ thể","line":0,"category":"bug|security|performance|maintainability|test|style|documentation","severity":"critical|high|medium|low","message":"mô tả ngắn gọn vấn đề","suggestion":"đoạn code gợi ý sửa cụ thể, để chuỗi rỗng nếu không áp dụng được"}]
+// review issue #5. "end_line" cùng quy tắc: ví dụ để số 0, không bọc ngoặc.
+const resultFormatInstructions = `Trả kết quả CHỈ dưới dạng 1 JSON array (không thêm giải thích ngoài JSON, không bọc trong markdown code fence), mỗi phần tử là 1 finding theo đúng format sau — chú ý "line" và "end_line" LUÔN là số, KHÔNG bọc trong dấu ngoặc kép:
+[{"file":"đường dẫn file đúng như trong diff, chuỗi rỗng nếu là nhận xét tổng quát không gắn với 1 dòng cụ thể","line":0,"end_line":0,"category":"bug|security|performance|maintainability|test|style|documentation","severity":"critical|high|medium|low","message":"mô tả ngắn gọn vấn đề","suggestion":"đoạn code gợi ý sửa cụ thể, để chuỗi rỗng nếu không áp dụng được"}]
 "line" là số dòng trong file MỚI (sau khi áp dụng thay đổi của PR) đúng như xuất hiện ở khối diff bên trên, không phải số thứ tự trong toàn bộ file — để 0 nếu không chắc hoặc là nhận xét tổng quát, đừng đoán bừa.
+"end_line" là dòng CUỐI của đoạn code mà suggestion thay thế. Chỉ điền khi suggestion thay nhiều dòng liên tiếp (end_line > line) và mọi dòng trong khoảng đó đều xuất hiện trong diff; suggestion chỉ thay đúng 1 dòng thì để 0 — kể cả khi nội dung suggestion dài nhiều dòng.
 Nếu code không có vấn đề gì đáng chú ý, trả về mảng rỗng: []
 `
 

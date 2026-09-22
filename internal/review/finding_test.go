@@ -174,6 +174,46 @@ func TestRenderFinding_WithSuggestion_IncludesCodeBlock(t *testing.T) {
 	if !strings.Contains(got, "Gợi ý sửa") || !strings.Contains(got, "```\nfmt.Errorf(\"do X: %w\", err)\n```") {
 		t.Errorf("renderFinding() missing suggestion code block, got: %q", got)
 	}
+	if strings.Contains(got, "```suggestion") {
+		t.Errorf("renderFinding() should keep a plain code block for comments not attached to a diff line, got: %q", got)
+	}
+}
+
+func TestFormatSuggestion_SingleLine(t *testing.T) {
+	got := formatSuggestion(`fmt.Errorf("do X: %w", err)`)
+	want := "```suggestion\nfmt.Errorf(\"do X: %w\", err)\n```"
+	if got != want {
+		t.Errorf("formatSuggestion() = %q, want %q", got, want)
+	}
+}
+
+func TestFormatSuggestion_MultiLine(t *testing.T) {
+	got := formatSuggestion("if err != nil {\n\treturn err\n}\n")
+	want := "```suggestion\nif err != nil {\n\treturn err\n}\n```"
+	if got != want {
+		t.Errorf("formatSuggestion() = %q, want %q", got, want)
+	}
+}
+
+func TestFormatSuggestion_Empty(t *testing.T) {
+	for _, suggestion := range []string{"", "   ", "\n\t\n"} {
+		if got := formatSuggestion(suggestion); got != "" {
+			t.Errorf("formatSuggestion(%q) = %q, want empty", suggestion, got)
+		}
+	}
+}
+
+func TestRenderInlineFinding_UsesSuggestionFence(t *testing.T) {
+	f := Finding{Severity: "medium", Message: "thiếu error wrapping", Suggestion: `fmt.Errorf("do X: %w", err)`}
+
+	got := renderInlineFinding(f)
+
+	if !strings.Contains(got, "```suggestion\nfmt.Errorf(\"do X: %w\", err)\n```") {
+		t.Errorf("renderInlineFinding() missing suggestion fence, got: %q", got)
+	}
+	if strings.Contains(got, "Gợi ý sửa") {
+		t.Errorf("renderInlineFinding() should not add the plain-code-block label, got: %q", got)
+	}
 }
 
 func TestRenderFinding_NoSuggestion_NoCodeBlock(t *testing.T) {

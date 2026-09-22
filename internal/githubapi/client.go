@@ -137,7 +137,8 @@ func (c *Client) EditComment(repoFullName string, commentID int64, body string) 
 // đúng dòng code thay đổi (xem review.Job.postInlineComments, issue #5).
 //
 // commentsJSON là mảng comment ĐÃ marshal sẵn (mỗi phần tử dạng
-// {"path","line","side","body"}) — Client không cần biết/định nghĩa struct
+// {"path","line","side","body"}, thêm "start_line"/"start_side" khi comment
+// phủ nhiều dòng) — Client không cần biết/định nghĩa struct
 // gì về "comment" cả, chỉ nhúng thẳng vào body request qua json.RawMessage;
 // caller (review.Job) chịu trách nhiệm đảm bảo đúng shape GitHub kỳ vọng.
 //

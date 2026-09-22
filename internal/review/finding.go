@@ -26,6 +26,13 @@ type Finding struct {
 	Severity   string `json:"severity"`
 	Message    string `json:"message"`
 	Suggestion string `json:"suggestion,omitempty"`
+	// EndLine là dòng CUỐI (file mới) của đoạn suggestion thay thế, chỉ khi
+	// suggestion thay nhiều dòng liên tiếp và end_line > line. 0 nghĩa là
+	// suggestion chỉ thay đúng Finding.Line (kể cả khi nội dung suggestion
+	// dài nhiều dòng — GitHub thay 1 dòng đó bằng cả khối). Dùng để gắn
+	// review comment multi-line (start_line/line) cho khối ```suggestion,
+	// xem splitFindingsForPosting.
+	EndLine int `json:"end_line,omitempty"`
 }
 
 // severityRank xếp hạng độ ưu tiên hiển thị dùng cho renderFindings —
@@ -234,10 +241,24 @@ func renderReviewHeader(findings []Finding, partial bool) string {
 	return b.String()
 }
 
-// renderFinding render 1 finding thành 1 đoạn markdown: icon severity +
-// label severity + category (nếu có) + message, kèm khối code gợi ý sửa
-// nếu Claude có cung cấp.
+// renderFinding render 1 finding thành 1 đoạn markdown cho comment tổng hợp
+// (không gắn đúng 1 dòng diff): icon severity + label + category (nếu có)
+// + message, kèm khối code thường nếu có suggestion. Khối ```suggestion
+// của GitHub chỉ hợp lệ trong review comment gắn dòng — dùng
+// renderInlineFinding cho đường đó.
 func renderFinding(f Finding) string {
+	return renderFindingText(f, false)
+}
+
+// renderInlineFinding giống renderFinding nhưng suggestion không rỗng được
+// bọc bằng cú pháp GitHub suggested change (```suggestion) thay vì code
+// block thường — GitHub hiện nút "Commit suggestion" trên đúng comment
+// inline này (issue #58).
+func renderInlineFinding(f Finding) string {
+	return renderFindingText(f, true)
+}
+
+func renderFindingText(f Finding, suggestedChange bool) string {
 	var b strings.Builder
 
 	icon, ok := severityIcon[strings.ToLower(f.Severity)]
@@ -254,13 +275,34 @@ func renderFinding(f Finding) string {
 	b.WriteString(": ")
 	b.WriteString(f.Message)
 
-	if strings.TrimSpace(f.Suggestion) != "" {
-		b.WriteString("\n\n**Gợi ý sửa:**\n```\n")
+	if strings.TrimSpace(f.Suggestion) == "" {
+		return b.String()
+	}
+
+	b.WriteString("\n\n")
+	if suggestedChange {
+		b.WriteString(formatSuggestion(f.Suggestion))
+	} else {
+		b.WriteString("**Gợi ý sửa:**\n```\n")
 		b.WriteString(f.Suggestion)
 		b.WriteString("\n```")
 	}
 
 	return b.String()
+}
+
+// formatSuggestion bọc nội dung thay thế bằng fence ```suggestion mà GitHub
+// nhận ra trong review comment gắn dòng. Suggestion rỗng hoặc chỉ toàn
+// khoảng trắng trả về "" — caller không chèn block. Nội dung giữ nguyên
+// (kể cả thụt đầu dòng); chỉ bỏ newline thừa ở cuối để fence đóng không
+// tạo thêm 1 dòng trống trong phần thay thế.
+func formatSuggestion(suggestion string) string {
+	if strings.TrimSpace(suggestion) == "" {
+		return ""
+	}
+	body := strings.ReplaceAll(suggestion, "\r\n", "\n")
+	body = strings.TrimRight(body, "\n")
+	return "```suggestion\n" + body + "\n```"
 }
 
 func severityRankOf(severity string) int {

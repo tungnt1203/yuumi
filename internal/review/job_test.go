@@ -766,6 +766,74 @@ func TestJobRun_StructuredFindings_RenderedInComment_RawJSONLogged(t *testing.T)
 	}
 }
 
+// TestJobRun_StructuredFindings_IncludesReviewHeader đảm bảo comment tổng
+// hợp có banner tổng quan (renderReviewHeader) ngay khi có ít nhất 1 bundle
+// parse được JSON — khác TestJobRun_UnparsableResult_FallsBackToRawText bên
+// dưới, nơi Claude trả văn xuôi tự do và KHÔNG có banner này (xem cờ
+// anyParsed, Job.reviewBundles).
+func TestJobRun_StructuredFindings_IncludesReviewHeader(t *testing.T) {
+	rawJSON := `[{"category":"bug","severity":"critical","message":"nil pointer dereference"}]`
+
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: "diff --git a/main.go b/main.go\n+fmt.Println(1)"}
+	reviewer := &fakeReviewer{result: rawJSON}
+
+	job := &Job{
+		GitHub:   gh,
+		Clone:    fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer: reviewer,
+	}
+	job.Run()
+
+	if !strings.Contains(gh.editedBody, "## 🟣 Yuumi Review") {
+		t.Errorf("expected comment to include the review header, got: %s", gh.editedBody)
+	}
+	if !strings.Contains(gh.editedBody, "Tổng: 1 góp ý") {
+		t.Errorf("expected review header to count the 1 parsed finding, got: %s", gh.editedBody)
+	}
+}
+
+// TestJobRun_MixedBundles_HeaderWarnsCountIsPartial đảm bảo khi PR bị chia
+// nhiều bundle và CHỈ MỘT PHẦN parse được JSON (phần còn lại fallback raw
+// text), header vẫn hiện (còn dữ liệu có cấu trúc để tổng hợp) nhưng phải
+// cảnh báo rõ "Tổng: N" không đại diện cho toàn bộ PR — nếu không cảnh báo,
+// người đọc dễ tưởng lầm N là đầy đủ trong khi phần raw text bên dưới có
+// thể còn thêm vấn đề chưa được đếm (PR review issue #57).
+func TestJobRun_MixedBundles_HeaderWarnsCountIsPartial(t *testing.T) {
+	fileA := "diff --git a/a.go b/a.go\n+" + strings.Repeat("a", 30)
+	fileB := "diff --git a/b.go b/b.go\n+" + strings.Repeat("b", 30)
+	diff := fileA + "\n" + fileB
+
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: diff}
+	reviewer := &scriptedReviewer{results: []string{
+		`[{"severity":"high","message":"structured finding"}]`,
+		"Code phần này trông ổn, không có vấn đề gì.",
+	}}
+
+	job := &Job{
+		GitHub:            gh,
+		Clone:             fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer:          reviewer,
+		BundleBudgetChars: len(fileA) + 1, // ép chia làm 2 bundle
+	}
+	job.Run()
+
+	if !gh.editCalled {
+		t.Fatal("expected EditComment to be called")
+	}
+	if !strings.Contains(gh.editedBody, "## 🟣 Yuumi Review") {
+		t.Errorf("expected header to still appear (1 bundle did parse), got: %s", gh.editedBody)
+	}
+	if !strings.Contains(gh.editedBody, "Tổng: 1 góp ý") {
+		t.Errorf("expected header to count only the parsed bundle's finding, got: %s", gh.editedBody)
+	}
+	if !strings.Contains(gh.editedBody, "không tính được vào bảng trên") {
+		t.Errorf("expected header to warn the count is partial, got: %s", gh.editedBody)
+	}
+	if !strings.Contains(gh.editedBody, "Code phần này trông ổn") {
+		t.Errorf("expected the raw-text bundle to still be shown in full below the header, got: %s", gh.editedBody)
+	}
+}
+
 // TestJobRun_UnparsableResult_FallsBackToRawText đảm bảo Job không phá vỡ
 // hành vi hiện có khi Claude không tuân theo format JSON (bất chấp hướng
 // dẫn trong prompt) — comment vẫn hiển thị nguyên văn text như trước khi có
@@ -785,6 +853,9 @@ func TestJobRun_UnparsableResult_FallsBackToRawText(t *testing.T) {
 
 	if !strings.Contains(gh.editedBody, "Code trông ổn, không có vấn đề gì đáng chú ý.") {
 		t.Errorf("expected raw text fallback in comment, got: %s", gh.editedBody)
+	}
+	if strings.Contains(gh.editedBody, "## 🟣 Yuumi Review") {
+		t.Errorf("expected no review header when Claude falls back to freeform text (no structured data to summarize), got: %s", gh.editedBody)
 	}
 }
 

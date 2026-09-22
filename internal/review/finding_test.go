@@ -216,6 +216,119 @@ func TestRenderFinding_EmptyCategory_NoCategoryTag(t *testing.T) {
 	}
 }
 
+func TestRenderFindings_GroupsByFileIntoDetailsBlocks(t *testing.T) {
+	findings := []Finding{
+		{File: "a.go", Severity: "high", Message: "issue in a"},
+		{File: "b.go", Severity: "low", Message: "issue in b"},
+		{Severity: "medium", Message: "general issue"},
+	}
+
+	got := renderFindings(findings)
+
+	for _, want := range []string{
+		"<summary>📄 `a.go` (1)</summary>",
+		"<summary>📄 `b.go` (1)</summary>",
+		"<summary>📝 Nhận xét chung (1)</summary>",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("renderFindings() missing %q, got: %q", want, got)
+		}
+	}
+
+	// Nhóm "Nhận xét chung" phải nằm SAU 2 nhóm file, dù finding của nó xuất
+	// hiện ở giữa input (xem groupFindingsByFile).
+	iA := strings.Index(got, "a.go")
+	iGeneral := strings.Index(got, "Nhận xét chung")
+	iB := strings.Index(got, "b.go")
+	if !(iA < iGeneral && iB < iGeneral) {
+		t.Errorf("expected \"Nhận xét chung\" group last, got order in: %s", got)
+	}
+}
+
+func TestGroupFindingsByFile_PreservesFirstSeenFileOrder(t *testing.T) {
+	findings := []Finding{
+		{File: "z.go", Message: "1"},
+		{File: "a.go", Message: "2"},
+		{File: "z.go", Message: "3"},
+	}
+
+	order, groups := groupFindingsByFile(findings)
+
+	if len(order) != 2 || order[0] != "z.go" || order[1] != "a.go" {
+		t.Errorf("groupFindingsByFile() order = %v, want [z.go a.go]", order)
+	}
+	if len(groups["z.go"]) != 2 {
+		t.Errorf("groups[\"z.go\"] = %v, want 2 findings", groups["z.go"])
+	}
+}
+
+func TestRenderReviewHeader_Empty_ShowsNoIssuesMessage(t *testing.T) {
+	got := renderReviewHeader(nil, false)
+
+	if !strings.Contains(got, "## 🟣 Yuumi Review") || !strings.Contains(got, "Không phát hiện vấn đề") {
+		t.Errorf("renderReviewHeader(nil, false) = %q, want title + no-issues message", got)
+	}
+}
+
+func TestRenderReviewHeader_CountsBySeverity(t *testing.T) {
+	findings := []Finding{
+		{Severity: "critical", Message: "1"},
+		{Severity: "critical", Message: "2"},
+		{Severity: "low", Message: "3"},
+	}
+
+	got := renderReviewHeader(findings, false)
+
+	if !strings.Contains(got, "| 🔴 CRITICAL | 2 |") {
+		t.Errorf("renderReviewHeader() missing critical count row, got: %q", got)
+	}
+	if !strings.Contains(got, "| 🔵 LOW | 1 |") {
+		t.Errorf("renderReviewHeader() missing low count row, got: %q", got)
+	}
+	if strings.Contains(got, "HIGH") || strings.Contains(got, "MEDIUM") {
+		t.Errorf("renderReviewHeader() should omit severities with 0 count, got: %q", got)
+	}
+	if !strings.Contains(got, "Tổng: 3 góp ý") {
+		t.Errorf("renderReviewHeader() missing total count, got: %q", got)
+	}
+}
+
+func TestRenderReviewHeader_UnknownSeverity_CountedAsKhac(t *testing.T) {
+	findings := []Finding{{Severity: "weird", Message: "m"}}
+
+	got := renderReviewHeader(findings, false)
+
+	if !strings.Contains(got, "| ⚪ Khác | 1 |") {
+		t.Errorf("renderReviewHeader() should count unknown severity under \"Khác\", got: %q", got)
+	}
+	if !strings.Contains(got, "Tổng: 1 góp ý") {
+		t.Errorf("renderReviewHeader() missing total count, got: %q", got)
+	}
+}
+
+func TestRenderReviewHeader_Partial_WarnsCountIsIncomplete(t *testing.T) {
+	findings := []Finding{{Severity: "high", Message: "m"}}
+
+	got := renderReviewHeader(findings, true)
+
+	if !strings.Contains(got, "Tổng: 1 góp ý") {
+		t.Errorf("renderReviewHeader(partial=true) should still show the count it does have, got: %q", got)
+	}
+	if !strings.Contains(got, "không tính được vào bảng trên") {
+		t.Errorf("renderReviewHeader(partial=true) should warn the count is incomplete, got: %q", got)
+	}
+}
+
+func TestRenderReviewHeader_NotPartial_NoWarning(t *testing.T) {
+	findings := []Finding{{Severity: "high", Message: "m"}}
+
+	got := renderReviewHeader(findings, false)
+
+	if strings.Contains(got, "không tính được vào bảng trên") {
+		t.Errorf("renderReviewHeader(partial=false) should not show the incomplete-count warning, got: %q", got)
+	}
+}
+
 func TestSeverityRankOf_UnknownGoesLast(t *testing.T) {
 	if severityRankOf("unknown") <= severityRankOf("low") {
 		t.Error("severityRankOf(\"unknown\") should rank after every known severity")

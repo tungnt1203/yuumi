@@ -108,26 +108,130 @@ func renderBundleSummary(findings []Finding, general []Finding) string {
 	return b.String()
 }
 
-// renderFindings render findings thành markdown cho GitHub comment, sắp
-// theo severity (critical trước) để vấn đề quan trọng nhất hiện ngay đầu.
-// Dùng sort ổn định để không xáo trộn vô nghĩa thứ tự giữa các finding cùng
-// severity so với thứ tự Claude trả về.
+// renderFindings render findings thành markdown cho GitHub comment, nhóm
+// theo file (xem groupFindingsByFile) và bọc mỗi nhóm trong 1 khối
+// <details> gấp gọn được — để comment không dài lê thê khi PR đổi nhiều
+// file, người đọc tự mở đúng file mình quan tâm (phong cách các bot review
+// phổ biến, đổi qua nhóm-theo-file thay vì liệt kê phẳng từ issue rename
+// bot #56).
 func renderFindings(findings []Finding) string {
 	if len(findings) == 0 {
 		return "✅ Không có vấn đề đáng chú ý."
 	}
 
+	order, groups := groupFindingsByFile(findings)
+	sections := make([]string, len(order))
+	for i, file := range order {
+		sections[i] = renderFileGroup(file, groups[file])
+	}
+	return strings.Join(sections, "\n\n")
+}
+
+// groupFindingsByFile nhóm findings theo Finding.File, giữ nguyên thứ tự
+// xuất hiện đầu tiên của mỗi file (không sort tên file) để gần giống thứ tự
+// Claude nhắc tới trong review. Nhóm "" (nhận xét chung, không gắn file cụ
+// thể) luôn bị đẩy xuống CUỐI cùng bất kể xuất hiện ở đâu trong input — đọc
+// theo file cụ thể trước, nhận xét tổng quát đọc sau.
+func groupFindingsByFile(findings []Finding) (order []string, groups map[string][]Finding) {
+	groups = map[string][]Finding{}
+	for _, f := range findings {
+		if _, ok := groups[f.File]; !ok {
+			order = append(order, f.File)
+		}
+		groups[f.File] = append(groups[f.File], f)
+	}
+
+	for i, file := range order {
+		if file == "" && i != len(order)-1 {
+			order = append(append(order[:i], order[i+1:]...), "")
+			break
+		}
+	}
+	return order, groups
+}
+
+// renderFileGroup render toàn bộ finding của 1 file thành 1 khối <details>,
+// sắp theo severity (critical trước) bên trong nhóm đó — dùng sort ổn định
+// để không xáo trộn vô nghĩa thứ tự giữa các finding cùng severity so với
+// thứ tự Claude trả về. file rỗng nghĩa là nhận xét tổng quát (xem
+// Finding.File), hiển thị dưới nhãn "Nhận xét chung" thay vì tên file.
+//
+// Bắt buộc có dòng trống ngay sau "</summary>" và trước "</details>" — cú
+// pháp GitHub cần vậy để render markdown (code block, bold...) bên trong,
+// thiếu dòng trống này nội dung sẽ hiện thành text thô không định dạng.
+func renderFileGroup(file string, findings []Finding) string {
 	sorted := make([]Finding, len(findings))
 	copy(sorted, findings)
 	sort.SliceStable(sorted, func(i, j int) bool {
 		return severityRankOf(sorted[i].Severity) < severityRankOf(sorted[j].Severity)
 	})
 
+	label := "📝 Nhận xét chung"
+	if file != "" {
+		label = fmt.Sprintf("📄 `%s`", file)
+	}
+
 	sections := make([]string, len(sorted))
 	for i, f := range sorted {
 		sections[i] = renderFinding(f)
 	}
-	return strings.Join(sections, "\n\n")
+
+	return fmt.Sprintf(
+		"<details>\n<summary>%s (%d)</summary>\n\n%s\n\n</details>",
+		label, len(sorted), strings.Join(sections, "\n\n---\n\n"),
+	)
+}
+
+// renderReviewHeader render banner mở đầu comment tổng hợp: tiêu đề + bảng
+// tổng số finding theo severity trên TOÀN BỘ PR (gộp mọi bundle, kể cả
+// những finding đã được post inline riêng — xem Job.reviewBundles) để
+// người đọc nắm được bức tranh chung ngay dòng đầu tiên thay vì phải đọc
+// hết comment mới biết PR có bao nhiêu vấn đề. 🟣 là màu icon nhận diện
+// riêng của bot này, không liên quan/không nhắc tới bot review nào khác.
+//
+// partial=true nghĩa là findings KHÔNG đại diện cho toàn bộ PR: có ít nhất
+// 1 bundle khác lỗi hoặc Claude trả văn xuôi tự do (không parse được, xem
+// Job.reviewBundles's allParsed) — phần nội dung đó chỉ hiển thị dạng raw
+// text ở bên dưới banner này, không được tính vào bảng/"Tổng" ở đây. Không
+// cảnh báo rõ điều này rất dễ khiến người đọc tưởng "Tổng: N" là con số đầy
+// đủ của cả PR, trong khi thực ra còn phần chưa đếm được (PR #57).
+func renderReviewHeader(findings []Finding, partial bool) string {
+	var b strings.Builder
+	b.WriteString("## 🟣 Yuumi Review\n\n")
+
+	if len(findings) == 0 {
+		b.WriteString("✅ Không phát hiện vấn đề nào đáng chú ý.")
+	} else {
+		counts := map[string]int{}
+		for _, f := range findings {
+			counts[strings.ToLower(strings.TrimSpace(f.Severity))]++
+		}
+
+		knownOrder := []string{"critical", "high", "medium", "low"}
+		known := 0
+		b.WriteString("| Mức độ | Số lượng |\n|---|---|\n")
+		for _, sev := range knownOrder {
+			if counts[sev] == 0 {
+				continue
+			}
+			known += counts[sev]
+			fmt.Fprintf(&b, "| %s %s | %d |\n", severityIcon[sev], strings.ToUpper(sev), counts[sev])
+		}
+		// Severity model trả về không khớp 4 mức chuẩn (sai chính tả, ngôn
+		// ngữ khác...) gộp chung vào 1 dòng "Khác" thay vì bỏ sót khỏi tổng
+		// số hiển thị (nhất quán với severityRankOf/severityIcon: dữ liệu lạ
+		// vẫn được đếm, chỉ xếp/hiển thị khác đi).
+		if other := len(findings) - known; other > 0 {
+			fmt.Fprintf(&b, "| ⚪ Khác | %d |\n", other)
+		}
+		fmt.Fprintf(&b, "\n**Tổng: %d góp ý**", len(findings))
+	}
+
+	if partial {
+		b.WriteString("\n\n_(Một phần review khác không tính được vào bảng trên — xem nội dung dạng văn xuôi bên dưới, có thể còn thêm vấn đề chưa được đếm ở đây.)_")
+	}
+
+	return b.String()
 }
 
 // renderFinding render 1 finding thành 1 đoạn markdown: icon severity +

@@ -153,3 +153,27 @@ func bundleNote(index, total int) string {
 		total, index, total,
 	)
 }
+
+// formatRepairPromptPrefix đánh dấu prompt sửa định dạng (issue #69), tách
+// khỏi prompt review đầy đủ. Job.repairFindingsFormat gửi prompt này đúng
+// một lần khi CLI đã chạy xong nhưng parseFindings thất bại. Test nhận ra
+// prompt này qua isFormatRepairPrompt để không nuốt kết quả của bundle kế.
+const formatRepairPromptPrefix = "Output lần review vừa rồi không phải JSON array hợp lệ."
+
+// buildFormatRepairPrompt yêu cầu chuyển nguyên output văn xuôi vừa rồi
+// thành đúng 1 JSON array. Không gửi lại diff: model đã review xong, lần
+// này chỉ sửa định dạng, rẻ hơn gọi lại cả prompt review.
+func buildFormatRepairPrompt(previous string) string {
+	return formatRepairPromptPrefix + `
+
+Chuyển nguyên các nhận xét bên dưới thành đúng 1 JSON array (không thêm giải thích, không bọc markdown code fence). Giữ lại từng vấn đề đã nêu, không review lại và không bỏ bớt. Nếu output bên dưới không nêu vấn đề nào đáng chú ý, trả về [].
+[{"file":"đường dẫn file đúng như đã nêu, chuỗi rỗng nếu là nhận xét tổng quát","line":0,"end_line":0,"category":"bug|security|performance|maintainability|test|style|documentation","severity":"critical|high|medium|low","message":"mô tả ngắn gọn vấn đề","suggestion":"đoạn code gợi ý sửa, chuỗi rỗng nếu không có"}]
+"line" và "end_line" LUÔN là số, KHÔNG bọc trong dấu ngoặc kép. Để 0 nếu không chắc dòng.
+
+Output lần trước:
+` + previous
+}
+
+func isFormatRepairPrompt(prompt string) bool {
+	return strings.HasPrefix(prompt, formatRepairPromptPrefix)
+}

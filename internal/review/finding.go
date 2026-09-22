@@ -199,44 +199,52 @@ func renderFileGroup(file string, findings []Finding) string {
 // partial=true nghĩa là findings KHÔNG đại diện cho toàn bộ PR: có ít nhất
 // 1 bundle khác lỗi hoặc Claude trả văn xuôi tự do (không parse được, xem
 // Job.reviewBundles's allParsed) — phần nội dung đó chỉ hiển thị dạng raw
-// text ở bên dưới banner này, không được tính vào bảng/"Tổng" ở đây. Không
-// cảnh báo rõ điều này rất dễ khiến người đọc tưởng "Tổng: N" là con số đầy
-// đủ của cả PR, trong khi thực ra còn phần chưa đếm được (PR #57).
+// text ở bên dưới banner này, không được tính vào bảng/"Tổng" ở đây.
+//
+// Khi partial, dòng đầu KHÔNG được là "✅ không có vấn đề". Dòng đó là phần
+// người đọc lướt qua; một caveat in nghiêng phía dưới không thắng được một
+// câu khẳng định ngược lại (issue #69, PR #68). Cảnh báo đứng trước, cùng
+// trọng lượng với dòng ✅ của trường hợp review đủ.
 func renderReviewHeader(findings []Finding, partial bool) string {
 	var b strings.Builder
 	b.WriteString("## 🟣 Yuumi Review\n\n")
 
+	if partial && len(findings) == 0 {
+		b.WriteString("⚠️ Review chưa đủ để kết luận. Có phần review không đếm được (lỗi hoặc văn xuôi) — xem chi tiết bên dưới, có thể còn vấn đề chưa được đếm.")
+		return b.String()
+	}
+	if partial {
+		fmt.Fprintf(&b, "⚠️ Đã cấu trúc được %d góp ý; còn phần chưa đếm.\n\n", len(findings))
+	}
+
 	if len(findings) == 0 {
 		b.WriteString("✅ Không phát hiện vấn đề nào đáng chú ý.")
-	} else {
-		counts := map[string]int{}
-		for _, f := range findings {
-			counts[strings.ToLower(strings.TrimSpace(f.Severity))]++
-		}
-
-		knownOrder := []string{"critical", "high", "medium", "low"}
-		known := 0
-		b.WriteString("| Mức độ | Số lượng |\n|---|---|\n")
-		for _, sev := range knownOrder {
-			if counts[sev] == 0 {
-				continue
-			}
-			known += counts[sev]
-			fmt.Fprintf(&b, "| %s %s | %d |\n", severityIcon[sev], strings.ToUpper(sev), counts[sev])
-		}
-		// Severity model trả về không khớp 4 mức chuẩn (sai chính tả, ngôn
-		// ngữ khác...) gộp chung vào 1 dòng "Khác" thay vì bỏ sót khỏi tổng
-		// số hiển thị (nhất quán với severityRankOf/severityIcon: dữ liệu lạ
-		// vẫn được đếm, chỉ xếp/hiển thị khác đi).
-		if other := len(findings) - known; other > 0 {
-			fmt.Fprintf(&b, "| ⚪ Khác | %d |\n", other)
-		}
-		fmt.Fprintf(&b, "\n**Tổng: %d góp ý**", len(findings))
+		return b.String()
 	}
 
-	if partial {
-		b.WriteString("\n\n_(Một phần review khác không tính được vào bảng trên — xem nội dung dạng văn xuôi bên dưới, có thể còn thêm vấn đề chưa được đếm ở đây.)_")
+	counts := map[string]int{}
+	for _, f := range findings {
+		counts[strings.ToLower(strings.TrimSpace(f.Severity))]++
 	}
+
+	knownOrder := []string{"critical", "high", "medium", "low"}
+	known := 0
+	b.WriteString("| Mức độ | Số lượng |\n|---|---|\n")
+	for _, sev := range knownOrder {
+		if counts[sev] == 0 {
+			continue
+		}
+		known += counts[sev]
+		fmt.Fprintf(&b, "| %s %s | %d |\n", severityIcon[sev], strings.ToUpper(sev), counts[sev])
+	}
+	// Severity model trả về không khớp 4 mức chuẩn (sai chính tả, ngôn
+	// ngữ khác...) gộp chung vào 1 dòng "Khác" thay vì bỏ sót khỏi tổng
+	// số hiển thị (nhất quán với severityRankOf/severityIcon: dữ liệu lạ
+	// vẫn được đếm, chỉ xếp/hiển thị khác đi).
+	if other := len(findings) - known; other > 0 {
+		fmt.Fprintf(&b, "| ⚪ Khác | %d |\n", other)
+	}
+	fmt.Fprintf(&b, "\n**Tổng: %d góp ý**", len(findings))
 
 	return b.String()
 }

@@ -380,11 +380,27 @@ func TestRenderReviewHeader_Partial_WarnsCountIsIncomplete(t *testing.T) {
 
 	got := renderReviewHeader(findings, true)
 
+	warn := strings.Index(got, "Đã cấu trúc được 1 góp ý")
+	table := strings.Index(got, "| Mức độ |")
+	if warn == -1 || table == -1 || warn > table {
+		t.Errorf("renderReviewHeader(partial=true) should warn before the table, got: %q", got)
+	}
 	if !strings.Contains(got, "Tổng: 1 góp ý") {
 		t.Errorf("renderReviewHeader(partial=true) should still show the count it does have, got: %q", got)
 	}
-	if !strings.Contains(got, "không tính được vào bảng trên") {
-		t.Errorf("renderReviewHeader(partial=true) should warn the count is incomplete, got: %q", got)
+	if strings.Contains(got, "Không phát hiện vấn đề") {
+		t.Errorf("renderReviewHeader(partial=true) should not claim the PR is clean, got: %q", got)
+	}
+}
+
+func TestRenderReviewHeader_PartialEmpty_DoesNotClaimClean(t *testing.T) {
+	got := renderReviewHeader(nil, true)
+
+	if strings.Contains(got, "Không phát hiện vấn đề") {
+		t.Errorf("renderReviewHeader(nil, true) claimed the PR is clean, got: %q", got)
+	}
+	if !strings.Contains(got, "Review chưa đủ để kết luận") {
+		t.Errorf("renderReviewHeader(nil, true) = %q, want an inconclusive warning", got)
 	}
 }
 
@@ -393,7 +409,7 @@ func TestRenderReviewHeader_NotPartial_NoWarning(t *testing.T) {
 
 	got := renderReviewHeader(findings, false)
 
-	if strings.Contains(got, "không tính được vào bảng trên") {
+	if strings.Contains(got, "chưa đếm") {
 		t.Errorf("renderReviewHeader(partial=false) should not show the incomplete-count warning, got: %q", got)
 	}
 }

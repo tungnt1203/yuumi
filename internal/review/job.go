@@ -469,10 +469,10 @@ func (j *Job) diffTruncationWarning(diff string) string {
 // allParsed báo MỌI bundle đều parse JSON thành công (không bundle nào lỗi
 // hay fallback raw text) — false nghĩa là allFindings không đại diện cho
 // TOÀN BỘ PR: có phần nội dung (lỗi hoặc văn xuôi tự do) không được tính
-// vào đó. Run() dùng để cảnh báo trong header rằng "Tổng: N" chỉ tính được
-// phần có cấu trúc, tránh người đọc tưởng lầm đó là toàn bộ vấn đề của PR
-// trong khi phần raw-text hiển thị bên dưới có thể còn thêm vấn đề khác
-// chưa được đếm (PR review issue #57).
+// vào đó. Run() truyền partial vào renderReviewHeader: khi chưa đếm được
+// finding nào thì header nói review chưa đủ để kết luận, không được mở đầu
+// bằng "✅ không có vấn đề" (issue #69). Khi đã đếm được N thì cảnh báo
+// đứng trước bảng, vì "Tổng: N" không phải toàn bộ PR (issue #57).
 func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticReport string, repoInstructions string, validationDiff string, primer string) (merged string, hadError bool, inline []pendingComment, allFindings []Finding, anyParsed bool, allParsed bool) {
 	single := len(bundles) == 1
 	sections := make([]string, len(bundles))
@@ -489,6 +489,16 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 		text, attempts, numTurns, err := j.Reviewer.Review(prompt, dir)
 		duration := time.Since(start)
 
+		// Log response gốc của lần review (JSON nếu Claude làm đúng format,
+		// text tự do nếu không — rỗng nếu lỗi), KHÔNG phải display đã render
+		// lại. Ghi trước lần sửa định dạng bên dưới để file log giữ đúng
+		// thứ tự: review trước, repair sau.
+		errMsg := ""
+		if err != nil {
+			errMsg = err.Error()
+		}
+		j.logBundleReview(sha, i+1, len(bundles), prompt, text, errMsg, duration, attempts, numTurns)
+
 		// display là những gì thực sự được post lên comment tổng hợp — mặc
 		// định giống hệt text (raw), chỉ khác khi có lỗi (bọc thêm thông báo
 		// lỗi) hoặc khi text parse được thành findings có cấu trúc (issue
@@ -496,15 +506,20 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 		// thành pendingComment (post riêng qua GitHub Reviews API, issue
 		// #5), phần còn lại (general) mới render vào display.
 		display := text
-		errMsg := ""
 		if err != nil {
 			fmt.Println("Review bundle", i+1, "/", len(bundles), "error:", err)
-			errMsg = err.Error()
 			display = "❌ Review thất bại: " + errMsg
 			hadError = true
 		} else {
 			fmt.Println("Review bundle", i+1, "/", len(bundles), "result:", text)
-			if findings, ok := parseFindings(text); ok {
+			findings, ok := parseFindings(text)
+			if !ok {
+				// CLI đã thành công nhưng output không phải JSON array.
+				// Gọi thêm đúng 1 lần để chuyển văn xuôi đó thành JSON,
+				// trước khi fallback hiện nguyên văn (issue #69).
+				findings, ok = j.repairFindingsFormat(dir, sha, i+1, len(bundles), text)
+			}
+			if ok {
 				anyParsed = true
 				parsedCount++
 				allFindings = append(allFindings, findings...)
@@ -512,19 +527,6 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 				inline = append(inline, bundleInline...)
 				display = renderBundleSummary(findings, general)
 			}
-		}
-
-		if j.Logger != nil {
-			// Log response gốc Reviewer thực sự trả về (JSON nếu Claude làm
-			// đúng format được yêu cầu, text tự do nếu không — rỗng nếu
-			// lỗi), KHÔNG phải display đã render lại — để file log phản
-			// ánh đúng input gốc, hữu ích khi cần debug parseFindings
-			// không parse được.
-			response := text
-			if err != nil {
-				response = ""
-			}
-			j.Logger.LogReview(j.RepoFullName, j.IssueNumber, sha, i+1, len(bundles), prompt, response, errMsg, duration, attempts, numTurns)
 		}
 
 		if single {
@@ -536,6 +538,46 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 
 	allParsed = parsedCount == len(bundles)
 	return strings.Join(sections, "\n\n"), hadError, inline, allFindings, anyParsed, allParsed
+}
+
+// repairFindingsFormat gọi Reviewer thêm đúng 1 lần khi lần review đã chạy
+// xong nhưng parseFindings thất bại (issue #69). Prompt chỉ mang output vừa
+// rồi và yêu cầu JSON, không gửi lại diff. Lần này cũng thất bại thì caller
+// giữ nguyên văn xuôi — không đặt hadError, vì review code đã chạy; lỗi sửa
+// định dạng không được chặn ghi SHA nếu không review incremental sẽ lặp lại
+// cùng diff mỗi lần model không tuân format.
+//
+// Khác retry trong claudecli.Reviewer: retry đó dành cho lỗi tạm thời của
+// CLI (timeout, mạng). Ở đây CLI đã trả kết quả, chỉ sai format bên trong.
+func (j *Job) repairFindingsFormat(dir, sha string, bundleIndex, bundleTotal int, previous string) ([]Finding, bool) {
+	prompt := buildFormatRepairPrompt(previous)
+	start := time.Now()
+	text, attempts, numTurns, err := j.Reviewer.Review(prompt, dir)
+	duration := time.Since(start)
+
+	errMsg := ""
+	if err != nil {
+		fmt.Println("Repair bundle", bundleIndex, "/", bundleTotal, "format error:", err)
+		errMsg = err.Error()
+	}
+	j.logBundleReview(sha, bundleIndex, bundleTotal, prompt, text, errMsg, duration, attempts, numTurns)
+	if err != nil {
+		return nil, false
+	}
+	return parseFindings(text)
+}
+
+// logBundleReview ghi 1 lần gọi Reviewer. errMsg khác rỗng thì response ghi
+// rỗng — lỗi CLI không có output đáng giữ, đúng như trước khi tách helper
+// này ra (issue #9). Logger nil nghĩa là không ghi log.
+func (j *Job) logBundleReview(sha string, bundleIndex, bundleTotal int, prompt, response, errMsg string, duration time.Duration, attempts, numTurns int) {
+	if j.Logger == nil {
+		return
+	}
+	if errMsg != "" {
+		response = ""
+	}
+	j.Logger.LogReview(j.RepoFullName, j.IssueNumber, sha, bundleIndex, bundleTotal, prompt, response, errMsg, duration, attempts, numTurns)
 }
 
 // skippedNote render 1 dòng thông báo các file bị bundleDiffs bỏ qua

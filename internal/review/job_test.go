@@ -144,17 +144,37 @@ type fakeReviewer struct {
 	// gotPrompts ghi lại prompt của TỪNG lần gọi (theo thứ tự) — dùng cho
 	// test nhiều bundle, khi 1 lần Job.Run() có thể gọi Review() nhiều lần.
 	gotPrompts []string
+
+	// repairResult là kết quả của lần sửa định dạng (issue #69). repairSet
+	// phân biệt "chưa cấu hình" (trả lại đúng result, thường cũng không phải
+	// JSON, để comment giữ nguyên văn) với "cố ý trả chuỗi này", kể cả rỗng.
+	repairResult  string
+	repairSet     bool
+	repairErr     error
+	repairPrompts []string
 }
 
 func (f *fakeReviewer) Review(prompt string, dir string) (string, int, int, error) {
 	f.called = true
-	f.gotPrompt = prompt
 	f.gotDir = dir
 	f.gotPrompts = append(f.gotPrompts, prompt)
 	attempts := f.attempts
 	if attempts == 0 {
 		attempts = 1
 	}
+	// Lần sửa định dạng không được ghi đè gotPrompt: test hiện có assert
+	// prompt review (diff, primer, hướng dẫn repo) qua field đó.
+	if isFormatRepairPrompt(prompt) {
+		f.repairPrompts = append(f.repairPrompts, prompt)
+		if f.repairErr != nil {
+			return "", 1, 0, f.repairErr
+		}
+		if f.repairSet {
+			return f.repairResult, 1, 0, nil
+		}
+		return f.result, attempts, f.numTurns, f.err
+	}
+	f.gotPrompt = prompt
 	return f.result, attempts, f.numTurns, f.err
 }
 
@@ -165,9 +185,28 @@ type scriptedReviewer struct {
 	errs    []error
 
 	prompts []string
+
+	// repairResult/repairSet giống fakeReviewer: lần sửa định dạng không
+	// tiêu thụ results/errs của bundle kế tiếp. Mặc định trả văn xuôi để
+	// bundle giữ nguyên output gốc.
+	repairResult  string
+	repairSet     bool
+	repairErr     error
+	repairPrompts []string
 }
 
 func (s *scriptedReviewer) Review(prompt string, dir string) (string, int, int, error) {
+	if isFormatRepairPrompt(prompt) {
+		s.repairPrompts = append(s.repairPrompts, prompt)
+		if s.repairErr != nil {
+			return "", 1, 0, s.repairErr
+		}
+		if s.repairSet {
+			return s.repairResult, 1, 0, nil
+		}
+		return "không phải JSON", 1, 0, nil
+	}
+
 	i := len(s.prompts)
 	s.prompts = append(s.prompts, prompt)
 
@@ -677,8 +716,10 @@ func TestJobRun_LogsEachBundleReview(t *testing.T) {
 	}
 	job.Run()
 
-	if len(logger.calls) != 1 {
-		t.Fatalf("expected 1 log call for a single-bundle review, got %d", len(logger.calls))
+	// Output không parse được nên có thêm 1 log cho lần sửa định dạng
+	// (issue #69). Lần review gốc vẫn là entry đầu tiên.
+	if len(logger.calls) != 2 {
+		t.Fatalf("expected 2 log calls (review + format repair), got %d", len(logger.calls))
 	}
 	call := logger.calls[0]
 	if call.repoFullName != "owner/repo" || call.issueNumber != 42 || call.sha != "abc123" {
@@ -695,6 +736,12 @@ func TestJobRun_LogsEachBundleReview(t *testing.T) {
 	}
 	if call.attempts != 1 {
 		t.Errorf("expected attempts=1 for a review that succeeded on the first try, got %d", call.attempts)
+	}
+	if !isFormatRepairPrompt(logger.calls[1].prompt) {
+		t.Errorf("expected second log to be the format-repair call, got prompt: %s", logger.calls[1].prompt)
+	}
+	if logger.calls[1].response != "trông ổn" {
+		t.Errorf("expected repair log to keep the raw response, got: %s", logger.calls[1].response)
 	}
 }
 
@@ -732,7 +779,7 @@ func TestJobRun_LogsAttemptsFromReviewer(t *testing.T) {
 	diff := "diff --git a/main.go b/main.go\n+fmt.Println(1)"
 
 	gh := &fakeGitHubClient{headSHA: "abc123", diff: diff}
-	reviewer := &fakeReviewer{result: "trông ổn", attempts: 3}
+	reviewer := &fakeReviewer{result: `[]`, attempts: 3}
 	logger := &fakeReviewLogger{}
 
 	job := &Job{
@@ -759,7 +806,7 @@ func TestJobRun_LogsNumTurnsFromReviewer(t *testing.T) {
 	diff := "diff --git a/main.go b/main.go\n+fmt.Println(1)"
 
 	gh := &fakeGitHubClient{headSHA: "abc123", diff: diff}
-	reviewer := &fakeReviewer{result: "trông ổn", numTurns: 7}
+	reviewer := &fakeReviewer{result: `[]`, numTurns: 7}
 	logger := &fakeReviewLogger{}
 
 	job := &Job{
@@ -877,11 +924,129 @@ func TestJobRun_MixedBundles_HeaderWarnsCountIsPartial(t *testing.T) {
 	if !strings.Contains(gh.editedBody, "Tổng: 1 góp ý") {
 		t.Errorf("expected header to count only the parsed bundle's finding, got: %s", gh.editedBody)
 	}
-	if !strings.Contains(gh.editedBody, "không tính được vào bảng trên") {
+	if !strings.Contains(gh.editedBody, "Đã cấu trúc được 1 góp ý") {
 		t.Errorf("expected header to warn the count is partial, got: %s", gh.editedBody)
+	}
+	if strings.Contains(gh.editedBody, "Không phát hiện vấn đề") {
+		t.Errorf("expected header not to claim the PR is clean, got: %s", gh.editedBody)
 	}
 	if !strings.Contains(gh.editedBody, "Code phần này trông ổn") {
 		t.Errorf("expected the raw-text bundle to still be shown in full below the header, got: %s", gh.editedBody)
+	}
+}
+
+// TestJobRun_PartialEmpty_HeaderDoesNotClaimClean là đúng case PR #68
+// (issue #69): một bundle parse ra mảng rỗng, bundle kia là văn xuôi có
+// finding thật và lần sửa định dạng cũng thất bại. Header không được mở
+// đầu bằng "✅ không có vấn đề".
+func TestJobRun_PartialEmpty_HeaderDoesNotClaimClean(t *testing.T) {
+	fileA := "diff --git a/a.go b/a.go\n+" + strings.Repeat("a", 30)
+	fileB := "diff --git a/b.go b/b.go\n+" + strings.Repeat("b", 30)
+	diff := fileA + "\n" + fileB
+	prose := "1. hunkparse.go:60 doc comment dính.\n2. formatSuggestion đóng fence sớm."
+
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: diff}
+	reviewer := &scriptedReviewer{results: []string{`[]`, prose}}
+	store := newFakeStateStore(nil)
+
+	job := &Job{
+		GitHub:            gh,
+		Clone:             fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer:          reviewer,
+		BundleBudgetChars: len(fileA) + 1,
+		StateStore:        store,
+		RepoFullName:      "octo/repo",
+		IssueNumber:       68,
+	}
+	job.Run()
+
+	if strings.Contains(gh.editedBody, "Không phát hiện vấn đề") {
+		t.Errorf("header claimed the PR is clean while a bundle stayed prose, got: %s", gh.editedBody)
+	}
+	if !strings.Contains(gh.editedBody, "Review chưa đủ để kết luận") {
+		t.Errorf("expected an inconclusive header, got: %s", gh.editedBody)
+	}
+	if !strings.Contains(gh.editedBody, "formatSuggestion đóng fence sớm") {
+		t.Errorf("expected the prose bundle to stay visible, got: %s", gh.editedBody)
+	}
+	if len(reviewer.repairPrompts) != 1 {
+		t.Fatalf("expected one format repair for the prose bundle, got %d", len(reviewer.repairPrompts))
+	}
+	if !store.setCalled || store.gotSetSHA != "abc123" {
+		t.Errorf("format repair failure should still save the reviewed SHA, setCalled=%v sha=%q", store.setCalled, store.gotSetSHA)
+	}
+}
+
+// TestJobRun_UnparsedBundle_RepairRecoversFindings: lần sửa định dạng trả
+// được JSON thì finding đó được đếm như bundle parse ngay từ đầu, văn xuôi
+// gốc không còn hiện trong comment.
+func TestJobRun_UnparsedBundle_RepairRecoversFindings(t *testing.T) {
+	prose := "doc comment của coversNewLineRange dính vào LineAtNew."
+	repaired := `[{"severity":"medium","file":"internal/review/hunkparse.go","line":60,"message":"doc comment dính vào LineAtNew"}]`
+
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: "diff --git a/main.go b/main.go\n+fmt.Println(1)"}
+	reviewer := &fakeReviewer{result: prose, repairResult: repaired, repairSet: true}
+	logger := &fakeReviewLogger{}
+
+	job := &Job{
+		GitHub:   gh,
+		Clone:    fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer: reviewer,
+		Logger:   logger,
+	}
+	job.Run()
+
+	if len(reviewer.repairPrompts) != 1 || !strings.Contains(reviewer.repairPrompts[0], prose) {
+		t.Fatalf("repair prompt should include the previous output, got %#v", reviewer.repairPrompts)
+	}
+	if strings.Contains(gh.editedBody, prose) {
+		t.Errorf("raw prose should be replaced by the repaired finding, got: %s", gh.editedBody)
+	}
+	if !strings.Contains(gh.editedBody, "doc comment dính vào LineAtNew") {
+		t.Errorf("expected the repaired finding in the comment, got: %s", gh.editedBody)
+	}
+	if !strings.Contains(gh.editedBody, "Tổng: 1 góp ý") {
+		t.Errorf("expected the repaired finding to be counted, got: %s", gh.editedBody)
+	}
+	if strings.Contains(gh.editedBody, "chưa đủ để kết luận") || strings.Contains(gh.editedBody, "chưa đếm") {
+		t.Errorf("a repaired bundle should count as fully parsed, got: %s", gh.editedBody)
+	}
+	if len(logger.calls) != 2 {
+		t.Fatalf("expected review and repair to both be logged, got %d", len(logger.calls))
+	}
+	if logger.calls[0].response != prose || logger.calls[1].response != repaired {
+		t.Errorf("expected logs to keep both raw responses, got %#v then %#v", logger.calls[0].response, logger.calls[1].response)
+	}
+}
+
+// TestJobRun_FormatRepairError_KeepsProseAndSavesSHA: lỗi của lần sửa định
+// dạng không biến review đã chạy xong thành hadError, và không nuốt văn xuôi.
+func TestJobRun_FormatRepairError_KeepsProseAndSavesSHA(t *testing.T) {
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: "diff --git a/main.go b/main.go\n+fmt.Println(1)"}
+	reviewer := &fakeReviewer{result: "văn xuôi có bug", repairErr: errors.New("claude timed out")}
+	store := newFakeStateStore(nil)
+
+	job := &Job{
+		GitHub:       gh,
+		Clone:        fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer:     reviewer,
+		StateStore:   store,
+		RepoFullName: "octo/repo",
+		IssueNumber:  1,
+	}
+	job.Run()
+
+	if !strings.Contains(gh.editedBody, "văn xuôi có bug") {
+		t.Errorf("expected the original prose to stay, got: %s", gh.editedBody)
+	}
+	if strings.Contains(gh.editedBody, "Review thất bại") {
+		t.Errorf("format-repair error should not replace the review, got: %s", gh.editedBody)
+	}
+	if strings.Contains(gh.editedBody, "## 🟣 Yuumi Review") {
+		t.Errorf("expected no header when nothing parsed, got: %s", gh.editedBody)
+	}
+	if !store.setCalled || store.gotSetSHA != "abc123" {
+		t.Errorf("expected reviewed SHA to be saved, setCalled=%v sha=%q", store.setCalled, store.gotSetSHA)
 	}
 }
 

@@ -185,6 +185,20 @@ func TestBuildReviewPrompt_IncludesResultFormatInstructions(t *testing.T) {
 	}
 }
 
+func TestBuildFormatRepairPrompt_IncludesPreviousOutput(t *testing.T) {
+	got := buildFormatRepairPrompt("bug ở dòng 60")
+
+	if !isFormatRepairPrompt(got) {
+		t.Fatalf("buildFormatRepairPrompt() = %q, want the format-repair prefix", got)
+	}
+	if !strings.Contains(got, "bug ở dòng 60") {
+		t.Errorf("repair prompt missing the previous output:\n%s", got)
+	}
+	if strings.Contains(got, "```diff") {
+		t.Errorf("repair prompt should not resend a diff:\n%s", got)
+	}
+}
+
 // TestBuildReviewPrompt_Primer_ReplacesGenericReadMoreHint đảm bảo khi có
 // primer (PR bị chia bundle, issue #18), prompt nhúng đúng nội dung primer
 // và KHÔNG còn dặn chung chung "hãy tự đọc thêm" nữa — primer đã thay thế

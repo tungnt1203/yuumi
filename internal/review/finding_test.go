@@ -263,10 +263,10 @@ func TestGroupFindingsByFile_PreservesFirstSeenFileOrder(t *testing.T) {
 }
 
 func TestRenderReviewHeader_Empty_ShowsNoIssuesMessage(t *testing.T) {
-	got := renderReviewHeader(nil)
+	got := renderReviewHeader(nil, false)
 
 	if !strings.Contains(got, "## 🟣 Yuumi Review") || !strings.Contains(got, "Không phát hiện vấn đề") {
-		t.Errorf("renderReviewHeader(nil) = %q, want title + no-issues message", got)
+		t.Errorf("renderReviewHeader(nil, false) = %q, want title + no-issues message", got)
 	}
 }
 
@@ -277,7 +277,7 @@ func TestRenderReviewHeader_CountsBySeverity(t *testing.T) {
 		{Severity: "low", Message: "3"},
 	}
 
-	got := renderReviewHeader(findings)
+	got := renderReviewHeader(findings, false)
 
 	if !strings.Contains(got, "| 🔴 CRITICAL | 2 |") {
 		t.Errorf("renderReviewHeader() missing critical count row, got: %q", got)
@@ -296,13 +296,36 @@ func TestRenderReviewHeader_CountsBySeverity(t *testing.T) {
 func TestRenderReviewHeader_UnknownSeverity_CountedAsKhac(t *testing.T) {
 	findings := []Finding{{Severity: "weird", Message: "m"}}
 
-	got := renderReviewHeader(findings)
+	got := renderReviewHeader(findings, false)
 
 	if !strings.Contains(got, "| ⚪ Khác | 1 |") {
 		t.Errorf("renderReviewHeader() should count unknown severity under \"Khác\", got: %q", got)
 	}
 	if !strings.Contains(got, "Tổng: 1 góp ý") {
 		t.Errorf("renderReviewHeader() missing total count, got: %q", got)
+	}
+}
+
+func TestRenderReviewHeader_Partial_WarnsCountIsIncomplete(t *testing.T) {
+	findings := []Finding{{Severity: "high", Message: "m"}}
+
+	got := renderReviewHeader(findings, true)
+
+	if !strings.Contains(got, "Tổng: 1 góp ý") {
+		t.Errorf("renderReviewHeader(partial=true) should still show the count it does have, got: %q", got)
+	}
+	if !strings.Contains(got, "không tính được vào bảng trên") {
+		t.Errorf("renderReviewHeader(partial=true) should warn the count is incomplete, got: %q", got)
+	}
+}
+
+func TestRenderReviewHeader_NotPartial_NoWarning(t *testing.T) {
+	findings := []Finding{{Severity: "high", Message: "m"}}
+
+	got := renderReviewHeader(findings, false)
+
+	if strings.Contains(got, "không tính được vào bảng trên") {
+		t.Errorf("renderReviewHeader(partial=false) should not show the incomplete-count warning, got: %q", got)
 	}
 }
 

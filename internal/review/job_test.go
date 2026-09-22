@@ -249,8 +249,11 @@ func TestJobRun_HeadSHAError_StopsEarly(t *testing.T) {
 	if reviewer.called {
 		t.Error("expected Reviewer not to be called when getting head SHA fails")
 	}
-	if !gh.editCalled || !strings.Contains(gh.editedBody, "boom") {
-		t.Errorf("expected EditComment to report the head SHA error, got called=%v body=%q", gh.editCalled, gh.editedBody)
+	if !gh.editCalled || gh.editedBody != reviewSetupFailureComment {
+		t.Errorf("expected generic failure comment, got called=%v body=%q", gh.editCalled, gh.editedBody)
+	}
+	if strings.Contains(gh.editedBody, "boom") {
+		t.Errorf("comment leaked the head SHA error: %s", gh.editedBody)
 	}
 }
 
@@ -262,7 +265,7 @@ func TestJobRun_CloneError_StopsEarly(t *testing.T) {
 	job := &Job{
 		GitHub:        gh,
 		PlaceholderID: 42,
-		Clone:         fakeCloner("", errors.New("clone failed"), &cleanupCalled),
+		Clone:         fakeCloner("", errors.New("fetch https://x-access-token:ghs_supersecret@github.com/owner/repo.git failed"), &cleanupCalled),
 		Reviewer:      reviewer,
 	}
 	job.Run()
@@ -270,8 +273,11 @@ func TestJobRun_CloneError_StopsEarly(t *testing.T) {
 	if reviewer.called {
 		t.Error("expected Reviewer not to be called when clone fails")
 	}
-	if !gh.editCalled || !strings.Contains(gh.editedBody, "clone failed") {
-		t.Errorf("expected EditComment to report the clone error, got called=%v body=%q", gh.editCalled, gh.editedBody)
+	if !gh.editCalled || gh.editedBody != reviewSetupFailureComment {
+		t.Errorf("expected generic failure comment, got called=%v body=%q", gh.editCalled, gh.editedBody)
+	}
+	if strings.Contains(gh.editedBody, "ghs_supersecret") {
+		t.Errorf("comment leaked the clone error: %s", gh.editedBody)
 	}
 }
 
@@ -341,8 +347,11 @@ func TestJobRun_ReviewerPanic_Recovered(t *testing.T) {
 	if !cleanupCalled {
 		t.Error("expected clone cleanup to be called when review panics")
 	}
-	if !gh.editCalled || !strings.Contains(gh.editedBody, "unexpected panic") {
-		t.Errorf("expected EditComment to report the panic, got called=%v body=%q", gh.editCalled, gh.editedBody)
+	if !gh.editCalled || gh.editedBody != reviewSetupFailureComment {
+		t.Errorf("expected generic failure comment, got called=%v body=%q", gh.editCalled, gh.editedBody)
+	}
+	if strings.Contains(gh.editedBody, "unexpected panic") {
+		t.Errorf("comment leaked the panic value: %s", gh.editedBody)
 	}
 }
 

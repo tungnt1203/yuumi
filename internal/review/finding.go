@@ -281,28 +281,49 @@ func renderFindingText(f Finding, suggestedChange bool) string {
 
 	b.WriteString("\n\n")
 	if suggestedChange {
-		b.WriteString(formatSuggestion(f.Suggestion))
-	} else {
-		b.WriteString("**Gợi ý sửa:**\n```\n")
-		b.WriteString(f.Suggestion)
-		b.WriteString("\n```")
+		if block, ok := formatSuggestion(f.Suggestion); ok {
+			b.WriteString(block)
+			return b.String()
+		}
 	}
+	b.WriteString("**Gợi ý sửa:**\n```\n")
+	b.WriteString(f.Suggestion)
+	b.WriteString("\n```")
 
 	return b.String()
 }
 
 // formatSuggestion bọc nội dung thay thế bằng fence ```suggestion mà GitHub
-// nhận ra trong review comment gắn dòng. Suggestion rỗng hoặc chỉ toàn
-// khoảng trắng trả về "" — caller không chèn block. Nội dung giữ nguyên
-// (kể cả thụt đầu dòng); chỉ bỏ newline thừa ở cuối để fence đóng không
-// tạo thêm 1 dòng trống trong phần thay thế.
-func formatSuggestion(suggestion string) string {
+// nhận ra trong review comment gắn dòng. ok=false khi suggestion rỗng, chỉ
+// toàn khoảng trắng, hoặc có một dòng mở bằng ``` — fence đó sẽ đóng khối
+// suggestion sớm và GitHub không hiện "Commit suggestion". Caller khi đó
+// giữ code block thường. Nội dung giữ nguyên (kể cả thụt đầu dòng); chỉ bỏ
+// newline thừa ở cuối để fence đóng không tạo thêm 1 dòng trống.
+func formatSuggestion(suggestion string) (block string, ok bool) {
 	if strings.TrimSpace(suggestion) == "" {
-		return ""
+		return "", false
 	}
 	body := strings.ReplaceAll(suggestion, "\r\n", "\n")
 	body = strings.TrimRight(body, "\n")
-	return "```suggestion\n" + body + "\n```"
+	if suggestionContainsFence(body) {
+		return "", false
+	}
+	return "```suggestion\n" + body + "\n```", true
+}
+
+// suggestionContainsFence báo body có dòng mà markdown coi là fence đóng
+// (dòng bắt đầu bằng ```, cho phép tối đa 3 space thụt vào theo CommonMark).
+func suggestionContainsFence(body string) bool {
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimLeft(line, " ")
+		if len(line)-len(trimmed) > 3 {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "```") {
+			return true
+		}
+	}
+	return false
 }
 
 func severityRankOf(severity string) int {

@@ -180,26 +180,46 @@ func TestRenderFinding_WithSuggestion_IncludesCodeBlock(t *testing.T) {
 }
 
 func TestFormatSuggestion_SingleLine(t *testing.T) {
-	got := formatSuggestion(`fmt.Errorf("do X: %w", err)`)
+	got, ok := formatSuggestion(`fmt.Errorf("do X: %w", err)`)
 	want := "```suggestion\nfmt.Errorf(\"do X: %w\", err)\n```"
-	if got != want {
-		t.Errorf("formatSuggestion() = %q, want %q", got, want)
+	if !ok || got != want {
+		t.Errorf("formatSuggestion() = %q, %v, want %q, true", got, ok, want)
 	}
 }
 
 func TestFormatSuggestion_MultiLine(t *testing.T) {
-	got := formatSuggestion("if err != nil {\n\treturn err\n}\n")
+	got, ok := formatSuggestion("if err != nil {\n\treturn err\n}\n")
 	want := "```suggestion\nif err != nil {\n\treturn err\n}\n```"
-	if got != want {
-		t.Errorf("formatSuggestion() = %q, want %q", got, want)
+	if !ok || got != want {
+		t.Errorf("formatSuggestion() = %q, %v, want %q, true", got, ok, want)
 	}
 }
 
 func TestFormatSuggestion_Empty(t *testing.T) {
 	for _, suggestion := range []string{"", "   ", "\n\t\n"} {
-		if got := formatSuggestion(suggestion); got != "" {
-			t.Errorf("formatSuggestion(%q) = %q, want empty", suggestion, got)
+		if got, ok := formatSuggestion(suggestion); ok || got != "" {
+			t.Errorf("formatSuggestion(%q) = %q, %v, want empty, false", suggestion, got, ok)
 		}
+	}
+}
+
+func TestFormatSuggestion_BodyContainsFence_RefusesSuggestionBlock(t *testing.T) {
+	got, ok := formatSuggestion("before\n```\ncode\n```\nafter")
+	if ok || got != "" {
+		t.Errorf("formatSuggestion() = %q, %v, want empty, false when body contains a fence", got, ok)
+	}
+}
+
+func TestRenderInlineFinding_FenceInSuggestion_FallsBackToPlainBlock(t *testing.T) {
+	f := Finding{Severity: "low", Message: "m", Suggestion: "giữ\n```\nkhối\n```"}
+
+	got := renderInlineFinding(f)
+
+	if strings.Contains(got, "```suggestion") {
+		t.Errorf("renderInlineFinding() = %q, want a plain code block when suggestion contains a fence", got)
+	}
+	if !strings.Contains(got, "Gợi ý sửa") || !strings.Contains(got, "```\nkhối\n```") {
+		t.Errorf("renderInlineFinding() = %q, want the plain suggestion block", got)
 	}
 }
 

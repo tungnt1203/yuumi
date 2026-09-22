@@ -30,7 +30,7 @@ go build ./... && go vet ./... && go test ./...
 **Lưu ý (issue #47):** `<installation id>` phải là ID **thật** của lần cài App vào 1 repo — server sẽ gọi GitHub thật để đổi lấy installation token trước khi làm gì khác, không "giả lập hoàn toàn offline" được. Lấy ID này ở App settings → **Advanced** → chọn 1 delivery bất kỳ → xem field `installation.id`, hoặc từ URL trang cài đặt của installation (`.../installations/<id>`).
 
 ```bash
-BODY='{"action":"created","comment":{"id":1,"body":"@yuumi-review review","user":{"login":"<username>"}},"repository":{"full_name":"<owner>/<repo>"},"issue":{"number":<số PR>},"installation":{"id":<installation id thật>}}'
+BODY='{"action":"created","comment":{"id":1,"body":"@yuumi review","user":{"login":"<username>"}},"repository":{"full_name":"<owner>/<repo>"},"issue":{"number":<số PR>},"installation":{"id":<installation id thật>}}'
 SIG=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "$GITHUB_WEBHOOK_SECRET" | sed 's/^.* //')
 curl -i -X POST localhost:8080/webhook \
   -H "Content-Type: application/json" \
@@ -65,7 +65,7 @@ curl -i -X POST localhost:8080/webhook \
    - **Permissions & events**: `Issues: Read and write`, `Pull requests: Read and write`, subscribe **Issue comment** + **Pull request**.
    - Nếu App chưa cài vào repo đích: **Install App** (menu bên trái) → chọn repo.
 4. Tab **Advanced** của App: xem **Recent Deliveries**, event `ping` đầu tiên phải có dấu tick xanh. Log server sẽ in `Ignored: unsupported X-GitHub-Event ping` — bình thường, server chỉ xử lý `issue_comment` và `pull_request`.
-5. Comment `@yuumi-review review` trên 1 **Pull Request thật** bằng tài khoản có trong `ALLOWED_USERS`, hoặc mở PR mới / push thêm commit để thử auto-review (tác giả PR phải nằm trong `ALLOWED_USERS`). Bot sẽ react 👀, hiện "Đang review...", rồi sửa comment đó thành kết quả review — dưới tên **`<tên App>[bot]`** thay vì tài khoản cá nhân.
+5. Comment `@yuumi review` trên 1 **Pull Request thật** bằng tài khoản có trong `ALLOWED_USERS`, hoặc mở PR mới / push thêm commit để thử auto-review (tác giả PR phải nằm trong `ALLOWED_USERS`). Bot sẽ react 👀, hiện "Đang review...", rồi sửa comment đó thành kết quả review — dưới tên **`<tên App>[bot]`** thay vì tài khoản cá nhân.
 
 ## Eval suite
 

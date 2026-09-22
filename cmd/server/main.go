@@ -86,7 +86,7 @@ func main() {
 	}
 
 	// handleIssueComment xử lý luồng review theo mention thủ công
-	// ("@yuumi-review review" trong comment PR) — hành vi giữ nguyên như trước
+	// ("@yuumi review" trong comment PR) — hành vi giữ nguyên như trước
 	// issue #32, chỉ tách ra khỏi handler chính để handler chính route được
 	// theo loại event (xem handlePullRequest cho luồng auto-review mới).
 	handleIssueComment := func(w http.ResponseWriter, r *http.Request, payload webhook.Payload) {
@@ -107,7 +107,7 @@ func main() {
 			return
 		}
 
-		cmd, err := comment.ExtractCommand("yuumi-review")
+		cmd, err := comment.ExtractCommand("yuumi")
 		if err != nil {
 			fmt.Println("Ignored:", err)
 			fmt.Fprintln(w, "ignored")

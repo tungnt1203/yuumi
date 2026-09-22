@@ -33,3 +33,12 @@ func (s *SeenComments) MarkIfNew(id int64) bool {
 	s.seen[id] = struct{}{}
 	return true
 }
+
+// Forget xóa id khỏi danh sách đã thấy. Handler gọi khi đã MarkIfNew nhưng
+// chưa post được comment placeholder (lỗi token, rate limit...): giữ dấu
+// "đã thấy" sẽ khiến GitHub redeliver đúng comment đó bị bỏ qua.
+func (s *SeenComments) Forget(id int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.seen, id)
+}

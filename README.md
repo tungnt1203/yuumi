@@ -172,8 +172,8 @@ Diff của PR được xử lý trước khi gửi cho Claude (`internal/review/
 
 - **Retry**: `claude` CLI lỗi khi chạy lệnh (timeout 5 phút, lỗi mạng...) được thử lại tối đa 3 lần (gồm lần đầu) với backoff. Lỗi Claude tự báo (`is_error`) hoặc output không parse được **không** retry vì thử lại với cùng input không đổi được kết quả.
 - **Giới hạn đồng thời**: `Dispatcher` chạy mỗi job trong 1 goroutine riêng nhưng chỉ cho tối đa `MAX_CONCURRENT_REVIEWS` job chạy cùng lúc (mỗi job spawn `git` + `claude` thật). HTTP handler luôn trả lời webhook ngay, không bị chặn bởi hàng đợi.
-- **Chống xử lý trùng**: comment ID đã xử lý được nhớ trong memory (`webhook.SeenComments`), nên GitHub redeliver webhook hoặc mention trùng không tạo 2 job cùng edit 1 comment. Đây là lưu trong RAM, restart server thì mất và không có TTL — chấp nhận được với 1 instance nội bộ, cần lưu ngoài (Redis/DB) nếu chạy nhiều instance. **Lưu ý:** ID được đánh dấu "đã thấy" ngay khi nhận webhook, *trước* khi post comment placeholder ở `cmd/server/main.go`. Nếu bước post placeholder lỗi (token thiếu quyền, rate limit...) thì không có review nào chạy, và Redeliver đúng comment đó trên GitHub cũng bị bỏ qua vì trùng ID — cần comment mới (`@yuumi review`) để thử lại.
-- **Xử lý lỗi**: lỗi ở bước gọi Claude CLI (hết số lần retry, Claude báo `is_error`, output sai định dạng) được ghi vào comment placeholder dưới dạng `❌ Review thất bại: ...`. **Giới hạn đã biết:** lỗi ở các bước đầu của `Job.Run()` (lấy head SHA, clone repo) và panic (được `recover` để không làm sập server) chỉ được in ra log server, **không** sửa lại placeholder — comment `Đang review...` sẽ treo, khi đó xem log server để biết nguyên nhân rồi comment lại `@yuumi review`.
+- **Chống xử lý trùng**: comment ID đã xử lý được nhớ trong memory (`webhook.SeenComments`), nên GitHub redeliver webhook hoặc mention trùng không tạo 2 job cùng edit 1 comment. ID được đánh dấu ngay khi nhận webhook để hai request cùng lúc không chạy hai job. Nếu lấy token hoặc post placeholder lỗi, dấu đó được xóa và handler trả `500` để GitHub gửi lại. Đây là lưu trong RAM, restart server thì mất và không có TTL — chấp nhận được với 1 instance nội bộ, cần lưu ngoài (Redis/DB) nếu chạy nhiều instance.
+- **Xử lý lỗi**: lỗi gọi Claude CLI, lỗi lấy head SHA, lỗi clone, và panic (được `recover` để không làm sập server) đều sửa comment placeholder thành `❌ Review thất bại: ...`. Nếu chính lệnh sửa comment đó cũng lỗi, placeholder có thể vẫn treo và nguyên nhân chỉ còn trong log server.
 
 </details>
 
@@ -286,15 +286,10 @@ Cần `claude` CLI đã authenticate. Đây là công cụ chạy tay, **không*
 
 **Đã fix limitation cũ:** trước đây clone `--depth 1` nên Claude không `git diff` được, chỉ đoán qua commit message. Giờ diff thật lấy trực tiếp từ GitHub API (không phụ thuộc git history), nên vẫn giữ `--depth 1` khi clone bình thường — nếu gọi GitHub API lỗi thì fallback về cách cũ (đọc file + commit message).
 
-Ưu tiên hoàn thiện app trước khi đổi kiến trúc:
-
 - [ ] `gitrepo.CloneRepo` cần nhúng token vào URL khi fetch nếu sau này review repo private (hiện chỉ work với repo public) — issue #48
 - [ ] Deploy có URL public thật (thay vì chỉ test local qua curl/ngrok) — issue #46
 - [ ] Đóng gói Docker — issue #49
 - [ ] Deploy AWS — issue #50
-
-**Để sau (đã bàn, chưa ưu tiên):**
-- [ ] Migrate sang Go SDK (Tool Runner) thay vì shell ra `claude` CLI
 
 ## Đóng góp
 

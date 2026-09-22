@@ -16,6 +16,26 @@ func TestSeenComments_MarkIfNew_FirstTimeTrueThenFalse(t *testing.T) {
 	}
 }
 
+func TestSeenComments_Forget_AllowsProcessingAgain(t *testing.T) {
+	s := NewSeenComments()
+
+	if !s.MarkIfNew(7) {
+		t.Fatal("first MarkIfNew(7) = false, want true")
+	}
+	s.Forget(7)
+	if !s.MarkIfNew(7) {
+		t.Error("MarkIfNew(7) after Forget = false, want true")
+	}
+}
+
+func TestSeenComments_Forget_UnknownIDIsHarmless(t *testing.T) {
+	s := NewSeenComments()
+	s.Forget(99)
+	if !s.MarkIfNew(99) {
+		t.Error("MarkIfNew after Forget of an unseen id = false, want true")
+	}
+}
+
 func TestSeenComments_DifferentIDsAreIndependent(t *testing.T) {
 	s := NewSeenComments()
 

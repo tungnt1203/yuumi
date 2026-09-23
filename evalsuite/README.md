@@ -56,7 +56,8 @@ tại checklist tay là đủ theo đúng đề xuất của issue #10.
    review chạy được trước khi coi là fixture hợp lệ.
 
 Ưu tiên phủ đúng các loại rule mặc định bot đã tự nhận có (xem README gốc,
-mục "Rule mặc định theo loại file") — 4 fixture hiện có (`sql-injection-go`,
-`go-goroutine-leak`, `js-floating-promise`, `python-mutable-default`) mỗi
+mục "Rule mặc định theo loại file") — 5 fixture hiện có (`sql-injection-go`,
+`go-goroutine-leak`, `js-floating-promise`, `python-mutable-default`,
+`hardcoded-secret-go`) mỗi
 cái tương ứng 1 rule, để biết rule đó thực sự "có tác dụng" hay chỉ nằm
 trong prompt cho có.

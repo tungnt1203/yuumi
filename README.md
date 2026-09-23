@@ -36,7 +36,7 @@ trên chính PR đó.
 - **Review qua mention hoặc tự động**: comment `@yuumi review`, hoặc bot tự chạy khi PR mới mở/có commit mới (allowlist theo tác giả).
 - **Xác thực qua GitHub App**: JWT RS256 + installation access token (tự cache/làm mới), bot có identity riêng `<tên App>[bot]`, không gắn với tài khoản cá nhân.
 - **Finding có phân loại + comment inline**: kết quả trả về JSON có `category`/`severity`/gợi ý sửa; finding khớp đúng dòng diff được post inline qua Reviews API, còn lại gộp vào comment tổng hợp.
-- **Rule mặc định theo ngôn ngữ**: Go, JavaScript/TypeScript, Python, SQL — tự chèn vào prompt theo đuôi file có trong diff, không cần repo cấu hình gì.
+- **Rule mặc định theo ngôn ngữ**: Go, JavaScript/TypeScript, Python, SQL — tự chèn vào prompt theo đuôi file có trong diff, không cần repo cấu hình gì; rule soát secret/credential hardcode áp dụng cho mọi file.
 - **Cấu hình riêng theo repo** qua `.yuumi.yml` (loại trừ file, hướng dẫn review riêng), tự đọc thêm `.gitignore` của repo.
 - **Chỉ review phần thay đổi mới** ở các lần review sau trên cùng 1 PR (so với SHA đã review trước), tiết kiệm token.
 - **Lọc file rác & chia bundle diff** theo thư mục để không vượt giới hạn ký tự mỗi lần gọi Claude, PR lớn vẫn review đầy đủ.
@@ -200,6 +200,7 @@ Ngoài `instructions` của `.yuumi.yml` (repo tự khai báo), bot tự có s�
 - **JavaScript/TypeScript**: floating promise, lạm dụng `any`/`as`, thiếu kiểm tra null/undefined.
 - **Python**: mutable default argument, `except` quá rộng, resource không dùng `with`.
 - **SQL**: N+1 query, thiếu index, SQL injection do nối string.
+- **Mọi loại file**: secret/credential hardcode (API key, password, token, private key, connection string có password). Trước khi gọi Claude, bot còn quét regex nhanh các dòng **thêm mới** trong diff (AWS key `AKIA...`, header PEM private key, GitHub/Slack token, `sk-...`, biến tên chứa `password`/`secret`/`api_key`/`access_token`/`auth_token` gán string literal ≥ 6 ký tự (`=`, `:=`, `:`) — trừ giá trị chỉ là tham chiếu như tên env var `"DB_PASSWORD"`, tên header `"X-Api-Key"`, đường dẫn `/run/secrets/...`, key `secretName`/`*_FILE`; dạng không quote `DB_PASSWORD=...` (kể cả `- KEY=...` và comment `#` cuối dòng) trong file config/`.env`; `scheme://user:pass@host`) và chèn danh sách `file:dòng` khớp vào prompt để Claude xác minh — chỉ ghi vị trí + loại, không chép lại giá trị secret. Rule này là **bắt buộc**: `instructions` trong `.yuumi.yml` không tắt được (file đó đọc từ head của PR, tác giả PR sửa được), chỉ bổ sung được ngoại lệ cụ thể như file fixture/test.
 
 Bundle có nhiều loại file khác nhau thì rule của TẤT CẢ loại có mặt đều được chèn vào (không chỉ loại chiếm đa số). File loại chưa có rule riêng vẫn review bình thường với hướng dẫn chung. Nếu repo có `instructions` riêng trong `.yuumi.yml`, hướng dẫn của repo được **ưu tiên hơn** khi có xung đột với rule mặc định ở đây.
 

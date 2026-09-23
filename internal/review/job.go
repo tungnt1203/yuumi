@@ -3,6 +3,7 @@ package review
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -513,9 +514,11 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 		} else {
 			fmt.Println("Review bundle", i+1, "/", len(bundles), "result:", text)
 			findings, ok := parseFindings(text)
-			// Output rỗng không có gì để chuyển định dạng. Gọi repair lúc đó
-			// gần như chắc nhận [], và bundle bị tính là đã review sạch.
-			if !ok && strings.TrimSpace(text) != "" {
+			if !ok && strings.TrimSpace(text) == "" {
+				// Output trắng không phải kết luận sạch. Ghi một câu để người
+				// đọc thấy phần này không có kết quả, thay vì một mục trống.
+				display = "⚠️ Reviewer không trả về nội dung cho phần này."
+			} else if !ok {
 				findings, ok = j.repairFindingsFormat(dir, sha, i+1, len(bundles), text)
 			}
 			if ok {
@@ -560,30 +563,62 @@ func (j *Job) repairFindingsFormat(dir, sha string, bundleIndex, bundleTotal int
 		errMsg = err.Error()
 	}
 	j.logBundleReview(sha, bundleIndex, bundleTotal, prompt, text, errMsg, duration, attempts, numTurns)
-	if err != nil {
+	if err != nil || strings.TrimSpace(text) == formatRepairNotAReview {
 		return nil, false
 	}
 	findings, ok := parseFindings(text)
-	// [] là một kết luận "sạch". Chỉ nhận khi văn xuôi lần trước đã nói rõ
-	// không có vấn đề. Output bị cắt hoặc không phải kết quả review mà thành
-	// [] thì giữ nguyên văn xuôi.
+	// [] là một kết luận "sạch". Chỉ nhận khi văn xuôi lần trước thực sự
+	// kết luận không có vấn đề, không phải một đoạn còn liệt kê bug.
 	if !ok || (len(findings) == 0 && !proseConcludesClean(previous)) {
 		return nil, false
 	}
 	return findings, true
 }
 
+// findingListPattern bắt danh sách đánh số hoặc tham chiếu file:dòng.
+// Những đoạn đó không phải một câu kết luận sạch, dù có chứa cụm
+// "không có vấn đề".
+var findingListPattern = regexp.MustCompile(`(?:^|\n)\s*\d+[\.\)]\s|\S+\.\w+:\d+`)
+
 // proseConcludesClean báo văn xuôi đã kết luận không có vấn đề đáng chú ý,
 // nên lần sửa định dạng trả [] là hợp lệ.
 func proseConcludesClean(text string) bool {
-	lower := strings.ToLower(text)
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if findingListPattern.MatchString(lower) {
+		return false
+	}
 	for _, phrase := range []string{
 		"không có vấn đề",
 		"không đáng chú ý",
 		"no issues",
 		"lgtm",
 	} {
-		if strings.Contains(lower, phrase) {
+		from := 0
+		for {
+			i := strings.Index(lower[from:], phrase)
+			if i < 0 {
+				break
+			}
+			at := from + i
+			if !cleanPhraseNegated(lower, at) {
+				return true
+			}
+			from = at + len(phrase)
+		}
+	}
+	return false
+}
+
+// cleanPhraseNegated báo cụm kết luận sạch đang bị phủ định ở ngay trước nó
+// (vd "chưa thể kết luận là không có vấn đề").
+func cleanPhraseNegated(lower string, at int) bool {
+	start := at - 48
+	if start < 0 {
+		start = 0
+	}
+	window := lower[start:at]
+	for _, neg := range []string{"chưa", "không phải", "not ", "never"} {
+		if strings.Contains(window, neg) {
 			return true
 		}
 	}

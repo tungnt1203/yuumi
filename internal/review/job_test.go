@@ -1068,6 +1068,9 @@ func TestJobRun_BlankOutput_SkipsFormatRepair(t *testing.T) {
 	if strings.Contains(gh.editedBody, "Không phát hiện vấn đề") {
 		t.Errorf("blank output must not be reported as a clean review, got: %s", gh.editedBody)
 	}
+	if !strings.Contains(gh.editedBody, "không trả về nội dung") {
+		t.Errorf("blank output should say the reviewer returned nothing, got: %s", gh.editedBody)
+	}
 }
 
 func TestJobRun_RepairEmptyArray_KeepsProseThatDidNotConcludeClean(t *testing.T) {
@@ -1088,6 +1091,69 @@ func TestJobRun_RepairEmptyArray_KeepsProseThatDidNotConcludeClean(t *testing.T)
 	}
 	if strings.Contains(gh.editedBody, "Không phát hiện vấn đề") {
 		t.Errorf("empty repair must not claim the PR is clean, got: %s", gh.editedBody)
+	}
+}
+
+func TestJobRun_RepairEmptyArray_KeepsProseThatMentionsCleanButListsIssues(t *testing.T) {
+	prose := "Không có vấn đề về bảo mật, nhưng a.go:3 có nil deref"
+
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: "diff --git a/main.go b/main.go\n+fmt.Println(1)"}
+	reviewer := &fakeReviewer{result: prose, repairResult: "[]", repairSet: true}
+
+	job := &Job{
+		GitHub:   gh,
+		Clone:    fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer: reviewer,
+	}
+	job.Run()
+
+	if !strings.Contains(gh.editedBody, prose) {
+		t.Errorf("expected prose that still lists an issue to stay, got: %s", gh.editedBody)
+	}
+	if strings.Contains(gh.editedBody, "Không phát hiện vấn đề") {
+		t.Errorf("a phrase inside an issue list must not become a clean header, got: %s", gh.editedBody)
+	}
+}
+
+func TestJobRun_RepairEmptyArray_KeepsNegatedCleanPhrase(t *testing.T) {
+	prose := "chưa thể kết luận là không có vấn đề"
+
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: "diff --git a/main.go b/main.go\n+fmt.Println(1)"}
+	reviewer := &fakeReviewer{result: prose, repairResult: "[]", repairSet: true}
+
+	job := &Job{
+		GitHub:   gh,
+		Clone:    fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer: reviewer,
+	}
+	job.Run()
+
+	if !strings.Contains(gh.editedBody, prose) {
+		t.Errorf("expected a negated clean phrase to stay as prose, got: %s", gh.editedBody)
+	}
+	if strings.Contains(gh.editedBody, "Không phát hiện vấn đề") {
+		t.Errorf("a negated clean phrase must not become a clean header, got: %s", gh.editedBody)
+	}
+}
+
+func TestJobRun_RepairNotAReview_KeepsProse(t *testing.T) {
+	prose := "bị cắt giữa chừng, chưa review xong"
+
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: "diff --git a/main.go b/main.go\n+fmt.Println(1)"}
+	reviewer := &fakeReviewer{result: prose, repairResult: formatRepairNotAReview, repairSet: true}
+
+	job := &Job{
+		GitHub:   gh,
+		Clone:    fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer: reviewer,
+	}
+	job.Run()
+
+	if !strings.Contains(gh.editedBody, prose) {
+		t.Errorf("NOT_A_REVIEW should keep the original prose, got: %s", gh.editedBody)
+	}
+	if strings.Contains(gh.editedBody, "Không phát hiện vấn đề") {
+		t.Errorf("NOT_A_REVIEW must not become a clean header, got: %s", gh.editedBody)
 	}
 }
 

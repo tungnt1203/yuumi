@@ -69,11 +69,19 @@ var secretPatterns = []secretPattern{
 
 // referenceKey: key mà giá trị là TÊN/đường dẫn tới secret chứ không phải
 // secret — secretName/secretKeyRef của k8s, biến *_FILE/*_PATH (Docker
-// secrets, file mount), tên header (apiKeyHeader = "X-Api-Key"). Đường dẫn
-// và tên header chỉ được bỏ qua qua TÊN KEY, không qua hình dạng giá trị:
-// password = "/Xk9..." hay passphrase "Correct-Horse-Battery-Staple" vẫn
-// phải bị báo.
-var referenceKey = regexp.MustCompile(`(?i)^(?:.*secretname|.*secretkeyref|.*_?file|.*_?path|.*header)$`)
+// secrets, file mount). file/path phải đứng sau dấu phân cách (_ . -) hoặc
+// ranh giới camelCase (secretPath) — key chỉ tình cờ kết thúc bằng "file"
+// như secretProfile không được tính. Đường dẫn chỉ được bỏ qua qua TÊN
+// KEY, không qua hình dạng giá trị: password = "/Xk9..." vẫn phải bị báo.
+var referenceKey = regexp.MustCompile(`^(?:(?i:.*secret(?:name|keyref))|.*(?:[_.-](?i:file|path)|[a-z0-9](?:File|Path)))$`)
+
+// headerKey + headerNameValue: key *Header CHỈ là tham chiếu khi giá trị
+// cũng có dạng tên header (apiKeyHeader = "X-Api-Key") — key kiểu
+// authTokenHeader hay chứa luôn token thật, phải báo.
+var (
+	headerKey       = regexp.MustCompile(`(?i)header$`)
+	headerNameValue = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+$`)
+)
 
 // referenceValue: giá trị chỉ là tên env var (có "_", vd DB_PASSWORD — tên
 // idiom Go const passwordEnv = "DB_PASSWORD"). Bắt buộc có "_" để secret
@@ -81,6 +89,9 @@ var referenceKey = regexp.MustCompile(`(?i)^(?:.*secretname|.*secretkeyref|.*_?f
 var referenceValue = regexp.MustCompile(`^[A-Z][A-Z0-9]*_[A-Z0-9_]+$`)
 
 func isReferenceAssignment(key, value string) bool {
+	if headerKey.MatchString(key) {
+		return headerNameValue.MatchString(value)
+	}
 	return referenceKey.MatchString(key) || referenceValue.MatchString(value)
 }
 

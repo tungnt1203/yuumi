@@ -123,6 +123,31 @@ func TestScanSecrets_PathAndHeaderShapedValues_OnlySkippedByKey(t *testing.T) {
 	}
 }
 
+func TestScanSecrets_ReferenceKey_NotTooBroad(t *testing.T) {
+	// Key tham chiếu trong config/.env (pattern không quote) → bỏ qua.
+	for _, line := range []string{
+		"DB_PASSWORD_PATH=/run/secrets/db",
+		"API_KEY_HEADER=X-Api-Key",
+	} {
+		if hits := scanSecrets(secretTestDiff(".env", line)); len(hits) != 0 {
+			t.Errorf("scanSecrets(%q) = %v, want no hits", line, hits)
+		}
+	}
+
+	// Key *Header chứa token thật, hoặc key chỉ tình cờ kết thúc bằng
+	// "file" → vẫn phải báo.
+	diff := secretTestDiff("config.go",
+		`apiKeyHeader := "`+"a1b2c3d4e5f6g7"+`"`,
+		`secretProfile := "`+"s3cr3tValue"+`"`,
+	)
+	if hits := scanSecrets(diff); len(hits) != 2 {
+		t.Errorf("scanSecrets() = %v, want 2 hits", hits)
+	}
+	if hits := scanSecrets(secretTestDiff(".env", "X_API_KEY_HEADER="+"a1b2c3d4e5f6")); len(hits) != 1 {
+		t.Errorf("scanSecrets(.env header key with token) = %v, want 1 hit", hits)
+	}
+}
+
 func TestScanSecrets_UnquotedValue_SkipsReferences(t *testing.T) {
 	diff := secretTestDiff("deploy.yaml",
 		"  secretName: my-tls-secret",

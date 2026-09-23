@@ -194,8 +194,16 @@ func TestBuildFormatRepairPrompt_IncludesPreviousOutput(t *testing.T) {
 	if !strings.Contains(got, "bug ở dòng 60") {
 		t.Errorf("repair prompt missing the previous output:\n%s", got)
 	}
-	if strings.Contains(got, "```diff") {
+	if !strings.Contains(got, `"line":0`) || !strings.Contains(got, `"end_line":0`) {
+		t.Errorf("repair prompt must keep numeric line/end_line example:\n%s", got)
+	}
+	if strings.Contains(got, "```diff") || strings.Contains(got, "diff --git") {
 		t.Errorf("repair prompt should not resend a diff:\n%s", got)
+	}
+	prev := strings.Index(got, "bug ở dòng 60")
+	again := strings.LastIndex(got, "Nhắc lại")
+	if prev == -1 || again < prev {
+		t.Errorf("repair prompt should repeat the JSON-only reminder after the previous output:\n%s", got)
 	}
 }
 

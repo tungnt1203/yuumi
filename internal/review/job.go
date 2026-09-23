@@ -513,10 +513,9 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 		} else {
 			fmt.Println("Review bundle", i+1, "/", len(bundles), "result:", text)
 			findings, ok := parseFindings(text)
-			if !ok {
-				// CLI đã thành công nhưng output không phải JSON array.
-				// Gọi thêm đúng 1 lần để chuyển văn xuôi đó thành JSON,
-				// trước khi fallback hiện nguyên văn (issue #69).
+			// Output rỗng không có gì để chuyển định dạng. Gọi repair lúc đó
+			// gần như chắc nhận [], và bundle bị tính là đã review sạch.
+			if !ok && strings.TrimSpace(text) != "" {
 				findings, ok = j.repairFindingsFormat(dir, sha, i+1, len(bundles), text)
 			}
 			if ok {
@@ -564,7 +563,31 @@ func (j *Job) repairFindingsFormat(dir, sha string, bundleIndex, bundleTotal int
 	if err != nil {
 		return nil, false
 	}
-	return parseFindings(text)
+	findings, ok := parseFindings(text)
+	// [] là một kết luận "sạch". Chỉ nhận khi văn xuôi lần trước đã nói rõ
+	// không có vấn đề. Output bị cắt hoặc không phải kết quả review mà thành
+	// [] thì giữ nguyên văn xuôi.
+	if !ok || (len(findings) == 0 && !proseConcludesClean(previous)) {
+		return nil, false
+	}
+	return findings, true
+}
+
+// proseConcludesClean báo văn xuôi đã kết luận không có vấn đề đáng chú ý,
+// nên lần sửa định dạng trả [] là hợp lệ.
+func proseConcludesClean(text string) bool {
+	lower := strings.ToLower(text)
+	for _, phrase := range []string{
+		"không có vấn đề",
+		"không đáng chú ý",
+		"no issues",
+		"lgtm",
+	} {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 // logBundleReview ghi 1 lần gọi Reviewer. errMsg khác rỗng thì response ghi

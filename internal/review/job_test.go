@@ -145,9 +145,9 @@ type fakeReviewer struct {
 	// test nhiều bundle, khi 1 lần Job.Run() có thể gọi Review() nhiều lần.
 	gotPrompts []string
 
-	// repairResult là kết quả của lần sửa định dạng (issue #69). repairSet
-	// phân biệt "chưa cấu hình" (trả lại đúng result, thường cũng không phải
-	// JSON, để comment giữ nguyên văn) với "cố ý trả chuỗi này", kể cả rỗng.
+	// repairResult là kết quả của lần sửa định dạng. repairSet phân biệt
+	// "chưa cấu hình" (trả "không phải JSON", comment giữ nguyên văn) với
+	// "cố ý trả chuỗi này", kể cả rỗng.
 	repairResult  string
 	repairSet     bool
 	repairErr     error
@@ -157,13 +157,13 @@ type fakeReviewer struct {
 func (f *fakeReviewer) Review(prompt string, dir string) (string, int, int, error) {
 	f.called = true
 	f.gotDir = dir
-	f.gotPrompts = append(f.gotPrompts, prompt)
 	attempts := f.attempts
 	if attempts == 0 {
 		attempts = 1
 	}
-	// Lần sửa định dạng không được ghi đè gotPrompt: test hiện có assert
-	// prompt review (diff, primer, hướng dẫn repo) qua field đó.
+	// Lần sửa định dạng không ghi vào gotPrompt/gotPrompts: test đếm bundle
+	// và assert nội dung prompt review qua hai field đó. Prompt sửa định
+	// dạng nằm ở repairPrompts.
 	if isFormatRepairPrompt(prompt) {
 		f.repairPrompts = append(f.repairPrompts, prompt)
 		if f.repairErr != nil {
@@ -172,9 +172,10 @@ func (f *fakeReviewer) Review(prompt string, dir string) (string, int, int, erro
 		if f.repairSet {
 			return f.repairResult, 1, 0, nil
 		}
-		return f.result, attempts, f.numTurns, f.err
+		return "không phải JSON", 1, 0, nil
 	}
 	f.gotPrompt = prompt
+	f.gotPrompts = append(f.gotPrompts, prompt)
 	return f.result, attempts, f.numTurns, f.err
 }
 
@@ -740,8 +741,8 @@ func TestJobRun_LogsEachBundleReview(t *testing.T) {
 	if !isFormatRepairPrompt(logger.calls[1].prompt) {
 		t.Errorf("expected second log to be the format-repair call, got prompt: %s", logger.calls[1].prompt)
 	}
-	if logger.calls[1].response != "trông ổn" {
-		t.Errorf("expected repair log to keep the raw response, got: %s", logger.calls[1].response)
+	if logger.calls[1].response != "không phải JSON" {
+		t.Errorf("expected repair log to keep the default unparsed response, got: %s", logger.calls[1].response)
 	}
 }
 
@@ -1047,6 +1048,67 @@ func TestJobRun_FormatRepairError_KeepsProseAndSavesSHA(t *testing.T) {
 	}
 	if !store.setCalled || store.gotSetSHA != "abc123" {
 		t.Errorf("expected reviewed SHA to be saved, setCalled=%v sha=%q", store.setCalled, store.gotSetSHA)
+	}
+}
+
+func TestJobRun_BlankOutput_SkipsFormatRepair(t *testing.T) {
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: "diff --git a/main.go b/main.go\n+fmt.Println(1)"}
+	reviewer := &fakeReviewer{result: "  \n"}
+
+	job := &Job{
+		GitHub:   gh,
+		Clone:    fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer: reviewer,
+	}
+	job.Run()
+
+	if len(reviewer.repairPrompts) != 0 {
+		t.Fatalf("blank output should not be sent for format repair, got %d calls", len(reviewer.repairPrompts))
+	}
+	if strings.Contains(gh.editedBody, "Không phát hiện vấn đề") {
+		t.Errorf("blank output must not be reported as a clean review, got: %s", gh.editedBody)
+	}
+}
+
+func TestJobRun_RepairEmptyArray_KeepsProseThatDidNotConcludeClean(t *testing.T) {
+	prose := "1. a.go:3 nil deref"
+
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: "diff --git a/main.go b/main.go\n+fmt.Println(1)"}
+	reviewer := &fakeReviewer{result: prose, repairResult: "[]", repairSet: true}
+
+	job := &Job{
+		GitHub:   gh,
+		Clone:    fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer: reviewer,
+	}
+	job.Run()
+
+	if !strings.Contains(gh.editedBody, prose) {
+		t.Errorf("expected the original prose to stay when repair returned [], got: %s", gh.editedBody)
+	}
+	if strings.Contains(gh.editedBody, "Không phát hiện vấn đề") {
+		t.Errorf("empty repair must not claim the PR is clean, got: %s", gh.editedBody)
+	}
+}
+
+func TestJobRun_RepairEmptyArray_AcceptsClearCleanConclusion(t *testing.T) {
+	prose := "Code trông ổn, không có vấn đề gì đáng chú ý."
+
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: "diff --git a/main.go b/main.go\n+fmt.Println(1)"}
+	reviewer := &fakeReviewer{result: prose, repairResult: "[]", repairSet: true}
+
+	job := &Job{
+		GitHub:   gh,
+		Clone:    fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer: reviewer,
+	}
+	job.Run()
+
+	if strings.Contains(gh.editedBody, prose) {
+		t.Errorf("a clear clean conclusion repaired to [] should be rendered, got: %s", gh.editedBody)
+	}
+	if !strings.Contains(gh.editedBody, "Không phát hiện vấn đề") {
+		t.Errorf("expected a clean header, got: %s", gh.editedBody)
 	}
 }
 

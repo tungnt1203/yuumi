@@ -409,7 +409,7 @@ func TestRenderReviewHeader_NotPartial_NoWarning(t *testing.T) {
 
 	got := renderReviewHeader(findings, false)
 
-	if strings.Contains(got, "chưa đếm") {
+	if strings.Contains(got, "⚠️") || strings.Contains(got, "chưa đếm") {
 		t.Errorf("renderReviewHeader(partial=false) should not show the incomplete-count warning, got: %q", got)
 	}
 }

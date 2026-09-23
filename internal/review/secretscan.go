@@ -37,7 +37,7 @@ type secretPattern struct {
 }
 
 // secretKeyNames là phần tên key/biến gợi ý giá trị là secret.
-const secretKeyNames = `(?:password|passwd|secret|api_?key|access_?token|auth_?token)`
+const secretKeyNames = `(?:password|passwd|passphrase|secret|api_?key|access_?token|auth_?token)`
 
 var secretPatterns = []secretPattern{
 	{label: "AWS access key", re: regexp.MustCompile(`\b(AKIA|ASIA)[0-9A-Z]{16}\b`)},
@@ -56,25 +56,29 @@ var secretPatterns = []secretPattern{
 	// Dạng không quote chiếm cả dòng — phổ biến nhất trong .env/YAML/
 	// .properties (DB_PASSWORD=hunter22, password: hunter22, item list
 	// "- POSTGRES_PASSWORD=..." của docker-compose/k8s), cho phép comment
-	// "# ..." cuối dòng. Bỏ qua giá trị tham chiếu ($VAR, ${VAR},
-	// <placeholder>).
+	// " # ..." cuối dòng. Như dotenv/YAML, "#" chỉ mở comment khi có khoảng
+	// trắng đứng trước — "#" nằm trong giá trị (p#ssw0rd) vẫn là giá trị.
+	// Bỏ qua giá trị tham chiếu ($VAR, ${VAR}, <placeholder>).
 	{
 		label:      "password/secret gán giá trị không quote",
-		re:         regexp.MustCompile(`(?i)^\s*(?:-\s+)?(?:export\s+)?([a-z0-9_.-]*` + secretKeyNames + `[a-z0-9_.-]*)\s*[:=]\s*([^\s"'$\{<#]{6,})\s*(?:#.*)?$`),
+		re:         regexp.MustCompile(`(?i)^\s*(?:-\s+)?(?:export\s+)?([a-z0-9_.-]*` + secretKeyNames + `[a-z0-9_.-]*)\s*[:=]\s*([^\s"'$\{<#][^\s"']{5,})(?:\s+#.*)?\s*$`),
 		assignment: true,
 		configOnly: true,
 	},
 }
 
 // referenceKey: key mà giá trị là TÊN/đường dẫn tới secret chứ không phải
-// secret — secretName/secretKeyRef của k8s, biến *_FILE (Docker secrets).
-var referenceKey = regexp.MustCompile(`(?i)^(?:.*secretname|.*secretkeyref|.*_file)$`)
+// secret — secretName/secretKeyRef của k8s, biến *_FILE/*_PATH (Docker
+// secrets, file mount), tên header (apiKeyHeader = "X-Api-Key"). Đường dẫn
+// và tên header chỉ được bỏ qua qua TÊN KEY, không qua hình dạng giá trị:
+// password = "/Xk9..." hay passphrase "Correct-Horse-Battery-Staple" vẫn
+// phải bị báo.
+var referenceKey = regexp.MustCompile(`(?i)^(?:.*secretname|.*secretkeyref|.*_?file|.*_?path|.*header)$`)
 
 // referenceValue: giá trị chỉ là tên env var (có "_", vd DB_PASSWORD — tên
-// idiom Go const passwordEnv = "DB_PASSWORD"), tên header (X-Api-Key) hoặc
-// đường dẫn tuyệt đối (/run/secrets/db). Bắt buộc có "_" ở nhánh env var để
-// secret thật toàn chữ hoa/số (HUNTER2024) vẫn bị báo.
-var referenceValue = regexp.MustCompile(`^(?:[A-Z][A-Z0-9]*_[A-Z0-9_]+|[A-Z][a-z]*(?:-[A-Z][a-z]*)+|/\S+)$`)
+// idiom Go const passwordEnv = "DB_PASSWORD"). Bắt buộc có "_" để secret
+// thật toàn chữ hoa/số (HUNTER2024) vẫn bị báo.
+var referenceValue = regexp.MustCompile(`^[A-Z][A-Z0-9]*_[A-Z0-9_]+$`)
 
 func isReferenceAssignment(key, value string) bool {
 	return referenceKey.MatchString(key) || referenceValue.MatchString(value)

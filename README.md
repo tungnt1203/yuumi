@@ -77,6 +77,7 @@ GitHub PR comment "@yuumi <lệnh>"        PR mới mở / có commit mới
 cmd/
   server/main.go          # entry point: load config, đăng ký route, start server
   evalrun/main.go         # CLI chạy eval suite đo chất lượng review (xem mục Eval suite)
+  reviewstats/main.go     # CLI tổng hợp token/chi phí từ review log theo repo và theo ngày
 internal/
   config/                 # đọc & validate biến môi trường
   review/                 # toàn bộ logic review: Job (điều phối 1 lần review), prompt, chia bundle diff,
@@ -187,7 +188,16 @@ Nếu repo được review có `go.mod`, bot chạy `gofmt` và `go vet` trên b
 <details id="log-mỗi-lần-review">
 <summary><strong>Log mỗi lần review</strong></summary>
 
-Mỗi lần gọi Claude CLI được ghi thành 1 file JSON trong `logs/reviews/` (đổi bằng `REVIEW_LOG_DIR`) gồm: thời gian, repo, số PR, SHA, chỉ số bundle, **prompt và response nguyên văn**, lỗi (nếu có), thời gian xử lý (`duration_ms`), số lần thử (`attempts`) và số turn Claude dùng (`num_turns`, thấp bất thường trên bundle nhiều file là dấu hiệu Claude review mù trên diff). Dùng để truy vết khi review lỗi hoặc kết quả lạ. Lỗi ghi log chỉ in ra console, không chặn review. Thư mục `logs/` đã nằm trong `.gitignore`; prompt/response được ghi nguyên văn nên chú ý nếu code review chứa thông tin nhạy cảm.
+Mỗi lần gọi Claude CLI được ghi thành 1 file JSON trong `logs/reviews/` (đổi bằng `REVIEW_LOG_DIR`) gồm: thời gian, repo, số PR, SHA, chỉ số bundle, **prompt và response nguyên văn**, lỗi (nếu có), thời gian xử lý (`duration_ms`), số lần thử (`attempts`) và số turn Claude dùng (`num_turns`, thấp bất thường trên bundle nhiều file là dấu hiệu Claude review mù trên diff) và `usage` — token (`input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `output_tokens`) cùng `cost_usd` do Claude CLI báo, cộng dồn qua các lần retry. Phần lớn input nằm ở 2 field cache, `input_tokens` chỉ là phần không qua cache. Dùng để truy vết khi review lỗi hoặc kết quả lạ. Lỗi ghi log chỉ in ra console, không chặn review. Thư mục `logs/` đã nằm trong `.gitignore`; prompt/response được ghi nguyên văn nên chú ý nếu code review chứa thông tin nhạy cảm.
+
+Xem tổng số lần gọi, token và chi phí theo repo và theo ngày (giờ local của máy chạy lệnh):
+
+```bash
+go run ./cmd/reviewstats                 # đọc $REVIEW_LOG_DIR hoặc logs/reviews
+go run ./cmd/reviewstats -dir <dir> -json
+```
+
+Log ghi trước khi có `usage` vẫn được đếm số lần gọi, token/chi phí tính là 0. Lần thử bị timeout/kill giữa chừng không có output nên không đếm được token, chi phí thực tế có thể cao hơn một chút.
 
 </details>
 

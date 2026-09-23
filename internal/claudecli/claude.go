@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os/exec"
 	"time"
+
+	"github.com/tungnt1203/yuumi/internal/review"
 )
 
 type ClaudeResult struct {
@@ -61,15 +63,15 @@ func NewReviewer() *Reviewer {
 // không parse được KHÔNG được retry — đây là lỗi xác định trước, thử lại
 // với cùng input không giúp gì, chỉ tốn thêm thời gian (xem issue #11).
 //
-// attempts trả về số lần Claude CLI thực sự được gọi (1 nghĩa là thành công
-// hoặc thất bại ngay lần đầu, không phải retry) — để nơi gọi ghi nhận lại
-// tần suất phải retry trong thực tế (xem reviewlog, issue #28).
+// stats.Attempts là số lần Claude CLI thực sự được gọi (1 nghĩa là thành
+// công hoặc thất bại ngay lần đầu, không phải retry) — để nơi gọi ghi nhận
+// lại tần suất phải retry trong thực tế (xem reviewlog, issue #28).
 //
-// numTurns trả về ClaudeResult.NumTurns của lần gọi cuối cùng (0 nếu lỗi
+// stats.NumTurns là ClaudeResult.NumTurns của lần gọi cuối cùng (0 nếu lỗi
 // chạy lệnh/JSON không parse được, tức chưa có output để đọc num_turns) —
 // dùng làm tín hiệu Claude có thực sự đọc thêm file ngoài diff hay không
 // (xem reviewlog, issue #20).
-func (r *Reviewer) Review(prompt string, dir string) (result string, attempts int, numTurns int, err error) {
+func (r *Reviewer) Review(prompt string, dir string) (result string, stats review.CallStats, err error) {
 	maxAttempts := r.MaxAttempts
 	if maxAttempts <= 0 {
 		maxAttempts = defaultMaxAttempts
@@ -86,18 +88,19 @@ func (r *Reviewer) Review(prompt string, dir string) (result string, attempts in
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		result, turns, err, retryable := runOnce(prompt, dir)
+		stats = review.CallStats{Attempts: attempt, NumTurns: turns}
 		if err == nil {
-			return result, attempt, turns, nil
+			return result, stats, nil
 		}
 		lastErr = err
 		if !retryable || attempt == maxAttempts {
-			return "", attempt, turns, lastErr
+			return "", stats, lastErr
 		}
 		wait := backoff(attempt + 1)
 		fmt.Println("claude review attempt", attempt, "failed, retrying in", wait, ":", err)
 		sleep(wait)
 	}
-	return "", maxAttempts, 0, lastErr
+	return "", review.CallStats{Attempts: maxAttempts}, lastErr
 }
 
 // runOnce gọi Claude CLI đúng 1 lần. retryable báo lỗi này có đáng thử lại

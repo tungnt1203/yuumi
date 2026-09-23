@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/tungnt1203/yuumi/internal/review"
 )
 
 // fakeReviewer implement review.Reviewer bằng cách ghi lại prompt/dir nhận
@@ -18,10 +20,10 @@ type fakeReviewer struct {
 	err       error
 }
 
-func (f *fakeReviewer) Review(prompt, dir string) (string, int, int, error) {
+func (f *fakeReviewer) Review(prompt, dir string) (string, review.CallStats, error) {
 	f.gotPrompt = prompt
 	f.gotDir = dir
-	return f.result, 1, 1, f.err
+	return f.result, review.CallStats{Attempts: 1, NumTurns: 1}, f.err
 }
 
 // writeFixture dựng 1 fixture tối thiểu (before/after/expected.md) dưới

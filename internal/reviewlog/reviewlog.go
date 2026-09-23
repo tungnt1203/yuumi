@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/tungnt1203/yuumi/internal/review"
 )
 
 // defaultDir dùng khi FileLogger.Dir rỗng.
@@ -69,7 +71,7 @@ func NewFileLogger(dir string) *FileLogger {
 	return &FileLogger{Dir: dir}
 }
 
-func (l *FileLogger) LogReview(repoFullName string, issueNumber int, sha string, bundleIndex, bundleTotal int, prompt, response, errMsg string, duration time.Duration, attempts int, numTurns int) {
+func (l *FileLogger) LogReview(repoFullName string, issueNumber int, sha string, bundleIndex, bundleTotal int, prompt, response, errMsg string, duration time.Duration, stats review.CallStats) {
 	dir := l.Dir
 	if dir == "" {
 		dir = defaultDir
@@ -90,8 +92,8 @@ func (l *FileLogger) LogReview(repoFullName string, issueNumber int, sha string,
 		Response:     response,
 		Error:        errMsg,
 		DurationMs:   duration.Milliseconds(),
-		Attempts:     attempts,
-		NumTurns:     numTurns,
+		Attempts:     stats.Attempts,
+		NumTurns:     stats.NumTurns,
 	}
 
 	data, err := json.MarshalIndent(e, "", "  ")

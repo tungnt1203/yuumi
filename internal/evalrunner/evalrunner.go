@@ -122,7 +122,7 @@ func Run(reviewer review.Reviewer, f Fixture) (Result, error) {
 	expected, _ := os.ReadFile(filepath.Join(f.Dir, "expected.md"))
 
 	prompt := review.BuildReviewPrompt("review", diff, "", "", "")
-	response, attempts, numTurns, err := reviewer.Review(prompt, dir)
+	response, stats, err := reviewer.Review(prompt, dir)
 	if err != nil {
 		return Result{Fixture: f, Diff: diff, Expected: string(expected)}, err
 	}
@@ -132,8 +132,8 @@ func Run(reviewer review.Reviewer, f Fixture) (Result, error) {
 		Diff:     diff,
 		Expected: string(expected),
 		Response: response,
-		Attempts: attempts,
-		NumTurns: numTurns,
+		Attempts: stats.Attempts,
+		NumTurns: stats.NumTurns,
 	}, nil
 }
 

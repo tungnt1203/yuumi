@@ -6,13 +6,15 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/tungnt1203/yuumi/internal/review"
 )
 
 func TestFileLogger_WritesOneJSONFilePerCall(t *testing.T) {
 	dir := t.TempDir()
 	logger := NewFileLogger(dir)
 
-	logger.LogReview("owner/repo", 42, "abc123", 1, 2, "prompt gửi đi", "response nhận được", "", 1500*time.Millisecond, 2, 5)
+	logger.LogReview("owner/repo", 42, "abc123", 1, 2, "prompt gửi đi", "response nhận được", "", 1500*time.Millisecond, review.CallStats{Attempts: 2, NumTurns: 5})
 
 	files, err := os.ReadDir(dir)
 	if err != nil {
@@ -59,7 +61,7 @@ func TestFileLogger_CreatesDirIfMissing(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "nested", "logs")
 	logger := NewFileLogger(dir)
 
-	logger.LogReview("owner/repo", 1, "sha", 1, 1, "p", "r", "", time.Second, 1, 1)
+	logger.LogReview("owner/repo", 1, "sha", 1, 1, "p", "r", "", time.Second, review.CallStats{Attempts: 1, NumTurns: 1})
 
 	if _, err := os.Stat(dir); err != nil {
 		t.Fatalf("expected log dir to be created, got error: %v", err)
@@ -70,8 +72,8 @@ func TestFileLogger_MultipleCalls_WriteSeparateFiles(t *testing.T) {
 	dir := t.TempDir()
 	logger := NewFileLogger(dir)
 
-	logger.LogReview("owner/repo", 1, "sha", 1, 2, "p1", "r1", "", time.Second, 1, 1)
-	logger.LogReview("owner/repo", 1, "sha", 2, 2, "p2", "r2", "", time.Second, 1, 1)
+	logger.LogReview("owner/repo", 1, "sha", 1, 2, "p1", "r1", "", time.Second, review.CallStats{Attempts: 1, NumTurns: 1})
+	logger.LogReview("owner/repo", 1, "sha", 2, 2, "p2", "r2", "", time.Second, review.CallStats{Attempts: 1, NumTurns: 1})
 
 	files, err := os.ReadDir(dir)
 	if err != nil {

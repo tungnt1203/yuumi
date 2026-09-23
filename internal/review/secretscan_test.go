@@ -33,9 +33,9 @@ func TestScanSecrets_DetectsKnownPatterns(t *testing.T) {
 		{"aws key", `const key = "` + fakeAWSKey + `"`, "AWS access key"},
 		{"pem header", fakePEMHeader, "private key (PEM)"},
 		{"github token", `token := "` + fakeGHToken + `"`, "GitHub token"},
-		{"connection string", `dsn := "postgres://admin:hunter22@db:5432/app"`, "connection string có password"},
-		{"password literal", `dbPassword := "s3cr3tPass"`, "password/secret gán string literal"},
-		{"yaml password", `password: "s3cr3tPass"`, "password/secret gán string literal"},
+		{"connection string", `dsn := "postgres://admin:` + "hunter22" + `@db:5432/app"`, "connection string có password"},
+		{"password literal", `dbPassword := "` + "s3cr3tPass" + `"`, "password/secret gán string literal"},
+		{"yaml password", `password: "` + "s3cr3tPass" + `"`, "password/secret gán string literal"},
 	}
 
 	for _, tt := range tests {
@@ -62,6 +62,46 @@ func TestScanSecrets_IgnoresSafeLines(t *testing.T) {
 	)
 	if hits := scanSecrets(diff); len(hits) != 0 {
 		t.Errorf("scanSecrets() = %v, want no hits for env lookups / empty values / plain URLs", hits)
+	}
+}
+
+func TestScanSecrets_SkipsEnvVarAndHeaderNames(t *testing.T) {
+	diff := secretTestDiff("config.go",
+		`const passwordEnv = "DB_PASSWORD"`,
+		`apiKeyHeader := "X-Api-Key"`,
+	)
+	if hits := scanSecrets(diff); len(hits) != 0 {
+		t.Errorf("scanSecrets() = %v, want no hits for values that are only env var/header names", hits)
+	}
+}
+
+func TestScanSecrets_UnquotedValue_ConfigFilesOnly(t *testing.T) {
+	const want = "password/secret gán giá trị không quote"
+	for _, file := range []string{".env", ".env.production", "config/app.yaml", "app.properties"} {
+		hits := scanSecrets(secretTestDiff(file, "DB_PASSWORD="+"hunter22"))
+		if len(hits) != 1 || hits[0].label != want {
+			t.Errorf("scanSecrets(%s) = %v, want 1 %q hit", file, hits, want)
+		}
+	}
+
+	// Trong code, dạng không quote thường là tham chiếu biến — không báo.
+	if hits := scanSecrets(secretTestDiff("main.go", "password = cfg.Password")); len(hits) != 0 {
+		t.Errorf("scanSecrets(main.go) = %v, want no hits for unquoted value in code", hits)
+	}
+	// Giá trị tham chiếu env var trong config — không báo.
+	if hits := scanSecrets(secretTestDiff(".env", "DB_PASSWORD=${VAULT_DB_PASSWORD}")); len(hits) != 0 {
+		t.Errorf("scanSecrets(.env) = %v, want no hits for ${VAR} reference", hits)
+	}
+}
+
+func TestScanSecrets_MultiFile_OneHitPerLine(t *testing.T) {
+	// Dòng ở b.go khớp cả AWS key lẫn "password/secret gán string literal"
+	// — chỉ ghi nhận pattern đầu tiên, và gắn đúng file b.go.
+	diff := secretTestDiff("a.go", `x := 1`) + secretTestDiff("b.go", `apiKey := "`+fakeAWSKey+`"`)
+
+	hits := scanSecrets(diff)
+	if len(hits) != 1 || hits[0].file != "b.go" || hits[0].label != "AWS access key" {
+		t.Fatalf("scanSecrets() = %v, want exactly 1 AWS hit in b.go", hits)
 	}
 }
 

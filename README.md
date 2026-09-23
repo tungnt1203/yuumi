@@ -200,7 +200,7 @@ Ngoài `instructions` của `.yuumi.yml` (repo tự khai báo), bot tự có s�
 - **JavaScript/TypeScript**: floating promise, lạm dụng `any`/`as`, thiếu kiểm tra null/undefined.
 - **Python**: mutable default argument, `except` quá rộng, resource không dùng `with`.
 - **SQL**: N+1 query, thiếu index, SQL injection do nối string.
-- **Mọi loại file**: secret/credential hardcode (API key, password, token, private key, connection string có password). Trước khi gọi Claude, bot còn quét regex nhanh các dòng **thêm mới** trong diff (AWS key `AKIA...`, header PEM private key, GitHub/Slack token, `sk-...`, `password = "..."`, `scheme://user:pass@host`) và chèn danh sách `file:dòng` khớp vào prompt để Claude xác minh — chỉ ghi vị trí + loại, không chép lại giá trị secret.
+- **Mọi loại file**: secret/credential hardcode (API key, password, token, private key, connection string có password). Trước khi gọi Claude, bot còn quét regex nhanh các dòng **thêm mới** trong diff (AWS key `AKIA...`, header PEM private key, GitHub/Slack token, `sk-...`, biến tên chứa `password`/`secret`/`api_key`/`access_token`/`auth_token` gán string literal ≥ 6 ký tự (`=`, `:=`, `:`) — trừ giá trị chỉ là tên env var/header như `"DB_PASSWORD"`, dạng không quote `DB_PASSWORD=...` trong file config/`.env`, `scheme://user:pass@host`) và chèn danh sách `file:dòng` khớp vào prompt để Claude xác minh — chỉ ghi vị trí + loại, không chép lại giá trị secret.
 
 Bundle có nhiều loại file khác nhau thì rule của TẤT CẢ loại có mặt đều được chèn vào (không chỉ loại chiếm đa số). File loại chưa có rule riêng vẫn review bình thường với hướng dẫn chung. Nếu repo có `instructions` riêng trong `.yuumi.yml`, hướng dẫn của repo được **ưu tiên hơn** khi có xung đột với rule mặc định ở đây.
 

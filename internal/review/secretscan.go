@@ -2,6 +2,7 @@ package review
 
 import (
 	"fmt"
+	"path"
 	"regexp"
 	"strings"
 )
@@ -24,18 +25,49 @@ const secretRules = "- Secret/credential hardcode: API key, password, token, pri
 type secretPattern struct {
 	label string
 	re    *regexp.Regexp
+	// skip (nếu có) khớp dòng thì bỏ qua dù re khớp — loại false positive
+	// đã biết trước của pattern đó.
+	skip *regexp.Regexp
+	// configOnly: chỉ áp dụng cho file config/.env (xem isConfigFile) —
+	// pattern quá rộng nếu chạy trên code (vd "password = cfg.Password").
+	configOnly bool
 }
 
 var secretPatterns = []secretPattern{
-	{"AWS access key", regexp.MustCompile(`\b(AKIA|ASIA)[0-9A-Z]{16}\b`)},
-	{"private key (PEM)", regexp.MustCompile(`-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----`)},
-	{"GitHub token", regexp.MustCompile(`\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})\b`)},
-	{"API key dạng sk-...", regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{20,}`)},
-	{"Slack token", regexp.MustCompile(`\bxox[abprs]-[A-Za-z0-9-]{10,}`)},
-	{"connection string có password", regexp.MustCompile(`\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@"']+:[^\s@/"']+@`)},
+	{label: "AWS access key", re: regexp.MustCompile(`\b(AKIA|ASIA)[0-9A-Z]{16}\b`)},
+	{label: "private key (PEM)", re: regexp.MustCompile(`-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----`)},
+	{label: "GitHub token", re: regexp.MustCompile(`\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})\b`)},
+	{label: "API key dạng sk-...", re: regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{20,}`)},
+	{label: "Slack token", re: regexp.MustCompile(`\bxox[abprs]-[A-Za-z0-9-]{10,}`)},
+	{label: "connection string có password", re: regexp.MustCompile(`\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@"']+:[^\s@/"']+@`)},
 	// Tên biến kiểu password/secret/token gán bằng 1 string literal. Yêu cầu
 	// literal ≥ 6 ký tự để bỏ qua giá trị rỗng/quá ngắn kiểu "" hay "x".
-	{"password/secret gán string literal", regexp.MustCompile(`(?i)\b[a-z0-9_]*(?:password|passwd|secret|api_?key|access_?token|auth_?token)[a-z0-9_]*["']?\s*(?::=|=|:)\s*["'][^"'\s]{6,}["']`)},
+	// skip: giá trị chỉ là TÊN env var/header (const passwordEnv =
+	// "DB_PASSWORD", apiKeyHeader = "X-Api-Key") — idiom Go rất phổ biến,
+	// không phải secret.
+	{
+		label: "password/secret gán string literal",
+		re:    regexp.MustCompile(`(?i)\b[a-z0-9_]*(?:password|passwd|secret|api_?key|access_?token|auth_?token)[a-z0-9_]*["']?\s*(?::=|=|:)\s*["'][^"'\s]{6,}["']`),
+		skip:  regexp.MustCompile(`[:=]\s*["'](?:[A-Z][A-Z0-9_]{5,}|[A-Z][a-z]*(?:-[A-Z][a-z]*)+)["']`),
+	},
+	// Dạng không quote chiếm cả dòng — phổ biến nhất trong .env/YAML/
+	// .properties (DB_PASSWORD=hunter22, password: hunter22). Bỏ qua giá
+	// trị tham chiếu ($VAR, ${VAR}, <placeholder>).
+	{
+		label:      "password/secret gán giá trị không quote",
+		re:         regexp.MustCompile(`(?i)^\s*(?:export\s+)?[a-z0-9_.-]*(?:password|passwd|secret|api_?key|access_?token|auth_?token)[a-z0-9_.-]*\s*[:=]\s*[^\s"'$\{<]{6,}\s*$`),
+		configOnly: true,
+	},
+}
+
+// configFileExts là đuôi file config dạng key=value/key: value, nơi secret
+// hay bị ghi thẳng không quote.
+var configFileExts = []string{".env", ".yml", ".yaml", ".properties", ".ini", ".conf", ".cfg", ".toml"}
+
+// isConfigFile báo p có phải file config không — gồm cả biến thể .env.*
+// (.env.local, .env.production) mà suffix-match không bắt được.
+func isConfigFile(p string) bool {
+	return strings.HasPrefix(path.Base(p), ".env") || matchesAnyPattern(p, configFileExts)
 }
 
 // maxSecretHits giới hạn số dòng liệt kê trong prompt — PR commit nhầm cả
@@ -58,12 +90,19 @@ func scanSecrets(diff string) []secretHit {
 	var hits []secretHit
 	for _, fileDiff := range splitDiffByFile(diff) {
 		fd := parseFileHunks(fileDiff)
+		isConfig := isConfigFile(fd.NewPath)
 		for _, h := range fd.Hunks {
 			for _, l := range h.Lines {
 				if l.Kind != LineAdded {
 					continue
 				}
 				for _, p := range secretPatterns {
+					if p.configOnly && !isConfig {
+						continue
+					}
+					if p.skip != nil && p.skip.MatchString(l.Content) {
+						continue
+					}
 					if p.re.MatchString(l.Content) {
 						hits = append(hits, secretHit{file: fd.NewPath, line: l.NewLine, label: p.label})
 						break

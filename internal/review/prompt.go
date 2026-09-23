@@ -79,7 +79,7 @@ func BuildReviewPrompt(userCommand string, diff string, staticCheckNote string, 
 	}
 
 	// Rule secret luôn chèn, không phụ thuộc loại file (issue #64).
-	b.WriteString("Với MỌI file trong diff, soát kỹ:\n")
+	b.WriteString("Với MỌI file trong diff, soát kỹ (rule mặc định — nếu xung đột với hướng dẫn riêng của repo ở trên thì hướng dẫn của repo được ưu tiên hơn):\n")
 	b.WriteString(secretRules)
 	b.WriteString("\n\n")
 

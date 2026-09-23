@@ -75,6 +75,39 @@ func TestScanSecrets_SkipsEnvVarAndHeaderNames(t *testing.T) {
 	}
 }
 
+func TestScanSecrets_SkipDoesNotHideRealSecret(t *testing.T) {
+	diff := secretTestDiff("config.go",
+		`password := "`+"HUNTER2024X"+`"`,
+		`m := map[string]string{"env": "DB_PASSWORD", "password": "`+"realS3cret"+`"}`,
+	)
+	if hits := scanSecrets(diff); len(hits) != 2 {
+		t.Errorf("scanSecrets() = %v, want 2 hits — skip must not hide real secrets", hits)
+	}
+}
+
+func TestScanSecrets_UnquotedValue_ComposeListAndTrailingComment(t *testing.T) {
+	for _, line := range []string{
+		"  - POSTGRES_PASSWORD=" + "hunter22",
+		"DB_PASSWORD=" + "hunter22" + "  # prod",
+		"password: " + "hunter22" + " # TODO",
+	} {
+		if hits := scanSecrets(secretTestDiff("docker-compose.yml", line)); len(hits) != 1 {
+			t.Errorf("scanSecrets(%q) = %v, want 1 hit", line, hits)
+		}
+	}
+}
+
+func TestScanSecrets_UnquotedValue_SkipsReferences(t *testing.T) {
+	diff := secretTestDiff("deploy.yaml",
+		"  secretName: my-tls-secret",
+		"password_env: DB_PASSWORD",
+		"DB_PASSWORD_FILE=/run/secrets/db_password",
+	)
+	if hits := scanSecrets(diff); len(hits) != 0 {
+		t.Errorf("scanSecrets() = %v, want no hits for secret references", hits)
+	}
+}
+
 func TestScanSecrets_UnquotedValue_ConfigFilesOnly(t *testing.T) {
 	const want = "password/secret gán giá trị không quote"
 	for _, file := range []string{".env", ".env.production", "config/app.yaml", "app.properties"} {

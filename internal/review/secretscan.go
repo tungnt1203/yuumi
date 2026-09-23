@@ -25,13 +25,19 @@ const secretRules = "- Secret/credential hardcode: API key, password, token, pri
 type secretPattern struct {
 	label string
 	re    *regexp.Regexp
-	// skip (nếu có) khớp dòng thì bỏ qua dù re khớp — loại false positive
-	// đã biết trước của pattern đó.
-	skip *regexp.Regexp
+	// assignment: re có 2 group (tên key, giá trị) — match mà key/giá trị
+	// chỉ là tham chiếu (xem isReferenceAssignment) bị bỏ qua. Xét TỪNG
+	// match chứ không cả dòng: 1 literal tham chiếu trên cùng dòng không
+	// được che mất secret thật đứng cạnh nó — lớp quét này thà báo thừa
+	// (Claude xác minh lại) còn hơn bỏ sót.
+	assignment bool
 	// configOnly: chỉ áp dụng cho file config/.env (xem isConfigFile) —
 	// pattern quá rộng nếu chạy trên code (vd "password = cfg.Password").
 	configOnly bool
 }
+
+// secretKeyNames là phần tên key/biến gợi ý giá trị là secret.
+const secretKeyNames = `(?:password|passwd|secret|api_?key|access_?token|auth_?token)`
 
 var secretPatterns = []secretPattern{
 	{label: "AWS access key", re: regexp.MustCompile(`\b(AKIA|ASIA)[0-9A-Z]{16}\b`)},
@@ -42,22 +48,49 @@ var secretPatterns = []secretPattern{
 	{label: "connection string có password", re: regexp.MustCompile(`\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@"']+:[^\s@/"']+@`)},
 	// Tên biến kiểu password/secret/token gán bằng 1 string literal. Yêu cầu
 	// literal ≥ 6 ký tự để bỏ qua giá trị rỗng/quá ngắn kiểu "" hay "x".
-	// skip: giá trị chỉ là TÊN env var/header (const passwordEnv =
-	// "DB_PASSWORD", apiKeyHeader = "X-Api-Key") — idiom Go rất phổ biến,
-	// không phải secret.
 	{
-		label: "password/secret gán string literal",
-		re:    regexp.MustCompile(`(?i)\b[a-z0-9_]*(?:password|passwd|secret|api_?key|access_?token|auth_?token)[a-z0-9_]*["']?\s*(?::=|=|:)\s*["'][^"'\s]{6,}["']`),
-		skip:  regexp.MustCompile(`[:=]\s*["'](?:[A-Z][A-Z0-9_]{5,}|[A-Z][a-z]*(?:-[A-Z][a-z]*)+)["']`),
+		label:      "password/secret gán string literal",
+		re:         regexp.MustCompile(`(?i)\b([a-z0-9_]*` + secretKeyNames + `[a-z0-9_]*)["']?\s*(?::=|=|:)\s*["']([^"'\s]{6,})["']`),
+		assignment: true,
 	},
 	// Dạng không quote chiếm cả dòng — phổ biến nhất trong .env/YAML/
-	// .properties (DB_PASSWORD=hunter22, password: hunter22). Bỏ qua giá
-	// trị tham chiếu ($VAR, ${VAR}, <placeholder>).
+	// .properties (DB_PASSWORD=hunter22, password: hunter22, item list
+	// "- POSTGRES_PASSWORD=..." của docker-compose/k8s), cho phép comment
+	// "# ..." cuối dòng. Bỏ qua giá trị tham chiếu ($VAR, ${VAR},
+	// <placeholder>).
 	{
 		label:      "password/secret gán giá trị không quote",
-		re:         regexp.MustCompile(`(?i)^\s*(?:export\s+)?[a-z0-9_.-]*(?:password|passwd|secret|api_?key|access_?token|auth_?token)[a-z0-9_.-]*\s*[:=]\s*[^\s"'$\{<]{6,}\s*$`),
+		re:         regexp.MustCompile(`(?i)^\s*(?:-\s+)?(?:export\s+)?([a-z0-9_.-]*` + secretKeyNames + `[a-z0-9_.-]*)\s*[:=]\s*([^\s"'$\{<#]{6,})\s*(?:#.*)?$`),
+		assignment: true,
 		configOnly: true,
 	},
+}
+
+// referenceKey: key mà giá trị là TÊN/đường dẫn tới secret chứ không phải
+// secret — secretName/secretKeyRef của k8s, biến *_FILE (Docker secrets).
+var referenceKey = regexp.MustCompile(`(?i)^(?:.*secretname|.*secretkeyref|.*_file)$`)
+
+// referenceValue: giá trị chỉ là tên env var (có "_", vd DB_PASSWORD — tên
+// idiom Go const passwordEnv = "DB_PASSWORD"), tên header (X-Api-Key) hoặc
+// đường dẫn tuyệt đối (/run/secrets/db). Bắt buộc có "_" ở nhánh env var để
+// secret thật toàn chữ hoa/số (HUNTER2024) vẫn bị báo.
+var referenceValue = regexp.MustCompile(`^(?:[A-Z][A-Z0-9]*_[A-Z0-9_]+|[A-Z][a-z]*(?:-[A-Z][a-z]*)+|/\S+)$`)
+
+func isReferenceAssignment(key, value string) bool {
+	return referenceKey.MatchString(key) || referenceValue.MatchString(value)
+}
+
+// matches báo line có khớp p không, đã loại match tham chiếu (assignment).
+func (p secretPattern) matches(line string) bool {
+	if !p.assignment {
+		return p.re.MatchString(line)
+	}
+	for _, m := range p.re.FindAllStringSubmatch(line, -1) {
+		if !isReferenceAssignment(m[1], m[2]) {
+			return true
+		}
+	}
+	return false
 }
 
 // configFileExts là đuôi file config dạng key=value/key: value, nơi secret
@@ -100,10 +133,7 @@ func scanSecrets(diff string) []secretHit {
 					if p.configOnly && !isConfig {
 						continue
 					}
-					if p.skip != nil && p.skip.MatchString(l.Content) {
-						continue
-					}
-					if p.re.MatchString(l.Content) {
+					if p.matches(l.Content) {
 						hits = append(hits, secretHit{file: fd.NewPath, line: l.NewLine, label: p.label})
 						break
 					}

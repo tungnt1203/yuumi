@@ -14,6 +14,34 @@ type CallStats struct {
 	// để đọc) — tín hiệu model có thực sự khám phá thêm file ngoài diff hay
 	// không (issue #20).
 	NumTurns int
+
+	// Usage là token/chi phí đã tiêu, cộng dồn qua mọi lần thử (issue #63).
+	// Zero value nghĩa là implementation không báo được usage, không phải
+	// lần gọi miễn phí.
+	Usage Usage
+}
+
+// Usage là token và chi phí model báo về. Input chia 3 phần vì Claude CLI
+// dùng prompt cache: InputTokens chỉ là phần KHÔNG đi qua cache, thường rất
+// nhỏ — phần lớn input nằm ở CacheCreationInputTokens/CacheReadInputTokens,
+// mỗi loại tính giá khác nhau. Chỉ log InputTokens sẽ báo thiếu gần hết.
+type Usage struct {
+	InputTokens              int
+	CacheCreationInputTokens int
+	CacheReadInputTokens     int
+	OutputTokens             int
+	CostUSD                  float64
+}
+
+// Add trả về tổng u và other, dùng để cộng dồn usage qua các lần retry.
+func (u Usage) Add(other Usage) Usage {
+	return Usage{
+		InputTokens:              u.InputTokens + other.InputTokens,
+		CacheCreationInputTokens: u.CacheCreationInputTokens + other.CacheCreationInputTokens,
+		CacheReadInputTokens:     u.CacheReadInputTokens + other.CacheReadInputTokens,
+		OutputTokens:             u.OutputTokens + other.OutputTokens,
+		CostUSD:                  u.CostUSD + other.CostUSD,
+	}
 }
 
 // Reviewer thực hiện việc review code trong thư mục dir dựa trên prompt đã

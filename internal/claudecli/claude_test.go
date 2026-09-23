@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tungnt1203/yuumi/internal/review"
 )
 
 // withFakeClaude tạo 1 script tên "claude" trong thư mục tạm, chèn thư mục
@@ -205,5 +207,82 @@ fi
 	}
 	if got != "got-prompt" {
 		t.Errorf("Review() = %q, want claude to receive the prompt via -p", got)
+	}
+}
+
+// usageJSON là phần usage/cost theo đúng shape output thật của
+// `claude -p --output-format json` (đã rút gọn các field không dùng).
+const usageJSON = `"total_cost_usd":0.0636,"usage":{"input_tokens":2,"cache_creation_input_tokens":7735,"cache_read_input_tokens":8257,"output_tokens":4,"service_tier":"standard"}`
+
+var wantUsage = review.Usage{
+	InputTokens:              2,
+	CacheCreationInputTokens: 7735,
+	CacheReadInputTokens:     8257,
+	OutputTokens:             4,
+	CostUSD:                  0.0636,
+}
+
+func TestReview_ParsesUsage(t *testing.T) {
+	withFakeClaude(t, `#!/bin/sh
+echo '{"type":"result","subtype":"success","is_error":false,"result":"ok",`+usageJSON+`}'
+`)
+
+	_, stats, err := (&Reviewer{}).Review("review this", t.TempDir())
+	if err != nil {
+		t.Fatalf("Review() unexpected error: %v", err)
+	}
+	if stats.Usage != wantUsage {
+		t.Errorf("Review() usage = %+v, want %+v", stats.Usage, wantUsage)
+	}
+}
+
+func TestReview_NoUsageFields_ZeroUsage(t *testing.T) {
+	withFakeClaude(t, `#!/bin/sh
+echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'
+`)
+
+	_, stats, err := (&Reviewer{}).Review("review this", t.TempDir())
+	if err != nil {
+		t.Fatalf("Review() unexpected error: %v", err)
+	}
+	if stats.Usage != (review.Usage{}) {
+		t.Errorf("Review() usage = %+v, want zero value", stats.Usage)
+	}
+}
+
+// Lần gọi Claude tự báo lỗi vẫn tốn token thật — phải được ghi lại.
+func TestReview_ClaudeReportsError_KeepsUsage(t *testing.T) {
+	withFakeClaude(t, `#!/bin/sh
+echo '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"gave up",`+usageJSON+`}'
+`)
+
+	_, stats, err := (&Reviewer{sleep: noSleep}).Review("review this", t.TempDir())
+	if err == nil {
+		t.Fatal("Review() expected error when is_error is true, got nil")
+	}
+	if stats.Usage != wantUsage {
+		t.Errorf("Review() usage = %+v, want %+v", stats.Usage, wantUsage)
+	}
+}
+
+// Lần thử lỗi chạy lệnh không có output nên không cộng usage; tổng bằng
+// usage của lần thành công.
+func TestReview_RetryThenSucceeds_UsageFromParsedAttempts(t *testing.T) {
+	counter := filepath.Join(t.TempDir(), "attempts")
+	withFakeClaude(t, countingScript(counter, `if [ "$count" -eq 1 ]; then
+  echo 'network blip' >&2
+  exit 1
+fi
+echo '{"type":"result","subtype":"success","is_error":false,"result":"ok",`+usageJSON+`}'`))
+
+	_, stats, err := (&Reviewer{sleep: noSleep}).Review("review this", t.TempDir())
+	if err != nil {
+		t.Fatalf("Review() unexpected error after retry: %v", err)
+	}
+	if stats.Attempts != 2 {
+		t.Errorf("Review() attempts = %d, want 2", stats.Attempts)
+	}
+	if stats.Usage != wantUsage {
+		t.Errorf("Review() usage = %+v, want %+v", stats.Usage, wantUsage)
 	}
 }

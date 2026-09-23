@@ -14,7 +14,17 @@ func TestFileLogger_WritesOneJSONFilePerCall(t *testing.T) {
 	dir := t.TempDir()
 	logger := NewFileLogger(dir)
 
-	logger.LogReview("owner/repo", 42, "abc123", 1, 2, "prompt gửi đi", "response nhận được", "", 1500*time.Millisecond, review.CallStats{Attempts: 2, NumTurns: 5})
+	logger.LogReview("owner/repo", 42, "abc123", 1, 2, "prompt gửi đi", "response nhận được", "", 1500*time.Millisecond, review.CallStats{
+		Attempts: 2,
+		NumTurns: 5,
+		Usage: review.Usage{
+			InputTokens:              10,
+			CacheCreationInputTokens: 200,
+			CacheReadInputTokens:     3000,
+			OutputTokens:             40,
+			CostUSD:                  0.05,
+		},
+	})
 
 	files, err := os.ReadDir(dir)
 	if err != nil {
@@ -54,6 +64,10 @@ func TestFileLogger_WritesOneJSONFilePerCall(t *testing.T) {
 	}
 	if e.NumTurns != 5 {
 		t.Errorf("expected num_turns=5, got %d", e.NumTurns)
+	}
+	wantUsage := usage{InputTokens: 10, CacheCreationInputTokens: 200, CacheReadInputTokens: 3000, OutputTokens: 40, CostUSD: 0.05}
+	if e.Usage != wantUsage {
+		t.Errorf("expected usage %+v, got %+v", wantUsage, e.Usage)
 	}
 }
 

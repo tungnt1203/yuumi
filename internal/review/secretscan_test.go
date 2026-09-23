@@ -90,10 +90,61 @@ func TestScanSecrets_UnquotedValue_ComposeListAndTrailingComment(t *testing.T) {
 		"  - POSTGRES_PASSWORD=" + "hunter22",
 		"DB_PASSWORD=" + "hunter22" + "  # prod",
 		"password: " + "hunter22" + " # TODO",
+		"DB_PASSWORD=" + "ab#cdefgh",
+		"password: " + "p#ssw0rd123",
+		"DB_PASSWORD=" + "HUNTER2024",
 	} {
 		if hits := scanSecrets(secretTestDiff("docker-compose.yml", line)); len(hits) != 1 {
 			t.Errorf("scanSecrets(%q) = %v, want 1 hit", line, hits)
 		}
+	}
+}
+
+func TestScanSecrets_PathAndHeaderShapedValues_OnlySkippedByKey(t *testing.T) {
+	// Giá trị trông như đường dẫn/tên header nhưng key không phải tham chiếu
+	// → vẫn là secret.
+	diff := secretTestDiff("config.go",
+		`password := "`+"/Xk9pQ2longsecret"+`"`,
+		`passphrase := "`+"Correct-Horse-Battery-Staple"+`"`,
+	)
+	if hits := scanSecrets(diff); len(hits) != 2 {
+		t.Errorf("scanSecrets() = %v, want 2 hits", hits)
+	}
+	if hits := scanSecrets(secretTestDiff(".env", "API_KEY="+"/abc123longsecret")); len(hits) != 1 {
+		t.Errorf("scanSecrets(.env) = %v, want 1 hit for path-shaped secret", hits)
+	}
+	// Key là tham chiếu → bỏ qua.
+	diff = secretTestDiff("config.go",
+		`secretPath := "/etc/app/secret.pem"`,
+		`apiKeyHeader := "X-Api-Key"`,
+	)
+	if hits := scanSecrets(diff); len(hits) != 0 {
+		t.Errorf("scanSecrets() = %v, want no hits when key marks a reference", hits)
+	}
+}
+
+func TestScanSecrets_ReferenceKey_NotTooBroad(t *testing.T) {
+	// Key tham chiếu trong config/.env (pattern không quote) → bỏ qua.
+	for _, line := range []string{
+		"DB_PASSWORD_PATH=/run/secrets/db",
+		"API_KEY_HEADER=X-Api-Key",
+	} {
+		if hits := scanSecrets(secretTestDiff(".env", line)); len(hits) != 0 {
+			t.Errorf("scanSecrets(%q) = %v, want no hits", line, hits)
+		}
+	}
+
+	// Key *Header chứa token thật, hoặc key chỉ tình cờ kết thúc bằng
+	// "file" → vẫn phải báo.
+	diff := secretTestDiff("config.go",
+		`apiKeyHeader := "`+"a1b2c3d4e5f6g7"+`"`,
+		`secretProfile := "`+"s3cr3tValue"+`"`,
+	)
+	if hits := scanSecrets(diff); len(hits) != 2 {
+		t.Errorf("scanSecrets() = %v, want 2 hits", hits)
+	}
+	if hits := scanSecrets(secretTestDiff(".env", "X_API_KEY_HEADER="+"a1b2c3d4e5f6")); len(hits) != 1 {
+		t.Errorf("scanSecrets(.env header key with token) = %v, want 1 hit", hits)
 	}
 }
 

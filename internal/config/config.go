@@ -38,6 +38,11 @@ type Config struct {
 	// nhất cho mỗi PR (xem reviewstate.FileStore, issue #21) — rỗng nghĩa
 	// là "không set", để reviewstate tự dùng default của nó.
 	ReviewStateFile string
+
+	// BundleCacheDir override thư mục lưu kết quả từng bundle để resume
+	// review bị ngắt (xem reviewstate.BundleCache, issue #76) — rỗng nghĩa
+	// là "không set", để reviewstate tự dùng default của nó.
+	BundleCacheDir string
 }
 
 func Load() (Config, error) {
@@ -80,6 +85,7 @@ func Load() (Config, error) {
 		MaxConcurrentReviews: maxConcurrentReviews,
 		ReviewLogDir:         os.Getenv("REVIEW_LOG_DIR"),
 		ReviewStateFile:      os.Getenv("REVIEW_STATE_FILE"),
+		BundleCacheDir:       os.Getenv("BUNDLE_CACHE_DIR"),
 	}, nil
 }
 

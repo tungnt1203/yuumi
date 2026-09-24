@@ -125,6 +125,7 @@ ALLOWED_USERS=<username1,username2,...>   # danh sách GitHub username được 
 | `MAX_CONCURRENT_REVIEWS` | `3` | Số job review chạy đồng thời tối đa; job vượt mức sẽ chờ tới khi có slot trống. Phải là số nguyên dương. |
 | `REVIEW_LOG_DIR` | `logs/reviews` | Thư mục ghi log mỗi lần gọi Claude CLI (xem mục Log review). |
 | `REVIEW_STATE_FILE` | `logs/review-state.json` | File lưu SHA đã review gần nhất cho từng PR (xem mục review lần 2 trở đi). |
+| `BUNDLE_CACHE_DIR` | `logs/bundle-cache` | Thư mục lưu kết quả từng phần (bundle) đã review xong, để review bị ngắt giữa chừng chạy lại không phải review lại phần đã xong. |
 
 ## Cấu hình review riêng cho từng repo (`.yuumi.yml`)
 
@@ -255,6 +256,17 @@ Mỗi lần review xong, bot ghi lại SHA vừa review cho đúng PR đó (`int
 - Lấy state hoặc gọi compare API lỗi đều fallback về full diff, không chặn review.
 - Review lỗi (Claude CLI lỗi, ...) thì SHA đó **không** được ghi nhận là đã review — lần sau vẫn tính từ SHA đã review thành công gần nhất, tránh bỏ sót phần code chưa thực sự được xem qua.
 - Comment sẽ có ghi chú `_(Chỉ review phần thay đổi mới so với lần review trước...)_` để người đọc biết bot có tối ưu, không phải review sót.
+
+</details>
+
+<details id="resume-review-bị-ngắt-giữa-chừng">
+<summary><strong>Resume review bị ngắt giữa chừng</strong></summary>
+
+PR lớn được chia thành nhiều phần (bundle). Mỗi phần review xong, bot lưu kết quả vào `logs/bundle-cache` (override qua `BUNDLE_CACHE_DIR`). Nếu review bị ngắt (một phần bị lỗi/timeout, server restart...), lần review lại **cùng SHA** chỉ gọi Claude cho các phần còn thiếu, các phần đã xong dùng lại kết quả đã lưu.
+
+- Kết quả chỉ được dùng lại khi prompt giống hệt: đổi diff, `.yuumi.yml` hay nội dung lệnh `@yuumi` đều review lại từ đầu.
+- Review chạy xong không lỗi thì cache của PR đó bị xoá. Cache cũ hơn 7 ngày không được dùng lại.
+- Đọc/ghi cache lỗi chỉ log ra, không chặn review.
 
 </details>
 

@@ -253,7 +253,9 @@ func renderReviewHeader(findings []Finding, partial bool) string {
 // (không gắn đúng 1 dòng diff): icon severity + label + category (nếu có)
 // + message, kèm khối code thường nếu có suggestion. Khối ```suggestion
 // của GitHub chỉ hợp lệ trong review comment gắn dòng — dùng
-// renderInlineFinding cho đường đó.
+// renderInlineFinding cho đường đó. Inline comment cũng dùng renderFinding
+// khi suggestion không an toàn để bấm commit (xem suggestionRepeatsNeighbor
+// trong splitFindingsForPosting).
 func renderFinding(f Finding) string {
 	return renderFindingText(f, false)
 }

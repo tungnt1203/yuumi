@@ -8,8 +8,9 @@ import (
 // pendingComment là 1 finding đã được XÁC THỰC khớp đúng với 1 dòng thật
 // trong diff (qua parseFileHunks/FileDiff.LineAtNew, issue #24) — sẵn sàng
 // gửi thành 1 inline comment qua GitHub Reviews API (issue #5). Body đã
-// được render sẵn (renderInlineFinding) để Job.postInlineComments không cần biết
-// gì về Finding, chỉ việc gửi đi.
+// được render sẵn (renderInlineFinding, hoặc renderFinding khi
+// suggestionRepeatsNeighbor thấy khoảng dòng bị gắn quá hẹp) để
+// Job.postInlineComments không cần biết gì về Finding, chỉ việc gửi đi.
 type pendingComment struct {
 	Path string
 	// StartLine > 0 và nhỏ hơn Line nghĩa là comment phủ một khoảng dòng

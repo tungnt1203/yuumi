@@ -1903,3 +1903,50 @@ func TestSaveCachedBundle_EmptyFindings(t *testing.T) {
 		t.Errorf("cached = %q (found %v), want \"[]\"", text, ok)
 	}
 }
+
+// Key gồm SHA: cùng diff nhưng SHA khác thì không dùng lại kết quả cũ.
+func TestBundleCacheKey_DependsOnSHA(t *testing.T) {
+	if bundleCacheKey("sha1", "p") == bundleCacheKey("sha2", "p") {
+		t.Error("bundleCacheKey same for different SHAs, want different")
+	}
+}
+
+// Cache chứa văn xuôi (lần trước repair thất bại), lần này repair được:
+// lưu đè bằng bản JSON để lần sau không phải repair nữa.
+func TestJobRun_CachedProseRepaired_SavesJSON(t *testing.T) {
+	diff := "diff --git a/x b/x\n+x"
+	cache := &fakeBundleCache{}
+	newJob := func(reviewer Reviewer) *Job {
+		return &Job{
+			// editErr chặn Run trước ClearBundles, để entry còn lại mà kiểm tra.
+			GitHub:       &fakeGitHubClient{headSHA: "abc123", diff: diff, editErr: errors.New("stop before clear")},
+			Clone:        fakeCloner("/tmp/fake-dir", nil, new(bool)),
+			Reviewer:     reviewer,
+			RepoFullName: "o/r",
+			IssueNumber:  1,
+			BundleCache:  cache,
+		}
+	}
+
+	// Lần 1: review ra văn xuôi, repair mặc định cũng thất bại → lưu văn xuôi.
+	newJob(&fakeReviewer{result: "văn xuôi không phải JSON"}).Run()
+	if len(cache.entries) != 1 {
+		t.Fatalf("after first run: %d cache entries, want 1", len(cache.entries))
+	}
+
+	// Lần 2: lấy văn xuôi từ cache, repair thành công.
+	second := &fakeReviewer{
+		repairSet:    true,
+		repairResult: `[{"category":"bug","severity":"low","message":"đã sửa định dạng"}]`,
+	}
+	newJob(second).Run()
+
+	if len(second.gotPrompts) != 0 {
+		t.Errorf("second run reviewed %d bundle(s) again, want 0 (cached)", len(second.gotPrompts))
+	}
+	for _, text := range cache.entries {
+		if !strings.Contains(text, "đã sửa định dạng") {
+			t.Errorf("cache entry = %q, want repaired JSON", text)
+		}
+	}
+}

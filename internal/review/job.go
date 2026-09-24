@@ -509,7 +509,7 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 		}
 
 		prompt := BuildReviewPrompt(j.UserCommand, promptDiff, staticReport, repoInstructions, primer)
-		cacheKey := bundleCacheKey(prompt)
+		cacheKey := bundleCacheKey(sha, prompt)
 		text, cached := j.loadCachedBundle(cacheKey)
 		var err error
 		errMsg := ""
@@ -550,8 +550,11 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 				// Output trắng không phải kết luận sạch. Ghi một câu để người
 				// đọc thấy phần này không có kết quả, thay vì một mục trống.
 				display = "⚠️ Reviewer không trả về nội dung cho phần này."
-			} else if !ok {
+			}
+			repaired := false
+			if !ok && strings.TrimSpace(text) != "" {
 				findings, ok = j.repairFindingsFormat(dir, sha, i+1, len(bundles), text)
+				repaired = ok
 			}
 			if ok {
 				anyParsed = true
@@ -561,7 +564,9 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 				inline = append(inline, bundleInline...)
 				display = renderBundleSummary(findings, general)
 			}
-			if !cached {
+			// Bundle lấy từ cache mà lần này mới sửa được định dạng thì lưu
+			// lại bản JSON, để lần sau không phải gọi repair nữa.
+			if !cached || repaired {
 				j.saveCachedBundle(cacheKey, text, findings, ok)
 			}
 		}
@@ -577,11 +582,12 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 	return strings.Join(sections, "\n\n"), hadError, inline, allFindings, anyParsed, allParsed
 }
 
-// bundleCacheKey là sha256 của prompt đầy đủ: prompt đã gồm diff của
-// bundle, hướng dẫn repo, primer và lệnh của người review, nên mọi thay
-// đổi đầu vào đều ra key khác, không dùng nhầm kết quả cũ.
-func bundleCacheKey(prompt string) string {
-	sum := sha256.Sum256([]byte(prompt))
+// bundleCacheKey là sha256 của head SHA + prompt đầy đủ. Prompt đã gồm
+// diff của bundle, hướng dẫn repo, primer và lệnh của người review; SHA
+// cần thêm vì Claude đọc cả file khác trong repo đã clone — cùng diff
+// nhưng code ở SHA khác vẫn có thể cho kết quả khác.
+func bundleCacheKey(sha, prompt string) string {
+	sum := sha256.Sum256([]byte(sha + "\x00" + prompt))
 	return hex.EncodeToString(sum[:])
 }
 

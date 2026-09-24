@@ -1,6 +1,7 @@
 package reviewstate
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -67,5 +68,41 @@ func TestBundleCache_ClearMissingDir(t *testing.T) {
 	c := NewBundleCache(filepath.Join(t.TempDir(), "nope"))
 	if err := c.ClearBundles("o/r", 1); err != nil {
 		t.Errorf("ClearBundles on missing dir: %v, want nil", err)
+	}
+}
+
+// ClearBundles dọn luôn entry quá TTL của PR khác, giữ entry còn hạn.
+func TestBundleCache_ClearRemovesExpiredOfOtherPRs(t *testing.T) {
+	dir := t.TempDir()
+	c := NewBundleCache(dir)
+	for _, pr := range []int{1, 2, 3} {
+		if err := c.SaveBundle("o/r", pr, "k", "x"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := time.Now().Add(-bundleCacheTTL - time.Hour)
+	if err := os.Chtimes(c.path("o/r", 2, "k"), old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.ClearBundles("o/r", 1); err != nil {
+		t.Fatalf("ClearBundles error: %v", err)
+	}
+
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 || entries[0].Name() != filepath.Base(c.path("o/r", 3, "k")) {
+		t.Errorf("remaining entries = %v, want only o/r#3", entries)
+	}
+}
+
+// SaveBundle không để lại file .tmp sau khi ghi xong.
+func TestBundleCache_SaveLeavesNoTempFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := NewBundleCache(dir).SaveBundle("o/r", 1, "k", "x"); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 || filepath.Ext(entries[0].Name()) != ".txt" {
+		t.Errorf("entries = %v, want exactly 1 .txt file", entries)
 	}
 }

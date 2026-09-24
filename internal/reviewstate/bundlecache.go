@@ -11,9 +11,9 @@ import (
 // defaultBundleCacheDir dùng khi BundleCache.Dir rỗng.
 const defaultBundleCacheDir = "logs/bundle-cache"
 
-// bundleCacheTTL: entry cũ hơn mức này bị coi như không có. PR bị ngắt rồi
-// bỏ dở thì cache không bao giờ được xoá qua ClearBundles, TTL giữ cho kết quả quá
-// cũ không bị dùng lại.
+// bundleCacheTTL: entry cũ hơn mức này bị coi như không có, và bị
+// ClearBundles dọn đi (của mọi PR) — PR bị ngắt rồi bỏ dở thì không ai gọi
+// ClearBundles cho nó, không dọn thì thư mục cache phình mãi.
 const bundleCacheTTL = 7 * 24 * time.Hour
 
 // BundleCache lưu kết quả review của từng bundle đã chạy xong, để lần
@@ -60,11 +60,7 @@ func (c *BundleCache) LoadBundle(repoFullName string, issueNumber int, key strin
 		}
 		return "", false, err
 	}
-	now := time.Now
-	if c.now != nil {
-		now = c.now
-	}
-	if now().Sub(info.ModTime()) > bundleCacheTTL {
+	if c.clock()().Sub(info.ModTime()) > bundleCacheTTL {
 		return "", false, nil
 	}
 	data, err := os.ReadFile(p)
@@ -74,16 +70,27 @@ func (c *BundleCache) LoadBundle(repoFullName string, issueNumber int, key strin
 	return string(data), true, nil
 }
 
-// SaveBundle ghi kết quả của 1 bundle, tạo Dir nếu chưa có.
+// SaveBundle ghi kết quả của 1 bundle, tạo Dir nếu chưa có. Ghi ra file
+// tạm rồi rename: process bị kill giữa lúc ghi thì không để lại file .txt
+// cắt dở mà LoadBundle đọc nhầm như kết quả hợp lệ.
 func (c *BundleCache) SaveBundle(repoFullName string, issueNumber int, key, text string) error {
 	if err := os.MkdirAll(c.dir(), 0o755); err != nil {
 		return fmt.Errorf("cannot create bundle cache dir: %w", err)
 	}
-	return os.WriteFile(c.path(repoFullName, issueNumber, key), []byte(text), 0o644)
+	p := c.path(repoFullName, issueNumber, key)
+	tmp := p + ".tmp"
+	if err := os.WriteFile(tmp, []byte(text), 0o644); err != nil {
+		return fmt.Errorf("cannot write bundle cache entry: %w", err)
+	}
+	if err := os.Rename(tmp, p); err != nil {
+		return fmt.Errorf("cannot save bundle cache entry: %w", err)
+	}
+	return nil
 }
 
 // ClearBundles xoá mọi entry của 1 PR — gọi khi review PR đó đã chạy xong
-// không lỗi, không cần resume nữa. Dir chưa tồn tại thì không có gì để xoá.
+// không lỗi, không cần resume nữa — và tiện dọn luôn entry quá
+// bundleCacheTTL của mọi PR khác. Dir chưa tồn tại thì không có gì để xoá.
 func (c *BundleCache) ClearBundles(repoFullName string, issueNumber int) error {
 	entries, err := os.ReadDir(c.dir())
 	if err != nil {
@@ -94,11 +101,32 @@ func (c *BundleCache) ClearBundles(repoFullName string, issueNumber int) error {
 	}
 	p := prefix(repoFullName, issueNumber)
 	for _, e := range entries {
-		if !e.IsDir() && strings.HasPrefix(e.Name(), p) {
-			if err := os.Remove(filepath.Join(c.dir(), e.Name())); err != nil {
-				return err
-			}
+		if e.IsDir() {
+			continue
+		}
+		if !strings.HasPrefix(e.Name(), p) && !c.expired(e) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(c.dir(), e.Name())); err != nil && !os.IsNotExist(err) {
+			return err
 		}
 	}
 	return nil
+}
+
+// expired báo entry đã quá bundleCacheTTL. Không đọc được thông tin file
+// thì coi như chưa hết hạn — không xoá thứ mình không chắc.
+func (c *BundleCache) expired(e os.DirEntry) bool {
+	info, err := e.Info()
+	if err != nil {
+		return false
+	}
+	return c.clock()().Sub(info.ModTime()) > bundleCacheTTL
+}
+
+func (c *BundleCache) clock() func() time.Time {
+	if c.now != nil {
+		return c.now
+	}
+	return time.Now
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	neturl "net/url"
+	"strings"
 )
 
 type CommentResponse struct {
@@ -226,22 +227,22 @@ func (c *Client) GetPullRequestHeadSHA(repoFullName string, pullRequestNumber in
 	return pr.Head.SHA, nil
 }
 
-// GetPullRequestBaseSHA trả về SHA commit base của PR. review.Job đọc
-// block_severity trong .yuumi.yml ở commit này thay vì ở head, để tác giả
-// PR không tự tắt được severity gate (issue #60).
-func (c *Client) GetPullRequestBaseSHA(repoFullName string, pullRequestNumber int) (string, error) {
+// GetPullRequestSHAs trả về SHA head và base của PR trong CÙNG 1 request.
+// review.Job cần cả 2: head để review, base để đọc block_severity trong
+// .yuumi.yml mà tác giả PR không tự sửa được (issue #60).
+func (c *Client) GetPullRequestSHAs(repoFullName string, pullRequestNumber int) (headSHA string, baseSHA string, err error) {
 	pr, err := c.getPullRequest(repoFullName, pullRequestNumber)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return pr.Base.SHA, nil
+	return pr.Head.SHA, pr.Base.SHA, nil
 }
 
 // GetFileContent đọc nội dung file path tại ref (SHA/nhánh) qua Contents
 // API, dạng raw. File không tồn tại (404) trả found=false và err=nil — đa
 // số repo không có file cấu hình, đó không phải lỗi.
 func (c *Client) GetFileContent(repoFullName string, path string, ref string) (content []byte, found bool, err error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/contents/%s?ref=%s", repoFullName, path, neturl.QueryEscape(ref))
+	url := fmt.Sprintf("https://api.github.com/repos/%s/contents/%s?ref=%s", repoFullName, escapePath(path), neturl.QueryEscape(ref))
 	req, err := c.newRequest("GET", url, nil)
 	if err != nil {
 		return nil, false, err
@@ -266,6 +267,17 @@ func (c *Client) GetFileContent(repoFullName string, path string, ref string) (c
 		return nil, false, fmt.Errorf("github api error %d: %s", resp.StatusCode, string(body))
 	}
 	return body, true, nil
+}
+
+// escapePath escape từng đoạn của path nhưng giữ nguyên "/" — PathEscape
+// cho cả chuỗi sẽ biến "/" thành %2F, làm hỏng path lồng nhau (dir/file).
+// Ký tự như "?", "#", "&" trong tên file không còn phá được cấu trúc URL.
+func escapePath(path string) string {
+	segments := strings.Split(path, "/")
+	for i, segment := range segments {
+		segments[i] = neturl.PathEscape(segment)
+	}
+	return strings.Join(segments, "/")
 }
 
 // GetPullRequestChangedFilesCount trả về số file GitHub ghi nhận PR đã đổi.

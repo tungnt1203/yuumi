@@ -295,3 +295,44 @@ func TestNormalizeSeverities(t *testing.T) {
 		t.Errorf("invalid = %v, want [hight]", invalid)
 	}
 }
+
+// Giá trị gõ sai phải hiện trên check run, không chỉ trong log — nếu không
+// người cấu hình tưởng gate đang chặn mức đó.
+func TestSeverityGate_InvalidValueWarnsOnCheckRun(t *testing.T) {
+	got := gateJob(t, &fakeGitHubClient{
+		baseFiles: map[string]string{"base1:.yuumi.yml": "block_severity: [critcal, high]\n"},
+	}, "")
+
+	// "high" hợp lệ vẫn có hiệu lực.
+	if got.conclusion != "failure" {
+		t.Errorf("conclusion = %q, want failure (high vẫn bị chặn)", got.conclusion)
+	}
+	if !strings.Contains(got.summary, "không hợp lệ") || !strings.Contains(got.summary, "critcal") {
+		t.Errorf("summary should warn about invalid value: %s", got.summary)
+	}
+}
+
+// Không tạo được check run thì không tốn lệnh gọi API đọc cấu hình gate.
+func TestSeverityGate_SkippedWithoutCheckRun(t *testing.T) {
+	gh := &fakeGitHubClient{
+		headSHA:           "abc123",
+		baseSHA:           "base1",
+		diff:              "diff --git a/x b/x",
+		createCheckRunErr: errors.New("403"),
+		baseFiles:         map[string]string{"base1:.yuumi.yml": "block_severity: [high]\n"},
+	}
+	cleanupCalled := false
+	job := &Job{
+		GitHub:        gh,
+		Clone:         fakeCloner(t.TempDir(), nil, &cleanupCalled),
+		Reviewer:      &fakeReviewer{result: `[]`},
+		RepoFullName:  "octo/repo",
+		IssueNumber:   5,
+		PlaceholderID: 42,
+	}
+	job.Run()
+
+	if gh.getFileCalls != 0 {
+		t.Errorf("GetFileContent called %d times without a check run, want 0", gh.getFileCalls)
+	}
+}

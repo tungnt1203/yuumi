@@ -75,11 +75,13 @@ func reviewedCheckRunResult(o reviewOutcome) checkRunResult {
 		result.Title = fmt.Sprintf("%d góp ý", len(o.Findings))
 	}
 
+	// Gate có thể vừa bật (các giá trị hợp lệ) vừa có cảnh báo (giá trị gõ
+	// sai) — hiện cả 2.
 	var parts []string
-	switch {
-	case o.GateNote != "":
+	if o.GateNote != "" {
 		parts = append(parts, o.GateNote)
-	case len(o.BlockSeverity) > 0:
+	}
+	if len(o.BlockSeverity) > 0 {
 		parts = append(parts, fmt.Sprintf("Severity gate: finding mức **%s** làm check này fail (`block_severity` trong `.yuumi.yml` của nhánh base).", strings.ToUpper(strings.Join(o.BlockSeverity, ", "))))
 	}
 	if o.Header != "" {
@@ -114,12 +116,14 @@ func blockedFindingCount(findings []Finding, block []string) int {
 // Không có file / không set: trả nil, gate tắt. Lỗi (API, YAML sai): trả nil
 // kèm note để hiện trên check run — gate không áp dụng thay vì làm fail
 // mọi PR chỉ vì GitHub API chập chờn.
-func (j *Job) loadBlockSeverity() (block []string, note string) {
+//
+// Giá trị gõ sai (vd "critcal") bị bỏ qua, và note nêu rõ trên check run —
+// nếu chỉ log, người cấu hình tưởng gate đang chặn mức đó trong khi không.
+func (j *Job) loadBlockSeverity(baseSHA string) (block []string, note string) {
 	const failNote = "⚠️ Không đọc được `block_severity` trong `.yuumi.yml` của nhánh base, severity gate không áp dụng cho lần review này. Xem log server."
 
-	baseSHA, err := j.GitHub.GetPullRequestBaseSHA(j.RepoFullName, j.IssueNumber)
-	if err != nil {
-		fmt.Println("Get base SHA for severity gate error:", err)
+	if baseSHA == "" {
+		fmt.Println("Severity gate: PR không có base SHA")
 		return nil, failNote
 	}
 	data, found, err := j.GitHub.GetFileContent(j.RepoFullName, repoConfigFileName, baseSHA)
@@ -139,6 +143,7 @@ func (j *Job) loadBlockSeverity() (block []string, note string) {
 	block, invalid := normalizeSeverities(cfg.BlockSeverity)
 	if len(invalid) > 0 {
 		fmt.Println("WARNING: block_severity có giá trị không hợp lệ (bỏ qua):", invalid)
+		return block, fmt.Sprintf("⚠️ `block_severity` trong `.yuumi.yml` của nhánh base có giá trị không hợp lệ, đã bỏ qua: `%s`. Giá trị hợp lệ: critical, high, medium, low.", strings.Join(invalid, "`, `"))
 	}
 	return block, ""
 }

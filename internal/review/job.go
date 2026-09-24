@@ -30,11 +30,10 @@ const defaultBundleBudgetChars = 12_000
 // không cần biết/import bất cứ gì về Finding hay pendingComment (xem
 // postInlineComments, issue #5).
 type GitHubClient interface {
-	GetPullRequestHeadSHA(repoFullName string, pullRequestNumber int) (string, error)
+	GetPullRequestSHAs(repoFullName string, pullRequestNumber int) (headSHA string, baseSHA string, err error)
 	GetPullRequestDiff(repoFullName string, pullRequestNumber int) (string, error)
 	GetCompareDiff(repoFullName string, baseSHA string, headSHA string) (string, error)
 	GetPullRequestChangedFilesCount(repoFullName string, pullRequestNumber int) (int, error)
-	GetPullRequestBaseSHA(repoFullName string, pullRequestNumber int) (string, error)
 	GetFileContent(repoFullName string, path string, ref string) (content []byte, found bool, err error)
 	EditComment(repoFullName string, commentID int64, body string) error
 	CreateReview(repoFullName string, pullRequestNumber int, commitSHA string, body string, commentsJSON []byte) error
@@ -149,7 +148,7 @@ func (j *Job) Run() {
 		}
 	}()
 
-	sha, err := j.GitHub.GetPullRequestHeadSHA(j.RepoFullName, j.IssueNumber)
+	sha, baseSHA, err := j.GitHub.GetPullRequestSHAs(j.RepoFullName, j.IssueNumber)
 	if err != nil {
 		j.reportFailure(fmt.Errorf("không lấy được head SHA: %w", err))
 		return
@@ -309,7 +308,13 @@ func (j *Job) Run() {
 	}
 	posted = true
 	fmt.Println("Comment posted successfully")
-	blockSeverity, gateNote := j.loadBlockSeverity()
+	// Không có check run (tạo lỗi) thì kết quả gate không dùng vào đâu —
+	// khỏi tốn 2 lệnh gọi GitHub API đọc cấu hình.
+	var blockSeverity []string
+	var gateNote string
+	if checkRunID != 0 {
+		blockSeverity, gateNote = j.loadBlockSeverity(baseSHA)
+	}
 	checkResult = reviewedCheckRunResult(reviewOutcome{
 		HadError:      hadError,
 		Parsed:        anyParsed,

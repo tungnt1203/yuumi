@@ -79,10 +79,15 @@ func main() {
 	// installation của từng webhook, xem githubapp.Provider, issue #47) và
 	// RepoFullName/IssueNumber/PlaceholderID/UserCommand, tránh 2 luồng tự
 	// xây dựng Job lệch nhau.
-	newJob := func(ghClient *githubapi.Client, repoFullName string, issueNumber int, placeholderID int64, userCommand string) *review.Job {
+	//
+	// token là installation token đã tạo ghClient — clone cũng dùng nó để
+	// đọc được repo private (issue #48).
+	newJob := func(ghClient *githubapi.Client, token string, repoFullName string, issueNumber int, placeholderID int64, userCommand string) *review.Job {
 		return &review.Job{
-			GitHub:            ghClient,
-			Clone:             gitrepo.CloneRepo,
+			GitHub: ghClient,
+			Clone: func(repoFullName, sha string) (string, func(), error) {
+				return gitrepo.CloneRepo(repoFullName, sha, token)
+			},
 			Reviewer:          reviewer,
 			RepoFullName:      repoFullName,
 			IssueNumber:       issueNumber,
@@ -180,7 +185,7 @@ func main() {
 		}
 
 		keepSeen = true
-		dispatcher.Submit(newJob(ghClient, payload.Repository.FullName, payload.Issue.Number, placeholderID, cmd).Run)
+		dispatcher.Submit(newJob(ghClient, token, payload.Repository.FullName, payload.Issue.Number, placeholderID, cmd).Run)
 
 		fmt.Fprintln(w, "processing")
 	}
@@ -238,7 +243,7 @@ func main() {
 			return
 		}
 
-		dispatcher.Submit(newJob(ghClient, repoFullName, issueNumber, placeholderID, "review").Run)
+		dispatcher.Submit(newJob(ghClient, token, repoFullName, issueNumber, placeholderID, "review").Run)
 
 		fmt.Fprintln(w, "processing")
 	}

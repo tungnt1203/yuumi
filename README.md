@@ -102,7 +102,7 @@ evalsuite/                # fixture bug cài sẵn + results.md theo dõi chất
 - Go 1.26+ (xem `go.mod` / `.tool-versions`)
 - [Claude Code CLI](https://docs.claude.com/claude-code) đã cài và authenticate (`claude --version` chạy được)
 - `git` CLI có sẵn trên máy chạy server (dùng để clone PR head vào tmp dir)
-- 1 [GitHub App](https://github.com/settings/apps) đã đăng ký, quyền `Issues: Read and write` + `Pull requests: Read and write` (cần write vì bot post finding inline qua Reviews API), subscribe event `Issue comments` + `Pull request`, đã **cài (Install App)** vào repo mục tiêu
+- 1 [GitHub App](https://github.com/settings/apps) đã đăng ký, quyền `Issues: Read and write` + `Pull requests: Read and write` (cần write vì bot post finding inline qua Reviews API) + `Contents: Read-only` (để clone được repo private), subscribe event `Issue comments` + `Pull request`, đã **cài (Install App)** vào repo mục tiêu
 - 1 webhook secret tự đặt (dùng để GitHub ký request, verify chống giả mạo — khai báo trong cấu hình webhook của chính App, không phải trên từng repo)
 
 ## Cài đặt & cấu hình
@@ -221,6 +221,7 @@ Code của PR có thể đến từ bất kỳ ai, nên mọi tiến trình con 
 - **Claude CLI** chạy với `--setting-sources user` và `--strict-mcp-config`: bỏ `.claude/settings*.json` và `.mcp.json` của repo (các file này khai báo được hook chạy lệnh shell trên server). Tool `Bash`, `Edit`, `Write`, `NotebookEdit`, `WebFetch`, `WebSearch` bị chặn; review chỉ đọc code.
 - **`gofmt`/`go vet`** có timeout 2 phút, `GOTOOLCHAIN=local` (không tải toolchain do `go.mod` của PR yêu cầu), `CGO_ENABLED=0`, `GOPROXY` chỉ `proxy.golang.org` (không clone VCS tuỳ ý).
 - Không tiến trình con nào nhận secret của server (`GITHUB_WEBHOOK_SECRET`, private key của App...) qua biến môi trường.
+- Installation token chỉ được truyền cho riêng lệnh `git fetch` (qua `GIT_CONFIG_*`, header `Authorization`), không nhúng vào URL remote. Vì vậy token không nằm trong `.git/config` của thư mục clone mà Claude CLI đọc, cũng không nằm trong args của tiến trình.
 - Claude CLI mặc định từ chối `Read`/`Grep`/`Glob` ra ngoài thư mục review, kể cả qua symlink trong repo (nên không đọc được file private key, `.env` hay `/proc/<pid>/environ` của server). **Không thêm `additionalDirectories` hay rule `allow` cho Read/Grep/Glob vào `~/.claude/settings.json` của user chạy server** — làm vậy là mở lại đường đọc secret.
 
 Còn lại cho giai đoạn 2 (sandbox riêng mỗi job): `CLAUDE.md` của repo vẫn được Claude CLI đọc, và các tiến trình con vẫn chạy cùng user/filesystem/network với server.
@@ -350,7 +351,7 @@ Cần `claude` CLI đã authenticate. Đây là công cụ chạy tay, **không*
 
 **Đã fix limitation cũ:** trước đây clone `--depth 1` nên Claude không `git diff` được, chỉ đoán qua commit message. Giờ diff thật lấy trực tiếp từ GitHub API (không phụ thuộc git history), nên vẫn giữ `--depth 1` khi clone bình thường — nếu gọi GitHub API lỗi thì fallback về cách cũ (đọc file + commit message).
 
-- [ ] `gitrepo.CloneRepo` cần nhúng token vào URL khi fetch nếu sau này review repo private (hiện chỉ work với repo public) — issue #48
+- [x] Review repo private: clone bằng installation token của GitHub App — issue #48
 - [ ] Deploy có URL public thật (thay vì chỉ test local qua curl/ngrok) — issue #46
 - [x] Đóng gói Docker — issue #49
 - [ ] Deploy AWS — issue #50

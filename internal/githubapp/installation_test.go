@@ -2,7 +2,9 @@ package githubapp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -50,6 +52,35 @@ func TestGetInstallationToken_Success(t *testing.T) {
 	wantExpiresAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	if !got.ExpiresAt.Equal(wantExpiresAt) {
 		t.Errorf("ExpiresAt = %v, want %v", got.ExpiresAt, wantExpiresAt)
+	}
+}
+
+// Token phải được xin với đúng tập quyền tối thiểu, không thừa không thiếu
+// — thiếu thì bot hỏng (403), thừa thì token lộ là mất nhiều hơn cần.
+func TestGetInstallationToken_RequestsScopedPermissions(t *testing.T) {
+	withFakeGitHubAPI(t, func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Permissions map[string]string `json:"permissions"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("cannot decode request body: %v", err)
+		}
+		want := map[string]string{
+			"contents":      "read",
+			"issues":        "write",
+			"pull_requests": "write",
+		}
+		if !maps.Equal(body.Permissions, want) {
+			t.Errorf("permissions = %v, want %v", body.Permissions, want)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", got)
+		}
+		fmt.Fprint(w, `{"token":"ghs_abc123","expires_at":"2026-01-01T00:00:00Z"}`)
+	})
+
+	if _, err := GetInstallationToken(context.Background(), "test-jwt", 999); err != nil {
+		t.Fatalf("GetInstallationToken() error = %v", err)
 	}
 }
 

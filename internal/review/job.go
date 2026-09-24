@@ -38,9 +38,10 @@ type GitHubClient interface {
 	CreateReview(repoFullName string, pullRequestNumber int, commitSHA string, body string, commentsJSON []byte) error
 }
 
-// Cloner khớp chữ ký gitrepo.CloneRepo — khai báo dạng func type để Job có
-// thể nhận vào gitrepo.CloneRepo (production) hoặc 1 fake (test) mà không
-// cần Job biết đến package gitrepo.
+// Cloner clone repo tại đúng sha — khai báo dạng func type để Job có thể
+// nhận vào gitrepo.CloneRepo (production, bọc closure gắn sẵn installation
+// token, xem cmd/server/main.go) hoặc 1 fake (test) mà không cần Job biết
+// đến package gitrepo hay token.
 type Cloner func(repoFullName string, sha string) (dir string, cleanup func(), err error)
 
 // ReviewLogger ghi lại chi tiết 1 lần gọi Reviewer.Review — prompt gửi đi,

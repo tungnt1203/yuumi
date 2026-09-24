@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -350,7 +351,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'
 		}
 	}
 	for _, tool := range []string{"Bash", "Edit", "Write", "WebFetch"} {
-		if !strings.Contains(disallowedTools, tool) {
+		if !slices.Contains(strings.Split(disallowedTools, ","), tool) {
 			t.Errorf("disallowedTools = %q, want it to include %s", disallowedTools, tool)
 		}
 	}

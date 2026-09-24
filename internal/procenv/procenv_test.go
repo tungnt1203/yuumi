@@ -22,3 +22,11 @@ func TestOnly(t *testing.T) {
 		t.Errorf("Only() = %v, want %v", got, want)
 	}
 }
+
+// Không biến nào khớp vẫn trả slice rỗng khác nil, để cmd.Env không bị hiểu
+// là "thừa hưởng toàn bộ env".
+func TestOnly_NoMatch_NonNil(t *testing.T) {
+	if got := Only([]string{"SECRET=x"}, "PATH"); got == nil || len(got) != 0 {
+		t.Errorf("Only() = %#v, want empty non-nil slice", got)
+	}
+}

@@ -1,6 +1,7 @@
 package review
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -146,8 +147,9 @@ func TestStaticCheckReport_Timeout(t *testing.T) {
 // go vet chạy với env đã siết: không có secret của server, có các biến
 // chặn tải toolchain/cgo/VCS (#78).
 func TestStaticCheckReport_HardenedEnv(t *testing.T) {
-	// "go vet" giả in env ra stderr rồi exit 1, để env hiện trong report.
-	withFakeGoTools(t, "#!/bin/sh\n[ \"$1\" = vet ] || exit 0\nenv >&2\nexit 1\n")
+	// "go vet" giả in env ra stderr dưới dạng dòng chẩn đoán rồi exit 1,
+	// để env hiện trong report.
+	withFakeGoTools(t, "#!/bin/sh\n[ \"$1\" = vet ] || exit 0\nenv | sed 's/^/x.go:1:1: /' >&2\nexit 1\n")
 	t.Setenv("GITHUB_WEBHOOK_SECRET", "top-secret")
 	t.Setenv("GITHUB_APP_PRIVATE_KEY", "pem")
 
@@ -160,5 +162,49 @@ func TestStaticCheckReport_HardenedEnv(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("go vet env missing %s, got:\n%s", want, got)
 		}
+	}
+}
+
+// Hết timeout thì kill cả process group: tiến trình con go vet sinh ra
+// không được chạy tiếp thành mồ côi (#78). Timeout để tới vài giây vì
+// macOS có thể quét script mới ghi hàng trăm ms trước khi cho chạy — timeout
+// quá ngắn thì script bị kill trước khi kịp sinh tiến trình con, test pass
+// mà không kiểm tra được gì (marker "started" chặn trường hợp đó).
+func TestStaticCheckReport_TimeoutKillsChildren(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process group kill is unix-only")
+	}
+	d := t.TempDir()
+	started, survived := filepath.Join(d, "started"), filepath.Join(d, "survived")
+	// Tiến trình con chạy nền, 3 giây sau (quá timeout 2s) ghi marker nếu
+	// còn sống.
+	withFakeGoTools(t, fmt.Sprintf("#!/bin/sh\ntouch %q\n(sleep 3; touch %q) &\nsleep 30\n", started, survived))
+	old := staticCheckTimeout
+	staticCheckTimeout = 2 * time.Second
+	t.Cleanup(func() { staticCheckTimeout = old })
+
+	gofmtReport(writeGoModule(t, "package main\n"))
+	time.Sleep(2 * time.Second)
+
+	if _, err := os.Stat(started); err != nil {
+		t.Fatal("fake gofmt never started before the timeout, test proves nothing")
+	}
+	if _, err := os.Stat(survived); err == nil {
+		t.Error("child process survived the timeout, want the whole process group killed")
+	}
+}
+
+// Lỗi môi trường không có vị trí file (tải module, cgo tắt...) không được
+// đưa vào prompt như cảnh báo vet; dòng chẩn đoán thật thì giữ.
+func TestVetDiagnostics(t *testing.T) {
+	setup := "go: example.com/private@v1.0.0: reading https://proxy.golang.org/...: 404 Not Found\n" +
+		"package x: build constraints exclude all Go files in /tmp/x\n"
+	if got := vetDiagnostics(setup); got != "" {
+		t.Errorf("vetDiagnostics(setup errors) = %q, want empty", got)
+	}
+
+	real := "# statictest\n./main.go:6:2: fmt.Printf format %d has arg of wrong type\n"
+	if got := vetDiagnostics(real); got != "./main.go:6:2: fmt.Printf format %d has arg of wrong type" {
+		t.Errorf("vetDiagnostics(real) = %q, want only the diagnostic line", got)
 	}
 }

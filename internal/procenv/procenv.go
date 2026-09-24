@@ -32,8 +32,11 @@ func WithoutSecrets(env []string) []string {
 // Only trả bản sao env chỉ giữ các biến có tên trong names. Dùng khi biết
 // chắc tiến trình con cần gì (vd go vet), an toàn hơn WithoutSecrets vì biến
 // mới thêm vào server sau này không tự lọt vào.
+//
+// Luôn trả slice khác nil: exec.Cmd hiểu Env == nil là thừa hưởng TOÀN BỘ
+// env của server, đúng thứ hàm này dùng để tránh.
 func Only(env []string, names ...string) []string {
-	var out []string
+	out := make([]string, 0, len(names))
 	for _, kv := range env {
 		if hasName(kv, names) {
 			out = append(out, kv)

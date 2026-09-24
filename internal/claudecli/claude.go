@@ -151,6 +151,12 @@ const disallowedTools = "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"
 //   - --strict-mcp-config (không kèm --mcp-config): bỏ MCP server khai báo
 //     trong .mcp.json của repo.
 //
+// Read/Grep/Glob ra ngoài thư mục làm việc (đường dẫn tuyệt đối, symlink
+// trong repo trỏ ra ngoài, /proc/<pid>/environ...) bị CLI từ chối theo mặc
+// định ở chế độ -p — đã kiểm chứng với claude 2.1.281. Mặc định này chỉ giữ
+// khi ~/.claude/settings.json của user chạy server KHÔNG thêm
+// additionalDirectories hay rule allow cho Read/Grep/Glob: đừng nới ở đó.
+//
 // CLAUDE.md của repo vẫn được CLI đọc (chỉ --bare tắt được, mà --bare bắt
 // buộc xác thực bằng ANTHROPIC_API_KEY). Với tool đã khoá chỉ còn đọc, nó
 // chỉ ảnh hưởng được nội dung review; cô lập hẳn cần sandbox riêng mỗi job

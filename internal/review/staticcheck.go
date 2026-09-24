@@ -8,11 +8,32 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/tungnt1203/yuumi/internal/procenv"
 )
+
+// vetDiagnosticRe khớp dòng chẩn đoán gắn với vị trí trong code
+// ("./main.go:12:3: ..." hoặc "main.go:12: ...") — cảnh báo vet hoặc lỗi
+// compile thật của PR.
+var vetDiagnosticRe = regexp.MustCompile(`\.go:\d+(:\d+)?: `)
+
+// vetDiagnostics chỉ giữ dòng chẩn đoán có vị trí trong code. Lỗi môi
+// trường (tải module private không có trên proxy, package cần cgo khi
+// CGO_ENABLED=0, toolchain local cũ hơn go.mod...) không có vị trí file,
+// không phải lỗi của PR — đưa vào prompt kèm câu "không cần lặp lại" sẽ cho
+// Claude context sai.
+func vetDiagnostics(stderr string) string {
+	var lines []string
+	for _, l := range strings.Split(stderr, "\n") {
+		if vetDiagnosticRe.MatchString(l) {
+			lines = append(lines, strings.TrimSpace(l))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
 
 // staticCheckTimeout giới hạn mỗi lệnh check tĩnh. go vet compile code của
 // PR (không tin cậy): build treo hay package cực lớn không được giữ job —
@@ -23,8 +44,13 @@ var staticCheckTimeout = 2 * time.Minute
 // cache/module, proxy mạng. Mọi biến khác (kể cả secret) bị bỏ.
 var goEnvKeep = []string{
 	"PATH", "HOME", "TMPDIR",
-	"GOPATH", "GOCACHE", "GOMODCACHE",
+	"GOROOT", "GOPATH", "GOCACHE", "GOMODCACHE",
+	// Server chạy dưới systemd/container có thể không có HOME, Go tìm
+	// cache/config qua XDG.
+	"XDG_CACHE_HOME", "XDG_CONFIG_HOME",
 	"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR",
+	// Windows
+	"SYSTEMROOT", "USERPROFILE", "LOCALAPPDATA", "APPDATA",
 }
 
 // goHardenedEnv là env cho gofmt/go vet trên code PR:
@@ -43,8 +69,9 @@ func goHardenedEnv() []string {
 }
 
 // runStaticCheck chạy 1 lệnh check tĩnh trong dir với timeout và env đã
-// siết. WaitDelay đóng pipe nếu tiến trình con của go (compile, vet tool)
-// còn giữ stdout/stderr sau khi lệnh chính bị kill. timedOut=true thì
+// siết. Hết timeout thì kill cả process group (killProcessGroupOnCancel);
+// WaitDelay là lưới an toàn đóng pipe nếu vẫn còn tiến trình giữ
+// stdout/stderr. timedOut=true thì
 // output không đầy đủ, caller không được coi là kết quả.
 func runStaticCheck(dir string, name string, args ...string) (stdout, stderr string, timedOut bool, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), staticCheckTimeout)
@@ -53,6 +80,7 @@ func runStaticCheck(dir string, name string, args ...string) (stdout, stderr str
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
 	cmd.Env = goHardenedEnv()
+	killProcessGroupOnCancel(cmd)
 	cmd.WaitDelay = 5 * time.Second
 
 	var out, errOut bytes.Buffer
@@ -136,8 +164,11 @@ func goVetReport(dir string) string {
 	if err == nil || timedOut {
 		return ""
 	}
-	msg := strings.TrimSpace(stderr)
+	msg := vetDiagnostics(stderr)
 	if msg == "" {
+		if s := strings.TrimSpace(stderr); s != "" {
+			fmt.Println("go vet lỗi môi trường, không đưa vào prompt:", s)
+		}
 		return ""
 	}
 	return "go vet:\n" + msg

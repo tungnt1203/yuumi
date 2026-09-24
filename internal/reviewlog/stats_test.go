@@ -65,10 +65,16 @@ func TestSummarize_DayUsesLocation(t *testing.T) {
 	}
 }
 
-// loc nil không được panic, dùng time.Local.
+// loc nil không được panic, dùng time.Local. Đặt time.Local là UTC+7 để
+// 20:00 UTC rơi sang ngày hôm sau — nếu Summarize lỡ dùng UTC thay cho
+// Local thì key ByDay sẽ khác. Không chạy t.Parallel vì đổi biến toàn cục.
 func TestSummarize_NilLocation(t *testing.T) {
+	oldLocal := time.Local
+	time.Local = time.FixedZone("ICT", 7*3600)
+	t.Cleanup(func() { time.Local = oldLocal })
+
 	dir := t.TempDir()
-	writeEntry(t, dir, "1.json", `{"time":"2026-09-20T10:00:00Z","repo_full_name":"a/x"}`)
+	writeEntry(t, dir, "1.json", `{"time":"2026-09-20T20:00:00Z","repo_full_name":"a/x"}`)
 
 	s, err := Summarize(dir, nil)
 	if err != nil {
@@ -77,9 +83,8 @@ func TestSummarize_NilLocation(t *testing.T) {
 	if s.Total.Calls != 1 {
 		t.Errorf("Total.Calls = %d, want 1", s.Total.Calls)
 	}
-	wantDay := time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC).In(time.Local).Format(time.DateOnly)
-	if _, ok := s.ByDay[wantDay]; !ok || len(s.ByDay) != 1 {
-		t.Errorf("ByDay = %v, want only key %s (time.Local)", s.ByDay, wantDay)
+	if _, ok := s.ByDay["2026-09-21"]; !ok || len(s.ByDay) != 1 {
+		t.Errorf("ByDay = %v, want only key 2026-09-21 (time.Local)", s.ByDay)
 	}
 }
 

@@ -176,9 +176,9 @@ func (j *Job) Run() {
 	}
 	defer cleanup()
 
-	// Chạy 1 lần cho cả PR (không phụ thuộc bundle nào) — kết quả gofmt/go
-	// vet là thuộc tính của code sau khi đổi, không phải của từng phần diff
-	// bị chia nhỏ (xem issue #8).
+	// Mọi lệnh trên code PR (gofmt/go vet, Claude CLI) chạy trong sandbox
+	// của job này (issue #78). Không tạo được thì dừng, không chạy thẳng
+	// trên server.
 	box, err := j.startSandbox(dir)
 	if err != nil {
 		j.reportFailure(fmt.Errorf("không tạo được sandbox: %w", err))
@@ -190,6 +190,9 @@ func (j *Job) Run() {
 		}
 	}()
 
+	// Chạy 1 lần cho cả PR (không phụ thuộc bundle nào) — kết quả gofmt/go
+	// vet là thuộc tính của code sau khi đổi, không phải của từng phần diff
+	// bị chia nhỏ (xem issue #8).
 	staticReport := staticCheckReport(box)
 
 	// Cấu hình riêng của repo (issue #7) — không có file .yuumi.yml (đa số

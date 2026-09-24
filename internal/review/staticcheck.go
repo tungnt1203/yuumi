@@ -79,11 +79,13 @@ func goHardenedEnv() []string {
 	)
 }
 
-// runStaticCheck chạy 1 lệnh check tĩnh trong dir với timeout và env đã
-// siết. Hết timeout thì kill cả process group (killProcessGroupOnCancel);
-// WaitDelay là lưới an toàn đóng pipe nếu vẫn còn tiến trình giữ
-// stdout/stderr. timedOut=true thì
-// output không đầy đủ, caller không được coi là kết quả.
+// runStaticCheck chạy 1 lệnh check tĩnh trong sandbox box với timeout và
+// env đã siết. Hết timeout thì kill cả process group của lệnh phía server
+// (killProcessGroupOnCancel): với sandbox.Local đó chính là gofmt/go vet;
+// với sandbox Docker chỉ là `docker exec`, tiến trình trong container còn
+// chạy tới khi job xoá container (vẫn bị giới hạn CPU/RAM/pids). WaitDelay
+// là lưới an toàn đóng pipe nếu vẫn còn tiến trình giữ stdout/stderr.
+// timedOut=true thì output không đầy đủ, caller không được coi là kết quả.
 func runStaticCheck(box sandbox.Env, name string, args ...string) (stdout, stderr string, timedOut bool, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), staticCheckTimeout)
 	defer cancel()

@@ -82,6 +82,10 @@ func StartDocker(cfg DockerConfig, dir string) (Env, error) {
 //     dạng tmpfs (cache Go, ~/.claude của CLI), mất khi container bị xoá;
 //   - bỏ mọi capability, cấm leo quyền, giới hạn RAM/CPU/số tiến trình, để
 //     1 PR ác ý không làm sập máy server;
+//   - --init: PID 1 là tini thay vì `sleep`, để dọn tiến trình zombie mồ côi
+//     của các lệnh exec (không thì chúng chiếm dần --pids-limit);
+//   - --no-healthcheck: image dùng chung với server nên có HEALTHCHECK gọi
+//     /health, trong sandbox không có server nên luôn báo unhealthy;
 //   - không env nào của server: biến cần cho từng lệnh đi qua `docker exec`.
 //
 // Mạng vẫn là bridge mặc định: giới hạn egress là bước 2 của issue #78.
@@ -98,6 +102,8 @@ func runArgs(cfg DockerConfig, dir, name string, uid, gid int) []string {
 		"--env", "GOCACHE=/tmp/go-cache",
 		"--env", "GOMODCACHE=/tmp/go-mod",
 		"--env", "GOPATH=/tmp/go",
+		"--init",
+		"--no-healthcheck",
 		"--cap-drop", "ALL",
 		"--security-opt", "no-new-privileges",
 		"--memory", "2g",

@@ -39,6 +39,8 @@ func TestRunArgs_LocksDownContainer(t *testing.T) {
 	for _, want := range [][]string{
 		{"--user", "10001:10001"},
 		{"--read-only"},
+		{"--init"},
+		{"--no-healthcheck"},
 		{"--cap-drop", "ALL"},
 		{"--security-opt", "no-new-privileges"},
 		{"--memory", "2g"},

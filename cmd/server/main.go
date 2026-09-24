@@ -38,6 +38,7 @@ func main() {
 	seenComments := webhook.NewSeenComments()
 	reviewLogger := reviewlog.NewFileLogger(cfg.ReviewLogDir)
 	reviewStateStore := reviewstate.NewFileStore(cfg.ReviewStateFile)
+	bundleCache := reviewstate.NewBundleCache(cfg.BundleCacheDir)
 
 	// Check claude CLI + GitHub App auth thật sự dùng được ngay lúc khởi
 	// động, thay vì chỉ tin biến môi trường đã set là đủ — nếu không, lỗi
@@ -82,6 +83,7 @@ func main() {
 			BundleBudgetChars: cfg.MaxDiffBundleChars,
 			Logger:            reviewLogger,
 			StateStore:        reviewStateStore,
+			BundleCache:       bundleCache,
 		}
 	}
 

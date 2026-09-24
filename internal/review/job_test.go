@@ -1789,3 +1789,164 @@ func TestJobRun_EditCommentError_DoesNotSaveLastReviewedSHA(t *testing.T) {
 		t.Error("expected SetLastReviewedSHA NOT to be called when posting the comment itself failed")
 	}
 }
+
+// fakeBundleCache là BundleCache trong bộ nhớ, key theo (repo#pr, key).
+type fakeBundleCache struct {
+	entries map[string]string
+	cleared int
+}
+
+func (c *fakeBundleCache) k(repo string, pr int, key string) string {
+	return fmt.Sprintf("%s#%d#%s", repo, pr, key)
+}
+
+func (c *fakeBundleCache) LoadBundle(repo string, pr int, key string) (string, bool, error) {
+	text, ok := c.entries[c.k(repo, pr, key)]
+	return text, ok, nil
+}
+
+func (c *fakeBundleCache) SaveBundle(repo string, pr int, key, text string) error {
+	if c.entries == nil {
+		c.entries = map[string]string{}
+	}
+	c.entries[c.k(repo, pr, key)] = text
+	return nil
+}
+
+func (c *fakeBundleCache) ClearBundles(repo string, pr int) error {
+	c.cleared++
+	for k := range c.entries {
+		if strings.HasPrefix(k, fmt.Sprintf("%s#%d#", repo, pr)) {
+			delete(c.entries, k)
+		}
+	}
+	return nil
+}
+
+// Lần 1: bundle A xong, bundle B lỗi → A được lưu, không xoá cache. Lần 2
+// cùng SHA: chỉ gọi Reviewer cho B, kết quả A lấy từ cache vẫn hiện trong
+// comment; xong không lỗi thì xoá cache (issue #76).
+func TestJobRun_ResumesFromBundleCache(t *testing.T) {
+	fileA := "diff --git a/a.go b/a.go\n+" + strings.Repeat("a", 30)
+	fileB := "diff --git a/b.go b/b.go\n+" + strings.Repeat("b", 30)
+	diff := fileA + "\n" + fileB
+	cache := &fakeBundleCache{}
+
+	newJob := func(gh *fakeGitHubClient, reviewer Reviewer) *Job {
+		return &Job{
+			GitHub:            gh,
+			Clone:             fakeCloner("/tmp/fake-dir", nil, new(bool)),
+			Reviewer:          reviewer,
+			RepoFullName:      "owner/repo",
+			IssueNumber:       7,
+			BundleBudgetChars: len(fileA) + 1,
+			BundleCache:       cache,
+		}
+	}
+
+	first := &scriptedReviewer{
+		results: []string{`[{"category":"bug","severity":"low","message":"lỗi phần A"}]`},
+		errs:    []error{nil, errors.New("claude timed out")},
+	}
+	newJob(&fakeGitHubClient{headSHA: "abc123", diff: diff}, first).Run()
+
+	if len(cache.entries) != 1 {
+		t.Fatalf("after first run: cache has %d entries, want 1 (bundle A only)", len(cache.entries))
+	}
+	if cache.cleared != 0 {
+		t.Errorf("after first run: cache cleared %d times, want 0 (a bundle failed)", cache.cleared)
+	}
+
+	gh := &fakeGitHubClient{headSHA: "abc123", diff: diff}
+	second := &scriptedReviewer{results: []string{"[]"}}
+	newJob(gh, second).Run()
+
+	if len(second.prompts) != 1 {
+		t.Fatalf("second run: reviewer called %d times, want 1 (bundle B only)", len(second.prompts))
+	}
+	if !strings.Contains(second.prompts[0], "b.go") {
+		t.Errorf("second run: reviewer prompt should be bundle B, got: %s", second.prompts[0])
+	}
+	if !strings.Contains(gh.editedBody, "lỗi phần A") {
+		t.Errorf("second run: expected bundle A finding from cache in comment, got: %s", gh.editedBody)
+	}
+	if cache.cleared != 1 || len(cache.entries) != 0 {
+		t.Errorf("second run: cleared=%d entries=%d, want cache cleared after clean review", cache.cleared, len(cache.entries))
+	}
+}
+
+// Output trắng không được lưu: lần sau phải review lại bundle đó.
+func TestJobRun_BlankOutput_NotCached(t *testing.T) {
+	cache := &fakeBundleCache{}
+	job := &Job{
+		GitHub:      &fakeGitHubClient{headSHA: "abc123", diff: "diff --git a/x b/x\n+x"},
+		Clone:       fakeCloner("/tmp/fake-dir", nil, new(bool)),
+		Reviewer:    &fakeReviewer{result: "  "},
+		BundleCache: cache,
+	}
+	job.Run()
+
+	if len(cache.entries) != 0 {
+		t.Errorf("cache has %d entries, want 0 for blank output", len(cache.entries))
+	}
+}
+
+// Claude trả [] (không có vấn đề): lưu thành "[]" chứ không phải "null",
+// để lần resume vẫn parse được.
+func TestSaveCachedBundle_EmptyFindings(t *testing.T) {
+	cache := &fakeBundleCache{}
+	job := &Job{RepoFullName: "o/r", IssueNumber: 1, BundleCache: cache}
+	job.saveCachedBundle("k", "[]", nil, true)
+
+	text, ok, _ := cache.LoadBundle("o/r", 1, "k")
+	if !ok || text != "[]" {
+		t.Errorf("cached = %q (found %v), want \"[]\"", text, ok)
+	}
+}
+
+// Key gồm SHA: cùng diff nhưng SHA khác thì không dùng lại kết quả cũ.
+func TestBundleCacheKey_DependsOnSHA(t *testing.T) {
+	if bundleCacheKey("sha1", "p") == bundleCacheKey("sha2", "p") {
+		t.Error("bundleCacheKey same for different SHAs, want different")
+	}
+}
+
+// Cache chứa văn xuôi (lần trước repair thất bại), lần này repair được:
+// lưu đè bằng bản JSON để lần sau không phải repair nữa.
+func TestJobRun_CachedProseRepaired_SavesJSON(t *testing.T) {
+	diff := "diff --git a/x b/x\n+x"
+	cache := &fakeBundleCache{}
+	newJob := func(reviewer Reviewer) *Job {
+		return &Job{
+			// editErr chặn Run trước ClearBundles, để entry còn lại mà kiểm tra.
+			GitHub:       &fakeGitHubClient{headSHA: "abc123", diff: diff, editErr: errors.New("stop before clear")},
+			Clone:        fakeCloner("/tmp/fake-dir", nil, new(bool)),
+			Reviewer:     reviewer,
+			RepoFullName: "o/r",
+			IssueNumber:  1,
+			BundleCache:  cache,
+		}
+	}
+
+	// Lần 1: review ra văn xuôi, repair mặc định cũng thất bại → lưu văn xuôi.
+	newJob(&fakeReviewer{result: "văn xuôi không phải JSON"}).Run()
+	if len(cache.entries) != 1 {
+		t.Fatalf("after first run: %d cache entries, want 1", len(cache.entries))
+	}
+
+	// Lần 2: lấy văn xuôi từ cache, repair thành công.
+	second := &fakeReviewer{
+		repairSet:    true,
+		repairResult: `[{"category":"bug","severity":"low","message":"đã sửa định dạng"}]`,
+	}
+	newJob(second).Run()
+
+	if len(second.gotPrompts) != 0 {
+		t.Errorf("second run reviewed %d bundle(s) again, want 0 (cached)", len(second.gotPrompts))
+	}
+	for _, text := range cache.entries {
+		if !strings.Contains(text, "đã sửa định dạng") {
+			t.Errorf("cache entry = %q, want repaired JSON", text)
+		}
+	}
+}

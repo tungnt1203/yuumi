@@ -1,6 +1,8 @@
 package review
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -71,6 +73,20 @@ type ReviewStateStore interface {
 	SetLastReviewedSHA(repoFullName string, issueNumber int, sha string) error
 }
 
+// BundleCache lưu kết quả của từng bundle đã review xong, để lần chạy lại
+// sau khi review bị ngắt giữa chừng (bundle lỗi, server restart...) bỏ qua
+// các bundle đã có kết quả (issue #76). key tính từ head SHA + prompt (xem
+// bundleCacheKey), nên chỉ khớp khi cùng SHA và prompt giống hệt: đổi SHA,
+// diff, hướng dẫn repo hay lệnh của người review đều thành key mới.
+//
+// nil (Job.BundleCache == nil) nghĩa là không bật — mọi bundle luôn gọi
+// Reviewer như trước.
+type BundleCache interface {
+	LoadBundle(repoFullName string, issueNumber int, key string) (text string, found bool, err error)
+	SaveBundle(repoFullName string, issueNumber int, key, text string) error
+	ClearBundles(repoFullName string, issueNumber int) error
+}
+
 // Job đóng gói toàn bộ dữ liệu cần để thực hiện 1 lần review (clone repo,
 // lấy diff, gọi Reviewer, sửa lại comment placeholder). Tách ra khỏi
 // main.go để nơi nhận webhook (main.go) không cần biết chi tiết các bước
@@ -100,6 +116,10 @@ type Job struct {
 	// Run() luôn lấy full diff so với base, không tối ưu diff lần review
 	// thêm.
 	StateStore ReviewStateStore
+
+	// BundleCache lưu kết quả từng bundle để resume review bị ngắt (xem
+	// BundleCache, issue #76). nil nghĩa là không bật.
+	BundleCache BundleCache
 }
 
 // Run thực hiện review, nên luôn được gọi trong goroutine riêng
@@ -297,6 +317,12 @@ func (j *Job) Run() {
 			fmt.Println("Save last reviewed SHA error:", err)
 		}
 	}
+	// Review đã xong trọn vẹn và đã post: không còn gì để resume.
+	if !hadError && j.BundleCache != nil {
+		if err := j.BundleCache.ClearBundles(j.RepoFullName, j.IssueNumber); err != nil {
+			fmt.Println("Clear bundle cache error:", err)
+		}
+	}
 }
 
 // reviewSetupFailureComment là body duy nhất được post khi review fail trước
@@ -483,19 +509,28 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 		}
 
 		prompt := BuildReviewPrompt(j.UserCommand, promptDiff, staticReport, repoInstructions, primer)
-		start := time.Now()
-		text, stats, err := j.Reviewer.Review(prompt, dir)
-		duration := time.Since(start)
-
-		// Log response gốc của lần review (JSON nếu Claude làm đúng format,
-		// text tự do nếu không — rỗng nếu lỗi), KHÔNG phải display đã render
-		// lại. Ghi trước lần sửa định dạng bên dưới để file log giữ đúng
-		// thứ tự: review trước, repair sau.
+		cacheKey := bundleCacheKey(sha, prompt)
+		text, cached := j.loadCachedBundle(cacheKey)
+		var err error
 		errMsg := ""
-		if err != nil {
-			errMsg = err.Error()
+		if cached {
+			// Không gọi Reviewer nên không có gì để ghi reviewlog.
+			fmt.Println("Review bundle", i+1, "/", len(bundles), "dùng kết quả đã lưu từ lần review bị ngắt trước")
+		} else {
+			start := time.Now()
+			var stats CallStats
+			text, stats, err = j.Reviewer.Review(prompt, dir)
+			duration := time.Since(start)
+
+			// Log response gốc của lần review (JSON nếu Claude làm đúng
+			// format, text tự do nếu không — rỗng nếu lỗi), KHÔNG phải
+			// display đã render lại. Ghi trước lần sửa định dạng bên dưới
+			// để file log giữ đúng thứ tự: review trước, repair sau.
+			if err != nil {
+				errMsg = err.Error()
+			}
+			j.logBundleReview(sha, i+1, len(bundles), prompt, text, errMsg, duration, stats)
 		}
-		j.logBundleReview(sha, i+1, len(bundles), prompt, text, errMsg, duration, stats)
 
 		// display là những gì thực sự được post lên comment tổng hợp — mặc
 		// định giống hệt text (raw), chỉ khác khi có lỗi (bọc thêm thông báo
@@ -515,8 +550,11 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 				// Output trắng không phải kết luận sạch. Ghi một câu để người
 				// đọc thấy phần này không có kết quả, thay vì một mục trống.
 				display = "⚠️ Reviewer không trả về nội dung cho phần này."
-			} else if !ok {
+			}
+			repaired := false
+			if !ok && strings.TrimSpace(text) != "" {
 				findings, ok = j.repairFindingsFormat(dir, sha, i+1, len(bundles), text)
+				repaired = ok
 			}
 			if ok {
 				anyParsed = true
@@ -525,6 +563,11 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 				bundleInline, general := splitFindingsForPosting(validationDiff, findings)
 				inline = append(inline, bundleInline...)
 				display = renderBundleSummary(findings, general)
+			}
+			// Bundle lấy từ cache mà lần này mới sửa được định dạng thì lưu
+			// lại bản JSON, để lần sau không phải gọi repair nữa.
+			if !cached || repaired {
+				j.saveCachedBundle(cacheKey, text, findings, ok)
 			}
 		}
 
@@ -537,6 +580,54 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 
 	allParsed = parsedCount == len(bundles)
 	return strings.Join(sections, "\n\n"), hadError, inline, allFindings, anyParsed, allParsed
+}
+
+// bundleCacheKey là sha256 của head SHA + prompt đầy đủ. Prompt đã gồm
+// diff của bundle, hướng dẫn repo, primer và lệnh của người review; SHA
+// cần thêm vì Claude đọc cả file khác trong repo đã clone — cùng diff
+// nhưng code ở SHA khác vẫn có thể cho kết quả khác.
+func bundleCacheKey(sha, prompt string) string {
+	sum := sha256.Sum256([]byte(sha + "\x00" + prompt))
+	return hex.EncodeToString(sum[:])
+}
+
+// loadCachedBundle đọc kết quả đã lưu của bundle. Cache lỗi chỉ log rồi coi
+// như chưa có — resume là tối ưu, không được chặn review.
+func (j *Job) loadCachedBundle(key string) (string, bool) {
+	if j.BundleCache == nil {
+		return "", false
+	}
+	text, found, err := j.BundleCache.LoadBundle(j.RepoFullName, j.IssueNumber, key)
+	if err != nil {
+		fmt.Println("Load bundle cache error (review lại bundle này):", err)
+		return "", false
+	}
+	return text, found
+}
+
+// saveCachedBundle lưu kết quả của bundle vừa review xong. parsed=true thì
+// lưu findings dạng JSON (kể cả khi phải qua lần sửa định dạng), để lần
+// resume parse được ngay, không gọi lại repair. Không parse được thì lưu
+// nguyên văn — lần review đó vẫn đã chạy xong. Output trắng không lưu:
+// chạy lại có thể ra nội dung thật.
+func (j *Job) saveCachedBundle(key, text string, findings []Finding, parsed bool) {
+	if j.BundleCache == nil || (!parsed && strings.TrimSpace(text) == "") {
+		return
+	}
+	if parsed {
+		if findings == nil {
+			findings = []Finding{} // nil marshal ra "null", parseFindings không đọc lại được
+		}
+		data, err := json.Marshal(findings)
+		if err != nil {
+			fmt.Println("Marshal findings for bundle cache error:", err)
+			return
+		}
+		text = string(data)
+	}
+	if err := j.BundleCache.SaveBundle(j.RepoFullName, j.IssueNumber, key, text); err != nil {
+		fmt.Println("Save bundle cache error:", err)
+	}
 }
 
 // repairFindingsFormat gọi Reviewer thêm đúng 1 lần khi lần review đã chạy

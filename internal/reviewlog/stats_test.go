@@ -77,6 +77,10 @@ func TestSummarize_NilLocation(t *testing.T) {
 	if s.Total.Calls != 1 {
 		t.Errorf("Total.Calls = %d, want 1", s.Total.Calls)
 	}
+	wantDay := time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC).In(time.Local).Format(time.DateOnly)
+	if _, ok := s.ByDay[wantDay]; !ok || len(s.ByDay) != 1 {
+		t.Errorf("ByDay = %v, want only key %s (time.Local)", s.ByDay, wantDay)
+	}
 }
 
 // Log ghi trước khi có usage vẫn được đếm số lần gọi (và vào NoUsage); file

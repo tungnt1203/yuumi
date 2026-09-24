@@ -91,8 +91,9 @@ func NewReviewer() *Reviewer {
 // công hoặc thất bại ngay lần đầu, không phải retry) — để nơi gọi ghi nhận
 // lại tần suất phải retry trong thực tế (xem reviewlog, issue #28).
 //
-// stats.NumTurns là ClaudeResult.NumTurns của lần gọi cuối cùng (0 nếu lỗi
-// chạy lệnh/JSON không parse được, tức chưa có output để đọc num_turns) —
+// stats.NumTurns là ClaudeResult.NumTurns của lần gọi cuối cùng (0 nếu lần
+// đó không có output JSON để đọc, vd timeout/kill hoặc output không parse
+// được) —
 // dùng làm tín hiệu Claude có thực sự đọc thêm file ngoài diff hay không
 // (xem reviewlog, issue #20).
 //
@@ -139,7 +140,8 @@ func (r *Reviewer) Review(prompt string, dir string) (result string, stats revie
 // không: true cho lỗi chạy lệnh (timeout, lệnh không chạy được...) — những
 // lỗi này thường do mạng/tải tạm thời, chạy lại có cơ hội thành công; false
 // cho lỗi xác định trước (output không parse được đúng định dạng kỳ vọng,
-// hoặc Claude tự báo is_error=true) — retry không thay đổi được kết quả.
+// hoặc Claude tự báo is_error=true, kể cả khi lệnh thoát exit != 0) — retry
+// không thay đổi được kết quả.
 //
 // res là output đã parse, kể cả khi is_error=true hoặc lệnh thoát exit != 0
 // mà stdout vẫn là JSON (để caller đọc num_turns, usage); zero value nếu
@@ -159,7 +161,11 @@ func runOnce(prompt string, dir string) (res ClaudeResult, err error, retryable 
 		// cmd.Output() vẫn trả stdout khi exit != 0 — CLI có thể đã in JSON
 		// kèm usage trước khi thoát, giữ lại để không mất số liệu chi phí.
 		var partial ClaudeResult
-		_ = json.Unmarshal(output, &partial)
+		if json.Unmarshal(output, &partial) == nil && partial.IsError {
+			// CLI thoát exit != 0 vì chính Claude báo lỗi (vd error_max_turns)
+			// — lỗi xác định trước như nhánh is_error bên dưới, không retry.
+			return partial, fmt.Errorf("claude returned error (%s): %s: %w", partial.Subtype, partial.Result, cmdErr), false
+		}
 		return partial, fmt.Errorf("claude command failed: %w (stderr: %s)", cmdErr, stderr.String()), true
 	}
 

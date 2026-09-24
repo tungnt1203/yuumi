@@ -286,3 +286,43 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"ok",`+usag
 		t.Errorf("Review() usage = %+v, want %+v", stats.Usage, wantUsage)
 	}
 }
+
+// Lệnh thoát exit != 0 nhưng stdout vẫn là JSON thành công: lỗi chạy lệnh
+// nên vẫn retry, và usage của lần đó vẫn được cộng (issue #63).
+func TestReview_CommandFailsWithJSON_KeepsUsageAndRetries(t *testing.T) {
+	counter := filepath.Join(t.TempDir(), "attempts")
+	withFakeClaude(t, countingScript(counter, `echo '{"type":"result","subtype":"success","is_error":false,"result":"ok","num_turns":2,`+usageJSON+`}'
+exit 1`))
+
+	_, stats, err := (&Reviewer{MaxAttempts: 2, sleep: noSleep}).Review("review this", t.TempDir())
+	if err == nil {
+		t.Fatal("Review() expected error when claude exits non-zero, got nil")
+	}
+	assertAttempts(t, counter, 2)
+	if want := wantUsage.Add(wantUsage); stats.Usage != want {
+		t.Errorf("Review() usage = %+v, want %+v (usage of both attempts)", stats.Usage, want)
+	}
+	if stats.NumTurns != 2 {
+		t.Errorf("Review() numTurns = %d, want 2", stats.NumTurns)
+	}
+}
+
+// Lệnh thoát exit != 0 vì Claude tự báo is_error: lỗi xác định trước, không
+// retry, error message giữ subtype.
+func TestReview_CommandFailsWithIsError_DoesNotRetry(t *testing.T) {
+	counter := filepath.Join(t.TempDir(), "attempts")
+	withFakeClaude(t, countingScript(counter, `echo '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"gave up",`+usageJSON+`}'
+exit 1`))
+
+	_, stats, err := (&Reviewer{sleep: noSleep}).Review("review this", t.TempDir())
+	if err == nil {
+		t.Fatal("Review() expected error when is_error is true, got nil")
+	}
+	if !strings.Contains(err.Error(), "error_max_turns") {
+		t.Errorf("Review() error = %v, want it to include subtype error_max_turns", err)
+	}
+	assertAttempts(t, counter, 1)
+	if stats.Usage != wantUsage {
+		t.Errorf("Review() usage = %+v, want %+v", stats.Usage, wantUsage)
+	}
+}

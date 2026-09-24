@@ -45,8 +45,8 @@ type entry struct {
 	Attempts int `json:"attempts"`
 
 	// NumTurns là số turn Claude CLI dùng ở lần gọi cuối để ra được kết
-	// quả/lỗi này (0 nếu lỗi trước khi có output để đọc, vd lệnh chạy thất
-	// bại). Proxy rẻ để biết model có thực sự đọc thêm file ngoài diff hay
+	// quả/lỗi này (0 nếu không có output JSON để đọc, vd timeout/kill).
+	// Proxy rẻ để biết model có thực sự đọc thêm file ngoài diff hay
 	// chỉ review mù trên diff — num_turns thấp bất thường trên 1 bundle
 	// nhiều file là dấu hiệu đáng ngờ (xem claudecli.Reviewer, issue #20).
 	NumTurns int `json:"num_turns"`

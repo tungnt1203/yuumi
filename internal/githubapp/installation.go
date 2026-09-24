@@ -1,6 +1,7 @@
 package githubapp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -32,9 +33,26 @@ type InstallationToken struct {
 // mạng thật.
 var apiBaseURL = "https://api.github.com"
 
+// tokenPermissions là đúng các quyền bot cần, gửi kèm khi xin installation
+// token để token chỉ có ngần đó quyền, dù App được cấp rộng hơn — token lộ
+// (vd qua tiến trình con chạy trên code PR) cũng không sửa được code,
+// workflow hay secret của repo. Thêm endpoint GitHub mới thì thêm quyền
+// tương ứng ở đây, nếu không API trả 403.
+//
+//   - contents: read       — clone repo (gitrepo.CloneRepo), GET /compare
+//   - issues: write        — post/sửa comment, reaction trên comment PR
+//   - pull_requests: write — GET /pulls, tạo review inline (POST /reviews)
+//
+// metadata: read GitHub luôn tự cấp. Xin quyền mà App không có thì GitHub
+// trả 422 — lỗi ngay lúc xin token, không âm thầm chạy với quyền thiếu.
+var tokenPermissions = map[string]string{
+	"contents":      "read",
+	"issues":        "write",
+	"pull_requests": "write",
+}
+
 // installationTokenResponse map đúng field GitHub trả về từ
-// POST /app/installations/{id}/access_tokens — chỉ lấy 2 field cần dùng,
-// bỏ qua "permissions"/"repositories" vì chưa cần giới hạn scope token.
+// POST /app/installations/{id}/access_tokens — chỉ lấy 2 field cần dùng.
 type installationTokenResponse struct {
 	Token     string    `json:"token"`
 	ExpiresAt time.Time `json:"expires_at"`
@@ -56,12 +74,18 @@ func GetInstallationToken(ctx context.Context, appJWT string, installationID int
 
 	url := fmt.Sprintf("%s/app/installations/%d/access_tokens", apiBaseURL, installationID)
 
-	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
+	reqBody, err := json.Marshal(map[string]any{"permissions": tokenPermissions})
+	if err != nil {
+		return InstallationToken{}, fmt.Errorf("cannot encode request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
 	if err != nil {
 		return InstallationToken{}, fmt.Errorf("cannot create request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+appJWT)
 	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

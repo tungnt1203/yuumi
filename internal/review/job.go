@@ -38,9 +38,10 @@ type GitHubClient interface {
 	CreateReview(repoFullName string, pullRequestNumber int, commitSHA string, body string, commentsJSON []byte) error
 }
 
-// Cloner khớp chữ ký gitrepo.CloneRepo — khai báo dạng func type để Job có
-// thể nhận vào gitrepo.CloneRepo (production) hoặc 1 fake (test) mà không
-// cần Job biết đến package gitrepo.
+// Cloner clone repo tại đúng sha — khai báo dạng func type để Job có thể
+// nhận vào gitrepo.CloneRepo (production, bọc closure gắn sẵn installation
+// token, xem cmd/server/main.go) hoặc 1 fake (test) mà không cần Job biết
+// đến package gitrepo hay token.
 type Cloner func(repoFullName string, sha string) (dir string, cleanup func(), err error)
 
 // ReviewLogger ghi lại chi tiết 1 lần gọi Reviewer.Review — prompt gửi đi,
@@ -327,8 +328,8 @@ func (j *Job) Run() {
 
 // reviewSetupFailureComment là body duy nhất được post khi review fail trước
 // lúc có kết quả. err.Error() chỉ được in ra log server: lỗi GitHub, clone
-// và panic có thể chứa đường dẫn máy hoặc token (clone URL nhúng token khi
-// hỗ trợ repo private, issue #48).
+// và panic có thể chứa đường dẫn máy hoặc thông tin nội bộ khác không nên
+// công khai trên PR.
 const reviewSetupFailureComment = "❌ Review thất bại — xem log server để biết chi tiết."
 
 // reportFailure ghi một câu chung lên comment placeholder thay vì để

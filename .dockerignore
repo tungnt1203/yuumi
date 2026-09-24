@@ -1,0 +1,7 @@
+# Không đưa secret, state local hay lịch sử git vào build context.
+.git
+.env
+*.pem
+logs
+notebooks
+yuumi

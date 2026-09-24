@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"slices"
+	"time"
 
 	"github.com/tungnt1203/yuumi/internal/claudecli"
 	"github.com/tungnt1203/yuumi/internal/config"
@@ -47,7 +49,7 @@ func main() {
 	// nếu chỉ là sự cố mạng thoáng qua lúc deploy, nhưng phải log đủ rõ để
 	// không bị bỏ sót.
 	healthMonitor := healthcheck.NewMonitor(cfg.GitHubAppID, cfg.GitHubAppPrivateKey)
-	if report := healthMonitor.Check(); !report.Healthy() {
+	logUnhealthy := func(report healthcheck.Report) {
 		if !report.ClaudeCLI.OK {
 			log.Println("WARNING: claude CLI check thất bại:", report.ClaudeCLI.Message)
 		}
@@ -55,6 +57,12 @@ func main() {
 			log.Println("WARNING: GitHub App auth check thất bại:", report.GitHubApp.Message)
 		}
 	}
+	logUnhealthy(healthMonitor.Check())
+	// Check lại định kỳ để /health (và Docker HEALTHCHECK) không kẹt ở kết
+	// quả lúc khởi động. 5 phút: đủ nhanh để phát hiện token hỏng, mà chỉ
+	// tốn ~12 lần gọi GitHub API/giờ. Server chưa có graceful shutdown nên
+	// dùng context.Background().
+	go healthMonitor.Run(context.Background(), 5*time.Minute, logUnhealthy)
 
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		report := healthMonitor.Last()

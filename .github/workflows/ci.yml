@@ -16,3 +16,11 @@ jobs:
       - run: go build ./...
       - run: go vet ./...
       - run: go test ./...
+
+  # Dockerfile không được chạy trong job trên; build ở đây để nó không âm
+  # thầm hỏng (issue #49). Chỉ build, không push.
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t yuumi:ci .

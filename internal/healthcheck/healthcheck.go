@@ -5,6 +5,10 @@
 package healthcheck
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os/exec"
@@ -13,6 +17,11 @@ import (
 
 	"github.com/tungnt1203/yuumi/internal/githubapp"
 )
+
+// checkTimeout giới hạn mỗi lần check 1 dependency, để 1 lệnh/request bị
+// treo không chặn Check() mãi mãi (Check() chạy lúc khởi động và định kỳ
+// trong Run).
+const checkTimeout = 15 * time.Second
 
 // Status là kết quả kiểm tra 1 dependency tại 1 thời điểm.
 type Status struct {
@@ -50,12 +59,40 @@ type ClaudeCLICheck func() error
 // thành công (xem DefaultGitHubAppCheck).
 type GitHubAppCheck func() error
 
-// DefaultClaudeCLICheck chạy `claude --version` thật: lệnh rẻ, không gọi
-// model bên trong, chỉ cần binary tồn tại và chạy được (đủ để phát hiện
-// case CLI chưa cài hoặc chưa authenticate khiến mọi lệnh đều lỗi).
+// DefaultClaudeCLICheck chạy `claude auth status` thật: lệnh rẻ, không gọi
+// model, in JSON có "loggedIn". Trước đây chỉ chạy `claude --version` —
+// lệnh đó thành công cả khi CLI chưa đăng nhập, nên container quên truyền
+// CLAUDE_CODE_OAUTH_TOKEN/ANTHROPIC_API_KEY vẫn báo healthy (issue #49).
+// Không xác nhận được token còn hạn (cần gọi model thật), chỉ xác nhận đã
+// cấu hình.
+//
+// Chưa đăng nhập thì CLI (2.1.281) vẫn in JSON loggedIn=false nhưng thoát
+// exit 1 — đọc stdout trước để báo đúng nguyên nhân thay vì "không chạy
+// được".
+//
+// Có timeout: lệnh này có thể gọi mạng (vd refresh token) và treo nếu
+// container bị chặn egress — khi đó Check() lúc khởi động sẽ chặn server
+// không bao giờ listen.
 func DefaultClaudeCLICheck() error {
-	if err := exec.Command("claude", "--version").Run(); err != nil {
-		return fmt.Errorf("claude CLI không chạy được: %w", err)
+	ctx, cancel := context.WithTimeout(context.Background(), checkTimeout)
+	defer cancel()
+	out, runErr := exec.CommandContext(ctx, "claude", "auth", "status").Output()
+	var status struct {
+		LoggedIn bool `json:"loggedIn"`
+	}
+	if json.Unmarshal(out, &status) == nil && !status.LoggedIn {
+		return errors.New("claude CLI chưa đăng nhập (set CLAUDE_CODE_OAUTH_TOKEN hoặc ANTHROPIC_API_KEY)")
+	}
+	if runErr != nil {
+		// ExitError.Error() chỉ có "exit status N" — lý do thật nằm ở stderr.
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) && len(exitErr.Stderr) > 0 {
+			return fmt.Errorf("claude CLI không chạy được: %w: %s", runErr, bytes.TrimSpace(exitErr.Stderr))
+		}
+		return fmt.Errorf("claude CLI không chạy được: %w", runErr)
+	}
+	if !status.LoggedIn {
+		return fmt.Errorf("không đọc được output của claude auth status: %q", out)
 	}
 	return nil
 }
@@ -83,7 +120,8 @@ func checkBearerTokenAgainst(url, bearerToken string) error {
 	req.Header.Set("Authorization", "Bearer "+bearerToken)
 	req.Header.Set("Accept", "application/vnd.github+json")
 
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{Timeout: checkTimeout}
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
@@ -144,6 +182,26 @@ func (m *Monitor) Check() Report {
 	m.mu.Unlock()
 
 	return report
+}
+
+// Run gọi Check() lại mỗi interval cho tới khi ctx bị huỷ, để /health (và
+// Docker HEALTHCHECK) phản ánh trạng thái hiện tại chứ không chỉ lúc khởi
+// động: lỗi thoáng qua lúc start tự hết, còn token hỏng sau khi start thì
+// bị phát hiện. onCheck (có thể nil) nhận từng Report mới, vd để log.
+func (m *Monitor) Run(ctx context.Context, interval time.Duration, onCheck func(Report)) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			report := m.Check()
+			if onCheck != nil {
+				onCheck(report)
+			}
+		}
+	}
 }
 
 // Last trả về kết quả check gần nhất (từ lần Check() gần nhất) mà không

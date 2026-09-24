@@ -25,6 +25,7 @@ trên chính PR đó.
 - [Cài đặt & cấu hình](#cài-đặt--cấu-hình)
 - [Cấu hình review riêng cho từng repo (`.yuumi.yml`)](#cấu-hình-review-riêng-cho-từng-repo-yuumiyml)
 - [Chạy local](#chạy-local)
+- [Chạy bằng Docker](#chạy-bằng-docker)
 - [Cách hoạt động chi tiết](#cách-hoạt-động-chi-tiết)
 - [Eval suite](#eval-suite)
 - [Roadmap](#roadmap)
@@ -155,6 +156,32 @@ go run ./cmd/server
 Server lắng nghe cổng `:8080`, có route `GET /health` và `POST /webhook`. Để
 test webhook bằng curl hoặc test thật với GitHub qua ngrok, xem
 [CONTRIBUTING.md](./CONTRIBUTING.md).
+
+## Chạy bằng Docker
+
+Image gồm server + đủ công cụ một lần review cần: `git`, Go toolchain (cho `gofmt`/`go vet`) và Claude CLI (ghim bản `2.1.281`, tắt auto-update). Chạy bằng user thường `yuumi`, không phải root.
+
+```bash
+docker build -t yuumi .
+
+docker run -d --name yuumi -p 8080:8080 \
+  -v yuumi-logs:/app/logs \
+  -v /đường/dẫn/app.pem:/run/secrets/app.pem:ro \
+  -e GITHUB_APP_PRIVATE_KEY_PATH=/run/secrets/app.pem \
+  -e GITHUB_APP_ID=... \
+  -e GITHUB_WEBHOOK_SECRET=... \
+  -e ALLOWED_USERS=... \
+  -e CLAUDE_CODE_OAUTH_TOKEN=... \
+  yuumi
+```
+
+- **Claude CLI trong container không đọc được login trên máy host** (keychain). Truyền `CLAUDE_CODE_OAUTH_TOKEN` (tạo bằng `claude setup-token`, dùng gói Claude đang có) hoặc `ANTHROPIC_API_KEY`. Không bake credential vào image.
+- **`/app/logs`** chứa review log, review state và bundle cache — mount volume để không mất khi container bị tạo lại.
+- **Private key** của GitHub App mount dạng file read-only như trên, hoặc truyền base64 qua `GITHUB_APP_PRIVATE_KEY`.
+- `GET /health` trả `503` kèm lý do nếu Claude CLI chưa đăng nhập hoặc GitHub App auth lỗi; Docker `HEALTHCHECK` dùng chính endpoint này. Server check lại mỗi 5 phút, nên trạng thái có thể trễ tối đa chừng đó.
+- Nâng phiên bản Claude CLI: sửa `CLAUDE_VERSION` và 2 checksum `CLAUDE_SHA256_AMD64`/`CLAUDE_SHA256_ARM64` trong Dockerfile (lấy từ `https://downloads.claude.ai/claude-code-releases/<version>/manifest.json`), nhưng kiểm chứng lại các flag bảo mật ở mục [Chạy an toàn trên code PR không tin cậy](#chạy-an-toàn-trên-code-pr-không-tin-cậy) trước. Build tự kiểm sha256 và `claude --version` phải khớp bản ghim.
+
+Image hiện chạy cả server lẫn review job trong cùng container. Tách mỗi review job ra một container ngắn hạn riêng (giới hạn tài nguyên/network, không có secret) là giai đoạn 2 của issue #78, dùng lại chính image này.
 
 ## Cách hoạt động chi tiết
 
@@ -325,7 +352,7 @@ Cần `claude` CLI đã authenticate. Đây là công cụ chạy tay, **không*
 
 - [ ] `gitrepo.CloneRepo` cần nhúng token vào URL khi fetch nếu sau này review repo private (hiện chỉ work với repo public) — issue #48
 - [ ] Deploy có URL public thật (thay vì chỉ test local qua curl/ngrok) — issue #46
-- [ ] Đóng gói Docker — issue #49
+- [x] Đóng gói Docker — issue #49
 - [ ] Deploy AWS — issue #50
 
 ## Đóng góp

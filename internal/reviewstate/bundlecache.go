@@ -80,6 +80,10 @@ func (c *BundleCache) LoadBundle(repoFullName string, issueNumber int, key strin
 // chạy song song không ghi đè file tạm của nhau. Tên bắt đầu bằng
 // ".tmp-", không trùng prefix PR nào, nên ClearBundles của job khác không
 // xoá mất file đang ghi; file tạm sót lại sau crash được dọn khi quá TTL.
+//
+// Entry có quyền 0o600 (mặc định của os.CreateTemp, giữ nguyên qua
+// rename), không phải 0o644 như file log: cache chỉ do chính server đọc,
+// và nội dung có thể chứa đoạn code của repo được review.
 func (c *BundleCache) SaveBundle(repoFullName string, issueNumber int, key, text string) error {
 	if err := os.MkdirAll(c.dir(), 0o755); err != nil {
 		return fmt.Errorf("cannot create bundle cache dir: %w", err)

@@ -42,6 +42,23 @@ type fakeGitHubClient struct {
 	// lần/lần review) để test có thể assert số lần gọi lẫn tham số.
 	createReviewErr   error
 	createReviewCalls []createReviewCall
+
+	// checkRunID là ID CreateCheckRun trả về (0 mặc định vẫn hợp lệ với
+	// test không quan tâm check run: Job coi 0 là "không tạo được" và bỏ
+	// qua bước complete). completedCheckRuns ghi lại từng lần complete.
+	checkRunID         int64
+	createCheckRunErr  error
+	createCheckRunSHAs []string
+	completedCheckRuns []completedCheckRun
+}
+
+// completedCheckRun ghi lại tham số 1 lần gọi CompleteCheckRun (issue #59).
+type completedCheckRun struct {
+	id         int64
+	conclusion string
+	title      string
+	summary    string
+	detailsURL string
 }
 
 // createReviewCall ghi lại tham số 1 lần gọi CreateReview — dùng để test
@@ -85,6 +102,22 @@ func (f *fakeGitHubClient) CreateReview(repoFullName string, pullRequestNumber i
 		commentsJSON: string(commentsJSON),
 	})
 	return f.createReviewErr
+}
+
+func (f *fakeGitHubClient) CreateCheckRun(repoFullName string, headSHA string, name string) (int64, error) {
+	f.createCheckRunSHAs = append(f.createCheckRunSHAs, headSHA)
+	return f.checkRunID, f.createCheckRunErr
+}
+
+func (f *fakeGitHubClient) CompleteCheckRun(repoFullName string, checkRunID int64, conclusion string, title string, summary string, detailsURL string) error {
+	f.completedCheckRuns = append(f.completedCheckRuns, completedCheckRun{
+		id:         checkRunID,
+		conclusion: conclusion,
+		title:      title,
+		summary:    summary,
+		detailsURL: detailsURL,
+	})
+	return nil
 }
 
 // fakeStateStore implement ReviewStateStore bằng 1 map trong bộ nhớ — dùng

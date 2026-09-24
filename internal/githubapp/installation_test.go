@@ -69,6 +69,7 @@ func TestGetInstallationToken_RequestsScopedPermissions(t *testing.T) {
 			"contents":      "read",
 			"issues":        "write",
 			"pull_requests": "write",
+			"checks":        "write",
 		}
 		if !maps.Equal(body.Permissions, want) {
 			t.Errorf("permissions = %v, want %v", body.Permissions, want)

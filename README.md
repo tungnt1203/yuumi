@@ -39,6 +39,7 @@ trên chính PR đó.
 - **Finding có phân loại + comment inline**: kết quả trả về JSON có `category`/`severity`/gợi ý sửa; finding khớp đúng dòng diff được post inline qua Reviews API, còn lại gộp vào comment tổng hợp.
 - **Rule mặc định theo ngôn ngữ**: Go, JavaScript/TypeScript, Python, SQL — tự chèn vào prompt theo đuôi file có trong diff, không cần repo cấu hình gì; rule soát secret/credential hardcode áp dụng cho mọi file.
 - **Cấu hình riêng theo repo** qua `.yuumi.yml` (loại trừ file, hướng dẫn review riêng), tự đọc thêm `.gitignore` của repo.
+- **Check run `yuumi review`** trên tab Checks của PR cho mỗi lần review, dùng được cho branch protection.
 - **Chỉ review phần thay đổi mới** ở các lần review sau trên cùng 1 PR (so với SHA đã review trước), tiết kiệm token.
 - **Lọc file rác & chia bundle diff** theo thư mục để không vượt giới hạn ký tự mỗi lần gọi Claude, PR lớn vẫn review đầy đủ.
 - **Ổn định khi chạy thật**: retry lỗi tạm thời, giới hạn job đồng thời, chống xử lý trùng comment, log JSON mỗi lần gọi Claude CLI.
@@ -102,7 +103,7 @@ evalsuite/                # fixture bug cài sẵn + results.md theo dõi chất
 - Go 1.26+ (xem `go.mod` / `.tool-versions`)
 - [Claude Code CLI](https://docs.claude.com/claude-code) đã cài và authenticate (`claude --version` chạy được)
 - `git` CLI có sẵn trên máy chạy server (dùng để clone PR head vào tmp dir)
-- 1 [GitHub App](https://github.com/settings/apps) đã đăng ký, quyền `Issues: Read and write` + `Pull requests: Read and write` (cần write vì bot post finding inline qua Reviews API) + `Contents: Read-only` (để clone được repo private), subscribe event `Issue comments` + `Pull request`, đã **cài (Install App)** vào repo mục tiêu
+- 1 [GitHub App](https://github.com/settings/apps) đã đăng ký, quyền `Issues: Read and write` + `Pull requests: Read and write` (cần write vì bot post finding inline qua Reviews API) + `Contents: Read-only` (để clone được repo private) + `Checks: Read and write` (check run `yuumi review`), subscribe event `Issue comments` + `Pull request`, đã **cài (Install App)** vào repo mục tiêu
 - 1 webhook secret tự đặt (dùng để GitHub ký request, verify chống giả mạo — khai báo trong cấu hình webhook của chính App, không phải trên từng repo)
 
 ## Cài đặt & cấu hình
@@ -184,6 +185,20 @@ docker run -d --name yuumi -p 8080:8080 \
 Image hiện chạy cả server lẫn review job trong cùng container. Tách mỗi review job ra một container ngắn hạn riêng (giới hạn tài nguyên/network, không có secret) là giai đoạn 2 của issue #78, dùng lại chính image này.
 
 ## Cách hoạt động chi tiết
+
+<details id="check-run-yuumi-review">
+<summary><strong>Check run <code>yuumi review</code></strong></summary>
+
+Mỗi lần review (mention hoặc auto) tạo 1 check run tên `yuumi review` gắn với head SHA của PR (`internal/review/checkrun.go`):
+
+- `in_progress` ngay khi bắt đầu, trước bước clone.
+- Review xong trọn vẹn: `success`, title là số góp ý, summary là bảng tổng hợp theo mức độ. Nút "Details" trỏ về comment review đầy đủ. Chưa có severity gate ([#60](https://github.com/tungnt1203/yuumi/issues/60)) nên có finding vẫn là `success`: bot chỉ góp ý, chưa chặn merge.
+- Review lỗi (clone lỗi, Claude CLI lỗi ở một phần, post comment lỗi): `neutral`. Không bao giờ treo ở `in_progress`.
+- Tạo check run lỗi (vd App chưa được cấp quyền `Checks`) chỉ ghi log, review vẫn chạy bình thường.
+
+Muốn bắt buộc review chạy xong trước khi merge: vào **Settings → Branches → Branch protection rule** (hoặc Rulesets) của repo, bật "Require status checks to pass" và chọn `yuumi review`. Lưu ý: `neutral` được GitHub tính là pass, nên review lỗi không chặn merge.
+
+</details>
 
 <details id="lọc-file-rác-và-chia-bundle-diff">
 <summary><strong>Lọc file rác và chia bundle diff</strong></summary>

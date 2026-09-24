@@ -293,3 +293,82 @@ func (c *Client) GetCompareDiff(repoFullName string, baseSHA string, headSHA str
 
 	return string(body), nil
 }
+
+// CreateCheckRun tạo 1 check run ở trạng thái in_progress gắn với headSHA
+// (POST /check-runs, issue #59) và trả về ID để CompleteCheckRun cập nhật
+// khi review xong. Check run hiện trên tab Checks của PR và branch
+// protection có thể bắt buộc nó pass.
+func (c *Client) CreateCheckRun(repoFullName string, headSHA string, name string) (int64, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/check-runs", repoFullName)
+	reqBody, err := json.Marshal(map[string]string{
+		"name":     name,
+		"head_sha": headSHA,
+		"status":   "in_progress",
+	})
+	if err != nil {
+		return 0, fmt.Errorf("cannot marshal check run body: %w", err)
+	}
+
+	req, err := c.newRequest("POST", url, bytes.NewBuffer(reqBody))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return 0, fmt.Errorf("github api error %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var checkRun struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&checkRun); err != nil {
+		return 0, fmt.Errorf("cannot decode check run response: %w", err)
+	}
+	return checkRun.ID, nil
+}
+
+// CompleteCheckRun chuyển check run sang completed với conclusion
+// (success/failure/neutral...), kèm title + summary (markdown) hiện ở tab
+// Checks. detailsURL là link "Details" của check run — trỏ về comment
+// review đầy đủ thay vì lặp lại toàn bộ nội dung trong summary.
+func (c *Client) CompleteCheckRun(repoFullName string, checkRunID int64, conclusion string, title string, summary string, detailsURL string) error {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/check-runs/%d", repoFullName, checkRunID)
+	reqBody, err := json.Marshal(map[string]any{
+		"status":      "completed",
+		"conclusion":  conclusion,
+		"details_url": detailsURL,
+		"output": map[string]string{
+			"title":   title,
+			"summary": summary,
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("cannot marshal check run body: %w", err)
+	}
+
+	req, err := c.newRequest("PATCH", url, bytes.NewBuffer(reqBody))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("github api error %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
+}

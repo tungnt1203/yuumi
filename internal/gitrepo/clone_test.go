@@ -27,8 +27,11 @@ func withFakeGit(t *testing.T) string {
 		t.Fatalf("cannot write fake git script: %v", err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	// Env của process test không được làm sai kết quả (vd máy dev tự set).
-	t.Setenv("GIT_CONFIG_VALUE_0", "")
+	// Giả lập môi trường server đã có sẵn GIT_CONFIG_* (vd CI tự set): giá
+	// trị của CloneRepo phải ghi đè, không được lọt header cũ xuống git.
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "http.extraheader")
+	t.Setenv("GIT_CONFIG_VALUE_0", "stale-header")
 	return logPath
 }
 

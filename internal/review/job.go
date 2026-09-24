@@ -328,8 +328,8 @@ func (j *Job) Run() {
 
 // reviewSetupFailureComment là body duy nhất được post khi review fail trước
 // lúc có kết quả. err.Error() chỉ được in ra log server: lỗi GitHub, clone
-// và panic có thể chứa đường dẫn máy hoặc token (clone URL nhúng token khi
-// hỗ trợ repo private, issue #48).
+// và panic có thể chứa đường dẫn máy hoặc thông tin nội bộ khác không nên
+// công khai trên PR.
 const reviewSetupFailureComment = "❌ Review thất bại — xem log server để biết chi tiết."
 
 // reportFailure ghi một câu chung lên comment placeholder thay vì để

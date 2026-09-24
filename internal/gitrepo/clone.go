@@ -74,6 +74,10 @@ func CloneRepo(repoFullName string, sha string, token string) (dir string, clean
 // `-c http.extraheader=...` để token không nằm trong args của tiến trình
 // (ai trên máy cũng thấy qua `ps`) và không bị ghi xuống .git/config.
 //
+// Các biến này được append SAU os.Environ(): exec.Cmd chỉ dùng giá trị
+// cuối cùng khi Env có key trùng, nên GIT_CONFIG_* có sẵn trong môi trường
+// server (nếu có) bị ghi đè, không lẫn vào header gửi đi.
+//
 // GIT_TERMINAL_PROMPT=0 luôn được set: thiếu/sai token với repo private thì
 // git fail ngay, không treo chờ nhập username/password tới hết timeout.
 func authEnv(token string) []string {

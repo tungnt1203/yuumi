@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
+	"strings"
 )
 
 type CommentResponse struct {
@@ -16,6 +18,11 @@ type PullRequestResponse struct {
 	Head struct {
 		SHA string `json:"sha"`
 	} `json:"head"`
+	// Base.SHA là commit của nhánh đích mà PR so sánh tới — dùng để đọc cấu
+	// hình mà tác giả PR không tự sửa được (xem GetPullRequestSHAs).
+	Base struct {
+		SHA string `json:"sha"`
+	} `json:"base"`
 	// ChangedFiles là số file GitHub ghi nhận PR đã đổi — dùng để phát hiện
 	// khi GetPullRequestDiff bị GitHub tự giới hạn/cắt bớt (xem
 	// GetPullRequestChangedFilesCount).
@@ -183,9 +190,9 @@ func (c *Client) CreateReview(repoFullName string, pullRequestNumber int, commit
 
 // getPullRequest gọi GET /repos/{repo}/pulls/{number} (JSON mặc định, không
 // phải Accept diff của GetPullRequestDiff) — dùng chung cho
-// GetPullRequestHeadSHA và GetPullRequestChangedFilesCount, vì cả 2 chỉ cần
-// 2 field khác nhau từ CÙNG 1 response, không đáng gọi API 2 lần hay lặp
-// lại boilerplate request/decode.
+// GetPullRequestHeadSHA, GetPullRequestSHAs và
+// GetPullRequestChangedFilesCount, vì cả 3 chỉ cần vài field khác nhau từ
+// CÙNG 1 response, không đáng lặp lại boilerplate request/decode.
 func (c *Client) getPullRequest(repoFullName string, pullRequestNumber int) (PullRequestResponse, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/pulls/%d", repoFullName, pullRequestNumber)
 	req, err := c.newRequest("GET", url, nil)
@@ -218,6 +225,59 @@ func (c *Client) GetPullRequestHeadSHA(repoFullName string, pullRequestNumber in
 		return "", err
 	}
 	return pr.Head.SHA, nil
+}
+
+// GetPullRequestSHAs trả về SHA head và base của PR trong CÙNG 1 request.
+// review.Job cần cả 2: head để review, base để đọc block_severity trong
+// .yuumi.yml mà tác giả PR không tự sửa được (issue #60).
+func (c *Client) GetPullRequestSHAs(repoFullName string, pullRequestNumber int) (headSHA string, baseSHA string, err error) {
+	pr, err := c.getPullRequest(repoFullName, pullRequestNumber)
+	if err != nil {
+		return "", "", err
+	}
+	return pr.Head.SHA, pr.Base.SHA, nil
+}
+
+// GetFileContent đọc nội dung file path tại ref (SHA/nhánh) qua Contents
+// API, dạng raw. File không tồn tại (404) trả found=false và err=nil — đa
+// số repo không có file cấu hình, đó không phải lỗi.
+func (c *Client) GetFileContent(repoFullName string, path string, ref string) (content []byte, found bool, err error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/contents/%s?ref=%s", repoFullName, escapePath(path), neturl.QueryEscape(ref))
+	req, err := c.newRequest("GET", url, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	req.Header.Set("Accept", "application/vnd.github.raw+json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, false, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, false, fmt.Errorf("cannot read file response: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, false, nil
+	}
+	if resp.StatusCode >= 300 {
+		return nil, false, fmt.Errorf("github api error %d: %s", resp.StatusCode, string(body))
+	}
+	return body, true, nil
+}
+
+// escapePath escape từng đoạn của path nhưng giữ nguyên "/" — PathEscape
+// cho cả chuỗi sẽ biến "/" thành %2F, làm hỏng path lồng nhau (dir/file).
+// Ký tự như "?", "#", "&" trong tên file không còn phá được cấu trúc URL.
+func escapePath(path string) string {
+	segments := strings.Split(path, "/")
+	for i, segment := range segments {
+		segments[i] = neturl.PathEscape(segment)
+	}
+	return strings.Join(segments, "/")
 }
 
 // GetPullRequestChangedFilesCount trả về số file GitHub ghi nhận PR đã đổi.

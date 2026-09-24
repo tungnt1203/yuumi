@@ -140,10 +140,14 @@ exclude:
 instructions: |
   Review nghiêm khắc phần error handling.
   Luôn yêu cầu unit test cho hàm export.
+block_severity: [critical, high]
 ```
 
 - `exclude`: thêm pattern loại trừ file/thư mục khỏi diff review — **gộp thêm** vào danh sách mặc định của bot (lock file, `vendor/`, `node_modules/`...), không thay thế.
 - `instructions`: đoạn hướng dẫn chèn thẳng vào prompt gửi Claude, để review đúng convention/mức độ nghiêm khắc riêng của repo.
+- `block_severity` (severity gate): góp ý ở các mức này (`critical`/`high`/`medium`/`low`) làm check run `yuumi review` thành `failure`. Kết hợp với branch protection (xem [Check run `yuumi review`](#check-run-yuumi-review)) để chặn merge. Không set thì không chặn gì: check run luôn `success`, bot chỉ góp ý như trước. Giá trị gõ sai (vd `hight`) bị bỏ qua kèm cảnh báo trong log.
+  - **Chỉ đọc từ `.yuumi.yml` của nhánh base** (commit base của PR, qua GitHub API), không đọc từ PR. Nếu không vậy, tác giả PR chỉ cần xoá dòng này trong PR của mình là qua được gate. Muốn đổi gate thì merge thay đổi `.yuumi.yml` vào nhánh base trước. `exclude` và `instructions` vẫn đọc từ PR như cũ.
+  - Không đọc được file ở base (lỗi GitHub API, YAML sai): gate không áp dụng cho lần review đó, và summary của check run có cảnh báo.
 
 Không có file này thì bot dùng default hiện tại. File có nhưng sai định dạng YAML thì bot bỏ qua (log lỗi, không chặn review) và vẫn review với default.
 
@@ -192,7 +196,7 @@ Image hiện chạy cả server lẫn review job trong cùng container. Tách m�
 Mỗi lần review (mention hoặc auto) tạo 1 check run tên `yuumi review` gắn với head SHA của PR (`internal/review/checkrun.go`):
 
 - `in_progress` ngay khi bắt đầu, trước bước clone.
-- Review xong trọn vẹn: `success`, title là số góp ý, summary là bảng tổng hợp theo mức độ. Nút "Details" trỏ về comment review đầy đủ. Chưa có severity gate ([#60](https://github.com/tungnt1203/yuumi/issues/60)) nên có finding vẫn là `success`: bot chỉ góp ý, chưa chặn merge.
+- Review xong trọn vẹn: `success`, title là số góp ý, summary là bảng tổng hợp theo mức độ. Nút "Details" trỏ về comment review đầy đủ. Có góp ý ở mức trong `block_severity` (xem [`.yuumi.yml`](#cấu-hình-review-riêng-cho-từng-repo-yuumiyml)) thì `failure`; không cấu hình thì có góp ý vẫn `success`.
 - Review lỗi (clone lỗi, Claude CLI lỗi ở một phần, post comment lỗi): `neutral`. Không bao giờ treo ở `in_progress`.
 - Tạo check run lỗi (vd App chưa được cấp quyền `Checks`) chỉ ghi log, review vẫn chạy bình thường.
 

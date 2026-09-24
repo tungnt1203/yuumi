@@ -22,9 +22,16 @@ const repoConfigFileName = ".yuumi.yml"
 // Không có repo nào cấu hình 2 việc này thì dùng default hiện tại (không
 // loại trừ thêm gì, không có hướng dẫn riêng) — repoConfig zero-value làm
 // đúng việc đó.
+//
+// BlockSeverity (issue #60): finding ở các mức này làm check run "yuumi
+// review" thành failure, để branch protection chặn merge. Rỗng (mặc định)
+// là không chặn gì. Chỉ có hiệu lực khi đọc từ commit BASE của PR (xem
+// Job.loadBlockSeverity) — giá trị trong .yuumi.yml ở head bị bỏ qua, vì tác
+// giả PR sửa được file đó.
 type repoConfig struct {
-	Exclude      []string `yaml:"exclude"`
-	Instructions string   `yaml:"instructions"`
+	Exclude       []string `yaml:"exclude"`
+	Instructions  string   `yaml:"instructions"`
+	BlockSeverity []string `yaml:"block_severity"`
 }
 
 // loadRepoConfig đọc .yuumi.yml ở root dir (repo đã checkout).
@@ -44,6 +51,13 @@ func loadRepoConfig(dir string) (repoConfig, error) {
 		return repoConfig{}, err
 	}
 
+	return parseRepoConfig(data)
+}
+
+// parseRepoConfig parse nội dung .yuumi.yml — dùng chung cho file ở head
+// (loadRepoConfig, đọc từ thư mục clone) và ở base (Job.loadBlockSeverity,
+// đọc qua GitHub API).
+func parseRepoConfig(data []byte) (repoConfig, error) {
 	var cfg repoConfig
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return repoConfig{}, err
@@ -53,6 +67,28 @@ func loadRepoConfig(dir string) (repoConfig, error) {
 	cfg.Instructions = strings.TrimSpace(cfg.Instructions)
 
 	return cfg, nil
+}
+
+// validSeverities là các mức severity finding có thể mang (xem Finding).
+var validSeverities = map[string]bool{"critical": true, "high": true, "medium": true, "low": true}
+
+// normalizeSeverities chuẩn hoá danh sách severity (bỏ khoảng trắng, chữ
+// thường, bỏ trùng). Giá trị không hợp lệ (gõ nhầm, vd "hight") trả riêng
+// trong invalid để nơi gọi log cảnh báo — không làm hỏng cả cấu hình.
+func normalizeSeverities(items []string) (valid []string, invalid []string) {
+	seen := map[string]bool{}
+	for _, item := range items {
+		sev := strings.ToLower(strings.TrimSpace(item))
+		switch {
+		case sev == "" || seen[sev]:
+		case validSeverities[sev]:
+			seen[sev] = true
+			valid = append(valid, sev)
+		default:
+			invalid = append(invalid, item)
+		}
+	}
+	return valid, invalid
 }
 
 // removeBlank bỏ các phần tử rỗng/toàn khoảng trắng — người viết .yuumi.yml

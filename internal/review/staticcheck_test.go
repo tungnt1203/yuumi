@@ -203,8 +203,22 @@ func TestVetDiagnostics(t *testing.T) {
 		t.Errorf("vetDiagnostics(setup errors) = %q, want empty", got)
 	}
 
-	real := "# statictest\n./main.go:6:2: fmt.Printf format %d has arg of wrong type\n"
-	if got := vetDiagnostics(real); got != "./main.go:6:2: fmt.Printf format %d has arg of wrong type" {
-		t.Errorf("vetDiagnostics(real) = %q, want only the diagnostic line", got)
+	diag := "# statictest\n./main.go:6:2: fmt.Printf format %d has arg of wrong type\n"
+	if got := vetDiagnostics(diag); got != "./main.go:6:2: fmt.Printf format %d has arg of wrong type" {
+		t.Errorf("vetDiagnostics(diag) = %q, want only the diagnostic line", got)
+	}
+
+	// Output thật của go 1.26 cho lỗi type-check: dòng have/want thụt tab
+	// là phần tiếp theo của chẩn đoán.
+	typeErr := "# a\n# [a]\nvet: ./main.go:9:4: not enough arguments in call to f\n\thave ()\n\twant (int)\n"
+	want := "vet: ./main.go:9:4: not enough arguments in call to f\n\thave ()\n\twant (int)"
+	if got := vetDiagnostics(typeErr); got != want {
+		t.Errorf("vetDiagnostics(typeErr) = %q, want %q", got, want)
+	}
+
+	// go.mod hỏng do PR là lỗi của PR, không phải lỗi môi trường.
+	goModErr := "go: errors parsing go.mod:\ngo.mod:4: unknown directive: foo\n"
+	if got := vetDiagnostics(goModErr); got != "go.mod:4: unknown directive: foo" {
+		t.Errorf("vetDiagnostics(goModErr) = %q, want the go.mod line", got)
 	}
 }

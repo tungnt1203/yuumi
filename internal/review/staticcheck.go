@@ -15,21 +15,32 @@ import (
 	"github.com/tungnt1203/yuumi/internal/procenv"
 )
 
-// vetDiagnosticRe khớp dòng chẩn đoán gắn với vị trí trong code
-// ("./main.go:12:3: ..." hoặc "main.go:12: ...") — cảnh báo vet hoặc lỗi
-// compile thật của PR.
-var vetDiagnosticRe = regexp.MustCompile(`\.go:\d+(:\d+)?: `)
+// vetDiagnosticRe khớp dòng chẩn đoán gắn với vị trí trong file của PR
+// ("./main.go:12:3: ...", "go.mod:4: unknown directive: foo"...) — cảnh
+// báo vet, lỗi compile hoặc go.mod/go.work/assembly hỏng do chính PR.
+var vetDiagnosticRe = regexp.MustCompile(`(\.go|go\.mod|go\.work|\.s):\d+(:\d+)?: `)
 
 // vetDiagnostics chỉ giữ dòng chẩn đoán có vị trí trong code. Lỗi môi
 // trường (tải module private không có trên proxy, package cần cgo khi
 // CGO_ENABLED=0, toolchain local cũ hơn go.mod...) không có vị trí file,
 // không phải lỗi của PR — đưa vào prompt kèm câu "không cần lặp lại" sẽ cho
 // Claude context sai.
+//
+// Dòng thụt tab ngay sau 1 chẩn đoán là phần tiếp theo của nó (vd
+// "\thave ()" / "\twant (int)" của lỗi type-check), giữ lại để Claude
+// thấy đủ thông điệp.
 func vetDiagnostics(stderr string) string {
 	var lines []string
+	inDiag := false
 	for _, l := range strings.Split(stderr, "\n") {
-		if vetDiagnosticRe.MatchString(l) {
+		switch {
+		case vetDiagnosticRe.MatchString(l):
+			inDiag = true
 			lines = append(lines, strings.TrimSpace(l))
+		case inDiag && strings.HasPrefix(l, "\t"):
+			lines = append(lines, l)
+		default:
+			inDiag = false
 		}
 	}
 	return strings.Join(lines, "\n")

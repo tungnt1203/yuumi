@@ -1,5 +1,10 @@
 package review
 
+import (
+	"strings"
+	"unicode"
+)
+
 // pendingComment là 1 finding đã được XÁC THỰC khớp đúng với 1 dòng thật
 // trong diff (qua parseFileHunks/FileDiff.LineAtNew, issue #24) — sẵn sàng
 // gửi thành 1 inline comment qua GitHub Reviews API (issue #5). Body đã
@@ -48,11 +53,18 @@ func splitFindingsForPosting(diff string, findings []Finding) (inline []pendingC
 			continue
 		}
 		start, line := suggestionLineRange(fd, f)
+		body := renderInlineFinding(f)
+		if suggestionRepeatsNeighbor(fd, start, line, f.Suggestion) {
+			// Khoảng dòng hẹp hơn đoạn code suggestion viết lại — bấm
+			// "Commit suggestion" sẽ nhân đôi dòng kế bên. Vẫn gắn inline
+			// nhưng hiện suggestion thành code block thường.
+			body = renderFinding(f)
+		}
 		inline = append(inline, pendingComment{
 			Path:      f.File,
 			StartLine: start,
 			Line:      line,
-			Body:      renderInlineFinding(f),
+			Body:      body,
 		})
 	}
 
@@ -75,6 +87,33 @@ func suggestionLineRange(fd FileDiff, f Finding) (startLine, line int) {
 		return 0, line
 	}
 	return f.Line, f.EndLine
+}
+
+// suggestionRepeatsNeighbor báo suggestion có chứa nguyên văn dòng ngay
+// trước hoặc ngay sau khoảng dòng nó thay (startLine..line, startLine 0 là
+// chỉ dòng line). Dấu hiệu model gắn khoảng quá hẹp: vd suggestion viết lại
+// cả vòng for nhưng chỉ gắn dòng thân vòng lặp — áp dụng sẽ ra 2 dòng for.
+// Chỉ so dòng có chữ/số, bỏ qua dòng như "}" hay dòng trống vốn hay lặp.
+func suggestionRepeatsNeighbor(fd FileDiff, startLine, line int, suggestion string) bool {
+	if startLine <= 0 {
+		startLine = line
+	}
+	lines := make(map[string]bool)
+	for _, l := range strings.Split(suggestion, "\n") {
+		if t := strings.TrimSpace(l); hasLetterOrDigit(t) {
+			lines[t] = true
+		}
+	}
+	for _, n := range []int{startLine - 1, line + 1} {
+		if hl, ok := fd.LineAtNew(n); ok && lines[strings.TrimSpace(hl.Content)] {
+			return true
+		}
+	}
+	return false
+}
+
+func hasLetterOrDigit(s string) bool {
+	return strings.IndexFunc(s, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) >= 0
 }
 
 // buildFileDiffIndex parse hunk-level từng file trong diff, index theo

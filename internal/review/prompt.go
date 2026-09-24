@@ -160,6 +160,8 @@ const resultFormatInstructions = `Trả kết quả CHỈ dưới dạng 1 JSON 
 ` + findingSchemaExample + `
 "line" là số dòng trong file MỚI (sau khi áp dụng thay đổi của PR) đúng như xuất hiện ở khối diff bên trên, không phải số thứ tự trong toàn bộ file — để 0 nếu không chắc hoặc là nhận xét tổng quát, đừng đoán bừa.
 "end_line" là dòng CUỐI của đoạn code mà suggestion thay thế. Chỉ điền khi suggestion thay nhiều dòng liên tiếp (end_line > line) và mọi dòng trong khoảng đó đều xuất hiện trong diff; suggestion chỉ thay đúng 1 dòng thì để 0 — kể cả khi nội dung suggestion dài nhiều dòng.
+"suggestion" được đăng thành nút "Commit suggestion" của GitHub: nội dung của nó THAY THẾ NGUYÊN VĂN các dòng từ "line" đến "end_line" (hoặc chỉ dòng "line"). Vì vậy "suggestion" chỉ chứa code cuối cùng của đúng các dòng đó — không lặp lại dòng nằm ngoài khoảng, không kèm lời giải thích hay chỉ dẫn kiểu "// also add ...". Nếu cách sửa là chèn code ở chỗ khác, sửa nhiều chỗ, hoặc chỉ mô tả được bằng lời, thì để "suggestion" rỗng và mô tả trong "message".
+"message" viết bằng tiếng Việt, trừ khi hướng dẫn riêng của repo ở trên yêu cầu ngôn ngữ khác.
 Nếu code không có vấn đề gì đáng chú ý, trả về mảng rỗng: []
 `
 

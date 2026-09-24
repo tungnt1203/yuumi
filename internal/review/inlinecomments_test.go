@@ -274,3 +274,68 @@ func TestBuildFileDiffIndex_IndexesByNewPath(t *testing.T) {
 		t.Error("expected other.go in index")
 	}
 }
+
+// Trường hợp thật ở PR #81: suggestion viết lại cả vòng for nhưng chỉ gắn
+// dòng thân vòng lặp. Áp dụng sẽ ra 2 dòng for, nên không hiện nút
+// "Commit suggestion" mà hiện code block thường, vẫn gắn đúng dòng.
+func TestSplitFindingsForPosting_SuggestionRepeatsLineBefore_PlainBlock(t *testing.T) {
+	diff := "diff --git a/main.go b/main.go\n" +
+		"--- a/main.go\n" +
+		"+++ b/main.go\n" +
+		"@@ -1,3 +1,3 @@\n" +
+		" for _, key := range keys {\n" +
+		"-\tprint(key)\n" +
+		"+\tprintRow(key)\n" +
+		" }"
+	findings := []Finding{
+		{File: "main.go", Line: 2, Severity: "low", Message: "m", Suggestion: "for _, key := range keys {\n\tprintRow(label(key))\n}"},
+	}
+
+	inline, general := splitFindingsForPosting(diff, findings)
+
+	if len(general) != 0 || len(inline) != 1 {
+		t.Fatalf("got %d inline %d general, want 1 and 0", len(inline), len(general))
+	}
+	if inline[0].Line != 2 {
+		t.Errorf("inline line = %d, want 2", inline[0].Line)
+	}
+	if strings.Contains(inline[0].Body, "```suggestion") {
+		t.Errorf("inline body = %q, want no suggestion fence", inline[0].Body)
+	}
+	if !strings.Contains(inline[0].Body, "printRow(label(key))") {
+		t.Errorf("inline body = %q, want suggestion shown as plain code", inline[0].Body)
+	}
+}
+
+func TestSplitFindingsForPosting_SuggestionRepeatsLineAfter_PlainBlock(t *testing.T) {
+	findings := []Finding{
+		{File: "main.go", Line: 2, Severity: "low", Message: "m", Suggestion: "import \"os\"\nvar x = 1"},
+	}
+
+	inline, _ := splitFindingsForPosting(sampleDiff, findings)
+
+	if len(inline) != 1 || strings.Contains(inline[0].Body, "```suggestion") {
+		t.Fatalf("inline = %+v, want 1 comment without suggestion fence", inline)
+	}
+}
+
+// Dòng kế bên chỉ là "}" thì lặp lại là bình thường, vẫn giữ nút suggestion.
+func TestSplitFindingsForPosting_SuggestionRepeatsBraceOnly_KeepsFence(t *testing.T) {
+	diff := "diff --git a/main.go b/main.go\n" +
+		"--- a/main.go\n" +
+		"+++ b/main.go\n" +
+		"@@ -1,3 +1,3 @@\n" +
+		" func f() {\n" +
+		"-\ta()\n" +
+		"+\tb()\n" +
+		" }"
+	findings := []Finding{
+		{File: "main.go", Line: 2, Severity: "low", Message: "m", Suggestion: "\tif ok {\n\t\tb()\n\t}"},
+	}
+
+	inline, _ := splitFindingsForPosting(diff, findings)
+
+	if len(inline) != 1 || !strings.Contains(inline[0].Body, "```suggestion") {
+		t.Fatalf("inline = %+v, want suggestion fence kept", inline)
+	}
+}

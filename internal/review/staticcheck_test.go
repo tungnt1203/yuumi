@@ -3,8 +3,10 @@ package review
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // writeGoModule dựng 1 Go module tối thiểu trong thư mục tạm: go.mod +
@@ -103,5 +105,60 @@ func main() {
 	prompt := BuildReviewPrompt("review", "diff --git a/main.go b/main.go\n+x", report, "", "")
 	if !strings.Contains(prompt, "gofmt") {
 		t.Errorf("expected prompt to include static check note, got:\n%s", prompt)
+	}
+}
+
+// withFakeGoTools đặt script "go" và "gofmt" giả lên đầu PATH. PATH chỉ còn
+// thư mục giả + /bin:/usr/bin (cho sleep/env), để chắc chắn không gọi nhầm
+// toolchain thật.
+func withFakeGoTools(t *testing.T, script string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake go script is a shell script, skip on windows")
+	}
+	bin := t.TempDir()
+	for _, name := range []string{"go", "gofmt"} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+"/bin:/usr/bin")
+}
+
+// Lệnh treo bị cắt theo staticCheckTimeout, không giữ job vô hạn (#78).
+func TestStaticCheckReport_Timeout(t *testing.T) {
+	withFakeGoTools(t, "#!/bin/sh\nsleep 30\n")
+	old := staticCheckTimeout
+	staticCheckTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { staticCheckTimeout = old })
+
+	start := time.Now()
+	got := staticCheckReport(writeGoModule(t, "package main\n"))
+
+	if got != "" {
+		t.Errorf("staticCheckReport() = %q, want empty on timeout", got)
+	}
+	if elapsed := time.Since(start); elapsed > 15*time.Second {
+		t.Errorf("staticCheckReport() took %v, want it cut by the timeout", elapsed)
+	}
+}
+
+// go vet chạy với env đã siết: không có secret của server, có các biến
+// chặn tải toolchain/cgo/VCS (#78).
+func TestStaticCheckReport_HardenedEnv(t *testing.T) {
+	// "go vet" giả in env ra stderr rồi exit 1, để env hiện trong report.
+	withFakeGoTools(t, "#!/bin/sh\n[ \"$1\" = vet ] || exit 0\nenv >&2\nexit 1\n")
+	t.Setenv("GITHUB_WEBHOOK_SECRET", "top-secret")
+	t.Setenv("GITHUB_APP_PRIVATE_KEY", "pem")
+
+	got := staticCheckReport(writeGoModule(t, "package main\n"))
+
+	if strings.Contains(got, "top-secret") || strings.Contains(got, "GITHUB_APP_PRIVATE_KEY") {
+		t.Errorf("go vet env leaks server secrets:\n%s", got)
+	}
+	for _, want := range []string{"GOTOOLCHAIN=local", "CGO_ENABLED=0", "GOPROXY=https://proxy.golang.org", "GOFLAGS=-mod=readonly"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("go vet env missing %s, got:\n%s", want, got)
+		}
 	}
 }

@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"time"
 
+	"github.com/tungnt1203/yuumi/internal/procenv"
 	"github.com/tungnt1203/yuumi/internal/review"
 )
 
@@ -136,6 +138,33 @@ func (r *Reviewer) Review(prompt string, dir string) (result string, stats revie
 	return "", review.CallStats{Attempts: maxAttempts, Usage: usage}, lastErr
 }
 
+// disallowedTools là các tool Claude không được dùng khi review: review chỉ
+// cần đọc code (Read/Grep/Glob). Chạy lệnh, sửa file hay gọi mạng trên
+// thư mục chứa code PR không tin cậy là đường cho prompt injection trong
+// diff biến thành hành động thật trên máy server (issue #78).
+const disallowedTools = "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"
+
+// claudeArgs dựng tham số cho Claude CLI. Thư mục làm việc là repo của PR,
+// nên mọi cấu hình CLI tự đọc từ đó đều do tác giả PR viết:
+//   - --setting-sources user: bỏ .claude/settings*.json của repo — file này
+//     khai báo được hook (lệnh shell tự chạy) và nới quyền tool.
+//   - --strict-mcp-config (không kèm --mcp-config): bỏ MCP server khai báo
+//     trong .mcp.json của repo.
+//
+// CLAUDE.md của repo vẫn được CLI đọc (chỉ --bare tắt được, mà --bare bắt
+// buộc xác thực bằng ANTHROPIC_API_KEY). Với tool đã khoá chỉ còn đọc, nó
+// chỉ ảnh hưởng được nội dung review; cô lập hẳn cần sandbox riêng mỗi job
+// (giai đoạn 2 của issue #78).
+func claudeArgs(prompt string) []string {
+	return []string{
+		"-p", prompt,
+		"--output-format", "json",
+		"--setting-sources", "user",
+		"--strict-mcp-config",
+		"--disallowedTools", disallowedTools,
+	}
+}
+
 // runOnce gọi Claude CLI đúng 1 lần. retryable báo lỗi này có đáng thử lại
 // không: true cho lỗi chạy lệnh (timeout, lệnh không chạy được...) — những
 // lỗi này thường do mạng/tải tạm thời, chạy lại có cơ hội thành công; false
@@ -150,8 +179,9 @@ func runOnce(prompt string, dir string) (res ClaudeResult, err error, retryable 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "claude", "-p", prompt, "--output-format", "json")
+	cmd := exec.CommandContext(ctx, "claude", claudeArgs(prompt)...)
 	cmd.Dir = dir
+	cmd.Env = procenv.WithoutSecrets(os.Environ())
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

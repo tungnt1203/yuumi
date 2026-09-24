@@ -2,11 +2,69 @@ package review
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/tungnt1203/yuumi/internal/procenv"
 )
+
+// staticCheckTimeout giới hạn mỗi lệnh check tĩnh. go vet compile code của
+// PR (không tin cậy): build treo hay package cực lớn không được giữ job —
+// và slot của dispatcher — vô hạn (issue #78). var để test rút ngắn.
+var staticCheckTimeout = 2 * time.Minute
+
+// goEnvKeep là các biến của server mà toolchain Go cần: tìm binary, thư mục
+// cache/module, proxy mạng. Mọi biến khác (kể cả secret) bị bỏ.
+var goEnvKeep = []string{
+	"PATH", "HOME", "TMPDIR",
+	"GOPATH", "GOCACHE", "GOMODCACHE",
+	"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR",
+}
+
+// goHardenedEnv là env cho gofmt/go vet trên code PR:
+//   - GOTOOLCHAIN=local: không tự tải và chạy Go toolchain khác mà go.mod
+//     của PR yêu cầu.
+//   - CGO_ENABLED=0: không gọi C compiler với cờ #cgo do PR viết.
+//   - GOPROXY chỉ proxy.golang.org, không ",direct": không clone VCS tuỳ ý.
+//   - GOFLAGS=-mod=readonly: không sửa go.mod/go.sum.
+func goHardenedEnv() []string {
+	return append(procenv.Only(os.Environ(), goEnvKeep...),
+		"GOTOOLCHAIN=local",
+		"CGO_ENABLED=0",
+		"GOPROXY=https://proxy.golang.org",
+		"GOFLAGS=-mod=readonly",
+	)
+}
+
+// runStaticCheck chạy 1 lệnh check tĩnh trong dir với timeout và env đã
+// siết. WaitDelay đóng pipe nếu tiến trình con của go (compile, vet tool)
+// còn giữ stdout/stderr sau khi lệnh chính bị kill. timedOut=true thì
+// output không đầy đủ, caller không được coi là kết quả.
+func runStaticCheck(dir string, name string, args ...string) (stdout, stderr string, timedOut bool, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), staticCheckTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	cmd.Env = goHardenedEnv()
+	cmd.WaitDelay = 5 * time.Second
+
+	var out, errOut bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errOut
+	err = cmd.Run()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		fmt.Printf("Static check %s quá %v, bỏ qua\n", name, staticCheckTimeout)
+		return "", "", true, err
+	}
+	return out.String(), errOut.String(), false, err
+}
 
 // staticCheckReport chạy các check tĩnh có sẵn của toolchain (hiện tại chỉ
 // Go: gofmt/go vet) trên repo đã checkout tại dir, trả về báo cáo dạng text
@@ -57,13 +115,11 @@ func isGoRepo(dir string) bool {
 // trên PATH...) bị bỏ qua thay vì chặn review: static check là tiện ích
 // thêm, không phải điều kiện bắt buộc để review chạy được.
 func gofmtReport(dir string) string {
-	cmd := exec.Command("gofmt", "-l", ".")
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
+	out, _, timedOut, err := runStaticCheck(dir, "gofmt", "-l", ".")
+	if err != nil || timedOut {
 		return ""
 	}
-	files := strings.TrimSpace(string(out))
+	files := strings.TrimSpace(out)
 	if files == "" {
 		return ""
 	}
@@ -76,16 +132,11 @@ func gofmtReport(dir string) string {
 // hoặc package không compile được vì lý do khác vet) thì không có gì đáng
 // tin cậy để báo cáo, bỏ qua.
 func goVetReport(dir string) string {
-	cmd := exec.Command("go", "vet", "./...")
-	cmd.Dir = dir
-
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err == nil {
+	_, stderr, timedOut, err := runStaticCheck(dir, "go", "vet", "./...")
+	if err == nil || timedOut {
 		return ""
 	}
-	msg := strings.TrimSpace(stderr.String())
+	msg := strings.TrimSpace(stderr)
 	if msg == "" {
 		return ""
 	}

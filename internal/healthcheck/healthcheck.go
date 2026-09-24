@@ -5,6 +5,8 @@
 package healthcheck
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os/exec"
@@ -50,12 +52,29 @@ type ClaudeCLICheck func() error
 // thành công (xem DefaultGitHubAppCheck).
 type GitHubAppCheck func() error
 
-// DefaultClaudeCLICheck chạy `claude --version` thật: lệnh rẻ, không gọi
-// model bên trong, chỉ cần binary tồn tại và chạy được (đủ để phát hiện
-// case CLI chưa cài hoặc chưa authenticate khiến mọi lệnh đều lỗi).
+// DefaultClaudeCLICheck chạy `claude auth status` thật: lệnh rẻ, không gọi
+// model, in JSON có "loggedIn". Trước đây chỉ chạy `claude --version` —
+// lệnh đó thành công cả khi CLI chưa đăng nhập, nên container quên truyền
+// CLAUDE_CODE_OAUTH_TOKEN/ANTHROPIC_API_KEY vẫn báo healthy (issue #49).
+// Không xác nhận được token còn hạn (cần gọi model thật), chỉ xác nhận đã
+// cấu hình.
+//
+// Chưa đăng nhập thì CLI (2.1.281) vẫn in JSON loggedIn=false nhưng thoát
+// exit 1 — đọc stdout trước để báo đúng nguyên nhân thay vì "không chạy
+// được".
 func DefaultClaudeCLICheck() error {
-	if err := exec.Command("claude", "--version").Run(); err != nil {
-		return fmt.Errorf("claude CLI không chạy được: %w", err)
+	out, runErr := exec.Command("claude", "auth", "status").Output()
+	var status struct {
+		LoggedIn bool `json:"loggedIn"`
+	}
+	if json.Unmarshal(out, &status) == nil && !status.LoggedIn {
+		return errors.New("claude CLI chưa đăng nhập (set CLAUDE_CODE_OAUTH_TOKEN hoặc ANTHROPIC_API_KEY)")
+	}
+	if runErr != nil {
+		return fmt.Errorf("claude CLI không chạy được: %w", runErr)
+	}
+	if !status.LoggedIn {
+		return fmt.Errorf("không đọc được output của claude auth status: %q", out)
 	}
 	return nil
 }

@@ -33,6 +33,11 @@ type Finding struct {
 	// review comment multi-line (start_line/line) cho khối ```suggestion,
 	// xem splitFindingsForPosting.
 	EndLine int `json:"end_line,omitempty"`
+	// ExistingCode là đoạn code hiện có (file mới) từ Line đến EndLine mà
+	// Claude chép nguyên văn. Số dòng Claude tự báo có thể lệch; nội dung
+	// này dùng để tìm lại đúng vị trí trong diff (xem locateExistingCode,
+	// issue #71). Rỗng thì chỉ tin Line như trước.
+	ExistingCode string `json:"existing_code,omitempty"`
 }
 
 // severityRank xếp hạng độ ưu tiên hiển thị dùng cho renderFindings —

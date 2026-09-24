@@ -339,3 +339,153 @@ func TestSplitFindingsForPosting_SuggestionRepeatsBraceOnly_KeepsFence(t *testin
 		t.Fatalf("inline = %+v, want suggestion fence kept", inline)
 	}
 }
+
+// diff có 2 hunk, dùng cho các test existing_code (issue #71). Dòng file
+// mới: 1 package main, 2 import "fmt", 3 var x = 1 | 10 func f() {,
+// 11 return x, 12 }.
+const twoHunkDiff = "diff --git a/main.go b/main.go\n" +
+	"--- a/main.go\n" +
+	"+++ b/main.go\n" +
+	"@@ -1,2 +1,3 @@\n" +
+	" package main\n" +
+	"+import \"fmt\"\n" +
+	" var x = 1\n" +
+	"@@ -9,3 +10,3 @@\n" +
+	" func f() {\n" +
+	"-\treturn 0\n" +
+	"+\treturn x\n" +
+	" }"
+
+// Claude báo lệch dòng nhưng existing_code đúng: gắn theo nội dung.
+func TestSplitFindingsForPosting_ExistingCode_FixesWrongLine(t *testing.T) {
+	findings := []Finding{
+		{File: "main.go", Line: 3, Severity: "low", Message: "m", ExistingCode: "\treturn x"},
+	}
+
+	inline, general := splitFindingsForPosting(twoHunkDiff, findings)
+
+	if len(general) != 0 || len(inline) != 1 {
+		t.Fatalf("got %d inline %d general, want 1 and 0", len(inline), len(general))
+	}
+	if inline[0].Line != 11 {
+		t.Errorf("inline line = %d, want 11", inline[0].Line)
+	}
+}
+
+// existing_code nhiều dòng đặt luôn khoảng dòng cho suggestion, kể cả khi
+// Claude không điền end_line.
+func TestSplitFindingsForPosting_ExistingCode_SetsRange(t *testing.T) {
+	findings := []Finding{
+		{File: "main.go", Line: 10, Severity: "low", Message: "m", ExistingCode: "func f() {\n    return x", Suggestion: "func f() int {\n\treturn x"},
+	}
+
+	inline, _ := splitFindingsForPosting(twoHunkDiff, findings)
+
+	if len(inline) != 1 || inline[0].StartLine != 10 || inline[0].Line != 11 {
+		t.Fatalf("inline = %+v, want range 10..11", inline)
+	}
+}
+
+// Đoạn code không có trong diff: không gắn inline, kể cả khi Line hợp lệ.
+func TestSplitFindingsForPosting_ExistingCode_NotInDiff_GoesGeneral(t *testing.T) {
+	findings := []Finding{
+		{File: "main.go", Line: 2, Severity: "low", Message: "m", ExistingCode: "import \"os\""},
+	}
+
+	inline, general := splitFindingsForPosting(twoHunkDiff, findings)
+
+	if len(inline) != 0 || len(general) != 1 {
+		t.Fatalf("got %d inline %d general, want 0 and 1", len(inline), len(general))
+	}
+}
+
+// Khớp nhiều chỗ: chọn chỗ gần Line nhất; không có Line thì không đoán.
+func TestLocateExistingCode_MultipleMatches(t *testing.T) {
+	diff := "diff --git a/main.go b/main.go\n" +
+		"--- a/main.go\n" +
+		"+++ b/main.go\n" +
+		"@@ -1,3 +1,5 @@\n" +
+		" x++\n" +
+		"+y := 1\n" +
+		" x++\n" +
+		"+z := 2\n" +
+		" x++"
+	fd := buildFileDiffIndex(diff)["main.go"]
+	want := []string{"x++"}
+
+	if _, _, ok := locateExistingCode(fd, want, 4); ok {
+		t.Error("hint 4 is equally far from lines 3 and 5: want ok=false")
+	}
+	if start, _, ok := locateExistingCode(fd, want, 1); !ok || start != 1 {
+		t.Errorf("hint 1: got start=%d ok=%v, want 1", start, ok)
+	}
+	if _, _, ok := locateExistingCode(fd, want, 0); ok {
+		t.Error("hint 0 with 3 matches: want ok=false")
+	}
+	if start, _, ok := locateExistingCode(fd, []string{"y := 1"}, 0); !ok || start != 2 {
+		t.Errorf("hint 0 with a single match: got start=%d ok=%v, want 2", start, ok)
+	}
+}
+
+// Claude để line=0 (vd đường sửa định dạng) nhưng existing_code khớp đúng
+// 1 chỗ: vẫn gắn inline.
+func TestSplitFindingsForPosting_ExistingCodeWithoutLine_GoesInline(t *testing.T) {
+	findings := []Finding{
+		{File: "main.go", Severity: "low", Message: "m", ExistingCode: "return x"},
+	}
+
+	inline, general := splitFindingsForPosting(twoHunkDiff, findings)
+
+	if len(general) != 0 || len(inline) != 1 || inline[0].Line != 11 {
+		t.Fatalf("inline = %+v general = %d, want 1 inline at line 11", inline, len(general))
+	}
+}
+
+// existing_code chỉ chép dòng đầu nhưng Claude báo end_line: giữ độ dài
+// khoảng, dời theo chỗ khớp (line 3..4 báo lệch, khớp thật ở 10 → 10..11).
+func TestSplitFindingsForPosting_ExistingCodeFirstLineOnly_ShiftsEndLine(t *testing.T) {
+	findings := []Finding{
+		{File: "main.go", Line: 9, EndLine: 10, Severity: "low", Message: "m", ExistingCode: "func f() {", Suggestion: "func f() int {\n\treturn x"},
+	}
+
+	inline, _ := splitFindingsForPosting(twoHunkDiff, findings)
+
+	if len(inline) != 1 || inline[0].StartLine != 10 || inline[0].Line != 11 {
+		t.Fatalf("inline = %+v, want range 10..11", inline)
+	}
+}
+
+// Dòng trống giữa existing_code khớp với dòng context trống trong diff
+// (diff ghi là 1 dấu cách).
+func TestSplitFindingsForPosting_ExistingCodeWithBlankLine(t *testing.T) {
+	diff := "diff --git a/main.go b/main.go\n" +
+		"--- a/main.go\n" +
+		"+++ b/main.go\n" +
+		"@@ -1,3 +1,4 @@\n" +
+		" a := 1\n" +
+		" \n" +
+		"+b := 2\n" +
+		" c := 3"
+	findings := []Finding{
+		{File: "main.go", Line: 1, Severity: "low", Message: "m", ExistingCode: "a := 1\n\nb := 2"},
+	}
+
+	inline, _ := splitFindingsForPosting(diff, findings)
+
+	if len(inline) != 1 || inline[0].StartLine != 1 || inline[0].Line != 3 {
+		t.Fatalf("inline = %+v, want range 1..3", inline)
+	}
+}
+
+// existing_code chỉ gồm "}" không đủ để định vị: bỏ qua, tin Line như cũ.
+func TestSplitFindingsForPosting_ExistingCodeBraceOnly_UsesLine(t *testing.T) {
+	findings := []Finding{
+		{File: "main.go", Line: 2, Severity: "low", Message: "m", ExistingCode: "}"},
+	}
+
+	inline, _ := splitFindingsForPosting(twoHunkDiff, findings)
+
+	if len(inline) != 1 || inline[0].Line != 2 {
+		t.Fatalf("inline = %+v, want line 2", inline)
+	}
+}

@@ -36,6 +36,8 @@ type GitHubClient interface {
 	GetPullRequestChangedFilesCount(repoFullName string, pullRequestNumber int) (int, error)
 	EditComment(repoFullName string, commentID int64, body string) error
 	CreateReview(repoFullName string, pullRequestNumber int, commitSHA string, body string, commentsJSON []byte) error
+	CreateCheckRun(repoFullName string, headSHA string, name string) (int64, error)
+	CompleteCheckRun(repoFullName string, checkRunID int64, conclusion string, title string, summary string, detailsURL string) error
 }
 
 // Cloner clone repo tại đúng sha — khai báo dạng func type để Job có thể
@@ -151,6 +153,13 @@ func (j *Job) Run() {
 		return
 	}
 
+	// Check run (issue #59) tạo ngay khi có SHA, để cả lỗi clone cũng hiện
+	// trên tab Checks. Kết quả mặc định là thất bại, chỉ đổi khi review
+	// post xong — defer này chạy cả khi panic (trước recover ở trên).
+	checkRunID := j.startCheckRun(sha)
+	checkResult := failedCheckRunResult
+	defer func() { j.finishCheckRun(checkRunID, checkResult) }()
+
 	dir, cleanup, err := j.Clone(j.RepoFullName, sha)
 	if err != nil {
 		j.reportFailure(fmt.Errorf("không clone được repo: %w", err))
@@ -247,6 +256,8 @@ func (j *Job) Run() {
 	var hadError bool
 	var inline []pendingComment
 	var header string
+	var allFindings []Finding
+	var anyParsed, allParsed bool
 	if len(bundles) == 0 && len(skipped) > 0 {
 		// Diff CÓ nội dung nhưng toàn bộ file đều bị lọc (vd PR chỉ sửa
 		// go.sum) — không có gì đáng review, không tốn 1 lần gọi Claude CLI
@@ -265,8 +276,6 @@ func (j *Job) Run() {
 			effectiveBundles = []string{""}
 		}
 
-		var allFindings []Finding
-		var anyParsed, allParsed bool
 		merged, hadError, inline, allFindings, anyParsed, allParsed = j.reviewBundles(effectiveBundles, dir, sha, staticReport, repoCfg.Instructions, validationDiff, primer)
 		if anyParsed {
 			// partial=true khi có bundle KHÔNG đóng góp được vào allFindings
@@ -298,6 +307,7 @@ func (j *Job) Run() {
 	}
 	posted = true
 	fmt.Println("Comment posted successfully")
+	checkResult = reviewedCheckRunResult(hadError, anyParsed, anyParsed && !allParsed, len(allFindings), header, j.reviewCommentURL())
 
 	if len(inline) > 0 {
 		// Best-effort, KHÔNG return/chặn gì nếu lỗi — comment tổng hợp

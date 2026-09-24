@@ -42,6 +42,7 @@ var apiBaseURL = "https://api.github.com"
 //   - contents: read       — clone repo (gitrepo.CloneRepo), GET /compare
 //   - issues: write        — post/sửa comment, reaction trên comment PR
 //   - pull_requests: write — GET /pulls, tạo review inline (POST /reviews)
+//   - checks: write        — tạo/cập nhật check run "yuumi review" (#59)
 //
 // metadata: read GitHub luôn tự cấp. Xin quyền mà App không có thì GitHub
 // trả 422 — lỗi ngay lúc xin token, không âm thầm chạy với quyền thiếu.
@@ -49,6 +50,7 @@ var tokenPermissions = map[string]string{
 	"contents":      "read",
 	"issues":        "write",
 	"pull_requests": "write",
+	"checks":        "write",
 }
 
 // installationTokenResponse map đúng field GitHub trả về từ

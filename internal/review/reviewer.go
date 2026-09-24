@@ -1,5 +1,7 @@
 package review
 
+import "github.com/tungnt1203/yuumi/internal/sandbox"
+
 // CallStats là số liệu phụ của 1 lần gọi Reviewer.Review, dùng để ghi log
 // (xem ReviewLogger) chứ không ảnh hưởng tới nội dung review. Gom vào 1
 // struct thay vì thêm từng giá trị trả về rời, để thêm số liệu mới không
@@ -44,8 +46,8 @@ func (u Usage) Add(other Usage) Usage {
 	}
 }
 
-// Reviewer thực hiện việc review code trong thư mục dir dựa trên prompt đã
-// dựng sẵn (xem BuildReviewPrompt), trả về nội dung review dạng text kèm
+// Reviewer thực hiện việc review code PR trong sandbox box (lệnh chạy qua
+// box.Command, xem package sandbox) dựa trên prompt đã dựng sẵn (xem BuildReviewPrompt), trả về nội dung review dạng text kèm
 // CallStats. Implementation không có khái niệm retry/turn (hoặc fake dùng
 // cho test) chỉ cần trả CallStats{Attempts: 1}.
 //
@@ -54,5 +56,5 @@ func (u Usage) Add(other Usage) Usage {
 // sau này muốn đổi sang cách khác (vd Claude API) chỉ cần viết implementation
 // mới, không phải sửa chỗ gọi.
 type Reviewer interface {
-	Review(prompt string, dir string) (result string, stats CallStats, err error)
+	Review(prompt string, box sandbox.Env) (result string, stats CallStats, err error)
 }

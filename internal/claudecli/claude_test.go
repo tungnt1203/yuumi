@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/tungnt1203/yuumi/internal/review"
+	"github.com/tungnt1203/yuumi/internal/sandbox"
 )
 
 // withFakeClaude tạo 1 script tên "claude" trong thư mục tạm, chèn thư mục
@@ -66,7 +67,7 @@ func TestReview_Success(t *testing.T) {
 echo '{"type":"result","subtype":"success","is_error":false,"result":"looks good","num_turns":3}'
 `)
 
-	got, stats, err := (&Reviewer{}).Review("review this", t.TempDir())
+	got, stats, err := (&Reviewer{}).Review("review this", sandbox.Local(t.TempDir()))
 	if err != nil {
 		t.Fatalf("Review() unexpected error: %v", err)
 	}
@@ -86,7 +87,7 @@ func TestReview_ClaudeReportsError_DoesNotRetry(t *testing.T) {
 	withFakeClaude(t, countingScript(counter, `echo '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"gave up","num_turns":2}'`))
 
 	r := &Reviewer{sleep: noSleep}
-	_, stats, err := r.Review("review this", t.TempDir())
+	_, stats, err := r.Review("review this", sandbox.Local(t.TempDir()))
 	if err == nil {
 		t.Fatal("Review() expected error when is_error is true, got nil")
 	}
@@ -110,7 +111,7 @@ func TestReview_InvalidJSON_DoesNotRetry(t *testing.T) {
 	withFakeClaude(t, countingScript(counter, `echo 'not json'`))
 
 	r := &Reviewer{sleep: noSleep}
-	_, stats, err := r.Review("review this", t.TempDir())
+	_, stats, err := r.Review("review this", sandbox.Local(t.TempDir()))
 	if err == nil {
 		t.Fatal("Review() expected error on invalid JSON output, got nil")
 	}
@@ -130,7 +131,7 @@ func TestReview_CommandFails_RetriesThenGivesUp(t *testing.T) {
 exit 1`))
 
 	r := &Reviewer{sleep: noSleep}
-	_, stats, err := r.Review("review this", t.TempDir())
+	_, stats, err := r.Review("review this", sandbox.Local(t.TempDir()))
 	if err == nil {
 		t.Fatal("Review() expected error when claude command exits non-zero, got nil")
 	}
@@ -158,7 +159,7 @@ fi
 echo '{"type":"result","subtype":"success","is_error":false,"result":"ok after retry","num_turns":4}'`))
 
 	r := &Reviewer{sleep: noSleep}
-	got, stats, err := r.Review("review this", t.TempDir())
+	got, stats, err := r.Review("review this", sandbox.Local(t.TempDir()))
 	if err != nil {
 		t.Fatalf("Review() unexpected error after retry: %v", err)
 	}
@@ -180,7 +181,7 @@ func TestReview_MaxAttempts_Override(t *testing.T) {
 exit 1`))
 
 	r := &Reviewer{MaxAttempts: 2, sleep: noSleep}
-	_, stats, err := r.Review("review this", t.TempDir())
+	_, stats, err := r.Review("review this", sandbox.Local(t.TempDir()))
 	if err == nil {
 		t.Fatal("Review() expected error after exhausting retries, got nil")
 	}
@@ -202,7 +203,7 @@ fi
 `)
 
 	dir := t.TempDir()
-	got, _, err := (&Reviewer{}).Review("hello prompt", dir)
+	got, _, err := (&Reviewer{}).Review("hello prompt", sandbox.Local(dir))
 	if err != nil {
 		t.Fatalf("Review() unexpected error: %v", err)
 	}
@@ -228,7 +229,7 @@ func TestReview_ParsesUsage(t *testing.T) {
 echo '{"type":"result","subtype":"success","is_error":false,"result":"ok",`+usageJSON+`}'
 `)
 
-	_, stats, err := (&Reviewer{}).Review("review this", t.TempDir())
+	_, stats, err := (&Reviewer{}).Review("review this", sandbox.Local(t.TempDir()))
 	if err != nil {
 		t.Fatalf("Review() unexpected error: %v", err)
 	}
@@ -242,7 +243,7 @@ func TestReview_NoUsageFields_ZeroUsage(t *testing.T) {
 echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'
 `)
 
-	_, stats, err := (&Reviewer{}).Review("review this", t.TempDir())
+	_, stats, err := (&Reviewer{}).Review("review this", sandbox.Local(t.TempDir()))
 	if err != nil {
 		t.Fatalf("Review() unexpected error: %v", err)
 	}
@@ -257,7 +258,7 @@ func TestReview_ClaudeReportsError_KeepsUsage(t *testing.T) {
 echo '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"gave up",`+usageJSON+`}'
 `)
 
-	_, stats, err := (&Reviewer{sleep: noSleep}).Review("review this", t.TempDir())
+	_, stats, err := (&Reviewer{sleep: noSleep}).Review("review this", sandbox.Local(t.TempDir()))
 	if err == nil {
 		t.Fatal("Review() expected error when is_error is true, got nil")
 	}
@@ -276,7 +277,7 @@ func TestReview_RetryThenSucceeds_UsageFromParsedAttempts(t *testing.T) {
 fi
 echo '{"type":"result","subtype":"success","is_error":false,"result":"ok",`+usageJSON+`}'`))
 
-	_, stats, err := (&Reviewer{sleep: noSleep}).Review("review this", t.TempDir())
+	_, stats, err := (&Reviewer{sleep: noSleep}).Review("review this", sandbox.Local(t.TempDir()))
 	if err != nil {
 		t.Fatalf("Review() unexpected error after retry: %v", err)
 	}
@@ -295,7 +296,7 @@ func TestReview_CommandFailsWithJSON_KeepsUsageAndRetries(t *testing.T) {
 	withFakeClaude(t, countingScript(counter, `echo '{"type":"result","subtype":"success","is_error":false,"result":"ok","num_turns":2,`+usageJSON+`}'
 exit 1`))
 
-	_, stats, err := (&Reviewer{MaxAttempts: 2, sleep: noSleep}).Review("review this", t.TempDir())
+	_, stats, err := (&Reviewer{MaxAttempts: 2, sleep: noSleep}).Review("review this", sandbox.Local(t.TempDir()))
 	if err == nil {
 		t.Fatal("Review() expected error when claude exits non-zero, got nil")
 	}
@@ -315,7 +316,7 @@ func TestReview_CommandFailsWithIsError_DoesNotRetry(t *testing.T) {
 	withFakeClaude(t, countingScript(counter, `echo '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"gave up",`+usageJSON+`}'
 exit 1`))
 
-	_, stats, err := (&Reviewer{sleep: noSleep}).Review("review this", t.TempDir())
+	_, stats, err := (&Reviewer{sleep: noSleep}).Review("review this", sandbox.Local(t.TempDir()))
 	if err == nil {
 		t.Fatal("Review() expected error when is_error is true, got nil")
 	}
@@ -340,7 +341,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'
 	t.Setenv("GITHUB_WEBHOOK_SECRET", "top-secret")
 	t.Setenv("GITHUB_APP_PRIVATE_KEY", "pem")
 
-	if _, _, err := (&Reviewer{}).Review("p", t.TempDir()); err != nil {
+	if _, _, err := (&Reviewer{}).Review("p", sandbox.Local(t.TempDir())); err != nil {
 		t.Fatalf("Review() unexpected error: %v", err)
 	}
 

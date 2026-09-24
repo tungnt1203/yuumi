@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/tungnt1203/yuumi/internal/review"
+	"github.com/tungnt1203/yuumi/internal/sandbox"
 )
 
 // fakeReviewer implement review.Reviewer bằng cách ghi lại prompt/dir nhận
@@ -20,9 +21,9 @@ type fakeReviewer struct {
 	err       error
 }
 
-func (f *fakeReviewer) Review(prompt, dir string) (string, review.CallStats, error) {
+func (f *fakeReviewer) Review(prompt string, box sandbox.Env) (string, review.CallStats, error) {
 	f.gotPrompt = prompt
-	f.gotDir = dir
+	f.gotDir = box.Dir()
 	return f.result, review.CallStats{Attempts: 1, NumTurns: 1}, f.err
 }
 

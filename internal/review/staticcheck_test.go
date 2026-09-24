@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tungnt1203/yuumi/internal/sandbox"
 )
 
 // writeGoModule dựng 1 Go module tối thiểu trong thư mục tạm: go.mod +
@@ -29,7 +31,7 @@ func writeGoModule(t *testing.T, goFileContent string) string {
 func TestStaticCheckReport_NotGoRepo_ReturnsEmpty(t *testing.T) {
 	dir := t.TempDir() // không có go.mod
 
-	got := staticCheckReport(dir)
+	got := staticCheckReport(sandbox.Local(dir))
 	if got != "" {
 		t.Errorf("staticCheckReport() = %q, want empty (not a Go repo)", got)
 	}
@@ -45,7 +47,7 @@ func main() {
 }
 `)
 
-	got := staticCheckReport(dir)
+	got := staticCheckReport(sandbox.Local(dir))
 	if got != "" {
 		t.Errorf("staticCheckReport() = %q, want empty (gofmt/go vet clean)", got)
 	}
@@ -62,7 +64,7 @@ func main() {
 }
 `)
 
-	got := staticCheckReport(dir)
+	got := staticCheckReport(sandbox.Local(dir))
 	if !strings.Contains(got, "gofmt") {
 		t.Errorf("staticCheckReport() = %q, want it to mention gofmt", got)
 	}
@@ -83,7 +85,7 @@ func main() {
 }
 `)
 
-	got := staticCheckReport(dir)
+	got := staticCheckReport(sandbox.Local(dir))
 	if !strings.Contains(got, "go vet") {
 		t.Errorf("staticCheckReport() = %q, want it to mention go vet", got)
 	}
@@ -98,7 +100,7 @@ func main() {
 }
 `)
 
-	report := staticCheckReport(dir)
+	report := staticCheckReport(sandbox.Local(dir))
 	if report == "" {
 		t.Fatal("expected non-empty static check report as precondition")
 	}
@@ -134,7 +136,7 @@ func TestStaticCheckReport_Timeout(t *testing.T) {
 	t.Cleanup(func() { staticCheckTimeout = old })
 
 	start := time.Now()
-	got := staticCheckReport(writeGoModule(t, "package main\n"))
+	got := staticCheckReport(sandbox.Local(writeGoModule(t, "package main\n")))
 
 	if got != "" {
 		t.Errorf("staticCheckReport() = %q, want empty on timeout", got)
@@ -153,7 +155,7 @@ func TestStaticCheckReport_HardenedEnv(t *testing.T) {
 	t.Setenv("GITHUB_WEBHOOK_SECRET", "top-secret")
 	t.Setenv("GITHUB_APP_PRIVATE_KEY", "pem")
 
-	got := staticCheckReport(writeGoModule(t, "package main\n"))
+	got := staticCheckReport(sandbox.Local(writeGoModule(t, "package main\n")))
 
 	if strings.Contains(got, "top-secret") || strings.Contains(got, "GITHUB_APP_PRIVATE_KEY") {
 		t.Errorf("go vet env leaks server secrets:\n%s", got)
@@ -183,7 +185,7 @@ func TestStaticCheckReport_TimeoutKillsChildren(t *testing.T) {
 	staticCheckTimeout = 2 * time.Second
 	t.Cleanup(func() { staticCheckTimeout = old })
 
-	gofmtReport(writeGoModule(t, "package main\n"))
+	gofmtReport(sandbox.Local(writeGoModule(t, "package main\n")))
 	time.Sleep(2 * time.Second)
 
 	if _, err := os.Stat(started); err != nil {

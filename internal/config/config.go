@@ -43,6 +43,21 @@ type Config struct {
 	// review bị ngắt (xem reviewstate.BundleCache, issue #76) — rỗng nghĩa
 	// là "không set", để reviewstate tự dùng default của nó.
 	BundleCacheDir string
+
+	// Sandbox chọn nơi chạy lệnh trên code PR (issue #78): "" (mặc định)
+	// chạy thẳng trên máy server như trước, "docker" cho mỗi job 1
+	// container riêng (xem package sandbox).
+	Sandbox string
+
+	// SandboxImage là image của container sandbox — bắt buộc khi
+	// Sandbox == "docker". Dùng chính image của server (có go, git, claude).
+	SandboxImage string
+
+	// WorkDir là thư mục chứa các thư mục clone PR — rỗng nghĩa là thư mục
+	// tạm của hệ thống. Bắt buộc khi Sandbox == "docker": Docker daemon
+	// mount thư mục clone theo đường dẫn trên HOST, nên server chạy trong
+	// container phải clone vào 1 thư mục mount từ host ở cùng đường dẫn.
+	WorkDir string
 }
 
 func Load() (Config, error) {
@@ -76,6 +91,19 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	sandboxMode := os.Getenv("SANDBOX")
+	sandboxImage := os.Getenv("SANDBOX_IMAGE")
+	workDir := os.Getenv("WORK_DIR")
+	switch sandboxMode {
+	case "":
+	case "docker":
+		if sandboxImage == "" || workDir == "" {
+			return Config{}, fmt.Errorf("SANDBOX=docker requires SANDBOX_IMAGE and WORK_DIR")
+		}
+	default:
+		return Config{}, fmt.Errorf("SANDBOX must be empty or \"docker\", got %q", sandboxMode)
+	}
+
 	return Config{
 		WebhookSecret:        secret,
 		GitHubAppID:          appID,
@@ -86,6 +114,9 @@ func Load() (Config, error) {
 		ReviewLogDir:         os.Getenv("REVIEW_LOG_DIR"),
 		ReviewStateFile:      os.Getenv("REVIEW_STATE_FILE"),
 		BundleCacheDir:       os.Getenv("BUNDLE_CACHE_DIR"),
+		Sandbox:              sandboxMode,
+		SandboxImage:         sandboxImage,
+		WorkDir:              workDir,
 	}, nil
 }
 

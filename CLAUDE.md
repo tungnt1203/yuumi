@@ -29,6 +29,9 @@ docker build -t yuumi:dev . && docker rm -f yuumi && docker run -d --name yuumi 
   --env-file .env \
   -e GITHUB_APP_PRIVATE_KEY_PATH=/run/secrets/app.pem \
   -v "$PWD/logs:/app/logs" \
+  -e SANDBOX=docker -e SANDBOX_IMAGE=yuumi:dev -e WORK_DIR="$PWD/work" \
+  -v "$PWD/work:$PWD/work" \
+  -v /var/run/docker.sock:/var/run/docker.sock --group-add 0 \
   -v <path to App private key .pem>:/run/secrets/app.pem:ro \
   yuumi:dev
 curl -s localhost:8080/health   # 200 when both claude_cli and github_app are ok
@@ -45,7 +48,7 @@ Request flow (`cmd/server/main.go`): `POST /webhook` verifies the HMAC signature
 Both paths skip a head SHA that was already reviewed (`review.AlreadyReviewedSHA`). They then get an installation token (`internal/githubapp.Provider`: signs an App JWT and caches a token per installation), post a "Đang review..." placeholder, and submit a `review.Job` to the `Dispatcher`, which caps concurrent jobs.
 
 `review.Job.Run` (`internal/review/job.go`) is the core. It depends only on small interfaces (`GitHubClient`, `Cloner`, `Reviewer`, `ReviewLogger`, `ReviewStateStore`, `BundleCache`), so tests drive it with fakes. It uses only primitive parameter types, so `review` never imports `githubapi`. Steps:
-1. Get head + base SHA, create the check run (`checkrun.go`), clone at head (`internal/gitrepo`).
+1. Get head + base SHA, create the check run (`checkrun.go`), clone at head (`internal/gitrepo`), start the job's sandbox (`internal/sandbox`: `Local`, or one Docker container per job when `SANDBOX=docker`). Every command on PR code (`gofmt`/`go vet`, `claude`) runs through `sandbox.Env.Command`. Reading config files from the clone stays on the server.
 2. Static checks (`gofmt`/`go vet`), `.yuumi.yml` (`exclude`, `instructions`) and `.gitignore` from the clone.
 3. Get the diff: the full PR diff, or only the changes since the last reviewed SHA (`reviewstate`, "incremental"). Filter junk files, split into bundles by directory under `MAX_DIFF_BUNDLE_CHARS`.
 4. One `claude -p` call per bundle (`internal/claudecli`, retries), parse JSON findings (`finding.go`, one repair retry on bad format), cache per-bundle results for resume.
@@ -59,6 +62,7 @@ Both paths skip a head SHA that was already reviewed (`review.AlreadyReviewedSHA
 Keep these when changing anything that touches the clone directory or subprocesses (README "Chạy an toàn trên code PR không tin cậy", issue #78):
 - `claude` runs with `--setting-sources user`, `--strict-mcp-config`, and `--disallowedTools Bash,Edit,Write,...`. It must not gain write, shell, or network tools.
 - Subprocesses that run on PR code (`claude`, `gofmt`/`go vet`) get their env from `internal/procenv`, which strips server secrets.
+- Never exec directly on the clone dir: go through `sandbox.Env.Command`. The Docker sandbox forwards only `forwardEnvKeys` (an allowlist), passed as `-e KEY` so values stay out of args. If the sandbox cannot start, the review fails; it must not fall back to running on the server.
 - `gofmt`/`go vet` run with a timeout, `GOTOOLCHAIN=local`, `CGO_ENABLED=0`, and a restricted `GOPROXY`.
 - The installation token is passed to `git fetch` only, through `GIT_CONFIG_*` env (`http.extraheader`). Never put it in the remote URL (it would land in `.git/config`, which Claude reads) or in command args.
 - Installation tokens are requested with a minimal permission set (`tokenPermissions` in `internal/githubapp/installation.go`). A new GitHub endpoint may need a new permission there, or the API returns 403.

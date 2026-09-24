@@ -6,13 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/tungnt1203/yuumi/internal/procenv"
+	"github.com/tungnt1203/yuumi/internal/sandbox"
 )
 
 // vetDiagnosticRe khớp dòng chẩn đoán gắn với vị trí trong file của PR
@@ -79,18 +79,18 @@ func goHardenedEnv() []string {
 	)
 }
 
-// runStaticCheck chạy 1 lệnh check tĩnh trong dir với timeout và env đã
-// siết. Hết timeout thì kill cả process group (killProcessGroupOnCancel);
-// WaitDelay là lưới an toàn đóng pipe nếu vẫn còn tiến trình giữ
-// stdout/stderr. timedOut=true thì
-// output không đầy đủ, caller không được coi là kết quả.
-func runStaticCheck(dir string, name string, args ...string) (stdout, stderr string, timedOut bool, err error) {
+// runStaticCheck chạy 1 lệnh check tĩnh trong sandbox box với timeout và
+// env đã siết. Hết timeout thì kill cả process group của lệnh phía server
+// (killProcessGroupOnCancel): với sandbox.Local đó chính là gofmt/go vet;
+// với sandbox Docker chỉ là `docker exec`, tiến trình trong container còn
+// chạy tới khi job xoá container (vẫn bị giới hạn CPU/RAM/pids). WaitDelay
+// là lưới an toàn đóng pipe nếu vẫn còn tiến trình giữ stdout/stderr.
+// timedOut=true thì output không đầy đủ, caller không được coi là kết quả.
+func runStaticCheck(box sandbox.Env, name string, args ...string) (stdout, stderr string, timedOut bool, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), staticCheckTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Dir = dir
-	cmd.Env = goHardenedEnv()
+	cmd := box.Command(ctx, goHardenedEnv(), name, args...)
 	killProcessGroupOnCancel(cmd)
 	cmd.WaitDelay = 5 * time.Second
 
@@ -120,16 +120,16 @@ func runStaticCheck(dir string, name string, args ...string) (stdout, stderr str
 // Repo target không phải Go thì staticCheckReport tự động no-op (isGoRepo
 // false), không hại gì; hỗ trợ ngôn ngữ khác là việc mở rộng sau, làm khi
 // có repo thật cần.
-func staticCheckReport(dir string) string {
-	if !isGoRepo(dir) {
+func staticCheckReport(box sandbox.Env) string {
+	if !isGoRepo(box.Dir()) {
 		return ""
 	}
 
 	var sections []string
-	if s := gofmtReport(dir); s != "" {
+	if s := gofmtReport(box); s != "" {
 		sections = append(sections, s)
 	}
-	if s := goVetReport(dir); s != "" {
+	if s := goVetReport(box); s != "" {
 		sections = append(sections, s)
 	}
 	if len(sections) == 0 {
@@ -153,8 +153,8 @@ func isGoRepo(dir string) bool {
 // khi có file chưa format — khác go vet). Lỗi chạy lệnh (gofmt không có
 // trên PATH...) bị bỏ qua thay vì chặn review: static check là tiện ích
 // thêm, không phải điều kiện bắt buộc để review chạy được.
-func gofmtReport(dir string) string {
-	out, _, timedOut, err := runStaticCheck(dir, "gofmt", "-l", ".")
+func gofmtReport(box sandbox.Env) string {
+	out, _, timedOut, err := runStaticCheck(box, "gofmt", "-l", ".")
 	if err != nil || timedOut {
 		return ""
 	}
@@ -170,8 +170,8 @@ func gofmtReport(dir string) string {
 // prompt. err xảy ra nhưng stderr rỗng (vd binary "go" không có trên PATH,
 // hoặc package không compile được vì lý do khác vet) thì không có gì đáng
 // tin cậy để báo cáo, bỏ qua.
-func goVetReport(dir string) string {
-	_, stderr, timedOut, err := runStaticCheck(dir, "go", "vet", "./...")
+func goVetReport(box sandbox.Env) string {
+	_, stderr, timedOut, err := runStaticCheck(box, "go", "vet", "./...")
 	if err == nil || timedOut {
 		return ""
 	}

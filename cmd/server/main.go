@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"slices"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/tungnt1203/yuumi/internal/review"
 	"github.com/tungnt1203/yuumi/internal/reviewlog"
 	"github.com/tungnt1203/yuumi/internal/reviewstate"
+	"github.com/tungnt1203/yuumi/internal/sandbox"
 	"github.com/tungnt1203/yuumi/internal/webhook"
 )
 
@@ -82,12 +84,29 @@ func main() {
 	//
 	// token là installation token đã tạo ghClient — clone cũng dùng nó để
 	// đọc được repo private (issue #48).
+	// startSandbox: nil giữ hành vi cũ (lệnh trên code PR chạy thẳng trên
+	// server); SANDBOX=docker cho mỗi job 1 container riêng (issue #78).
+	var startSandbox func(dir string) (sandbox.Env, error)
+	if cfg.Sandbox == "docker" {
+		dockerCfg := sandbox.DockerConfig{Image: cfg.SandboxImage}
+		startSandbox = func(dir string) (sandbox.Env, error) {
+			return sandbox.StartDocker(dockerCfg, dir)
+		}
+		fmt.Println("Sandbox: docker, image", cfg.SandboxImage, "| work dir", cfg.WorkDir)
+	}
+	if cfg.WorkDir != "" {
+		if err := os.MkdirAll(cfg.WorkDir, 0o700); err != nil {
+			log.Fatal("cannot create WORK_DIR: ", err)
+		}
+	}
+
 	newJob := func(ghClient *githubapi.Client, token string, repoFullName string, issueNumber int, placeholderID int64, userCommand string) *review.Job {
 		return &review.Job{
 			GitHub: ghClient,
 			Clone: func(repoFullName, sha string) (string, func(), error) {
-				return gitrepo.CloneRepo(repoFullName, sha, token)
+				return gitrepo.CloneRepo(repoFullName, sha, token, cfg.WorkDir)
 			},
+			StartSandbox:      startSandbox,
 			Reviewer:          reviewer,
 			RepoFullName:      repoFullName,
 			IssueNumber:       issueNumber,

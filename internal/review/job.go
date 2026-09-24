@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/tungnt1203/yuumi/internal/sandbox"
 )
 
 // defaultBundleBudgetChars là ngưỡng mặc định (tính theo số ký tự) cho mỗi
@@ -124,6 +126,12 @@ type Job struct {
 	// BundleCache lưu kết quả từng bundle để resume review bị ngắt (xem
 	// BundleCache, issue #76). nil nghĩa là không bật.
 	BundleCache BundleCache
+
+	// StartSandbox tạo môi trường chạy lệnh trên code PR (gofmt/go vet,
+	// Claude CLI) cho thư mục clone dir — vd 1 container riêng mỗi job
+	// (sandbox.StartDocker, issue #78). nil: chạy thẳng trên máy server
+	// (sandbox.Local).
+	StartSandbox func(dir string) (sandbox.Env, error)
 }
 
 // Run thực hiện review, nên luôn được gọi trong goroutine riêng
@@ -168,10 +176,24 @@ func (j *Job) Run() {
 	}
 	defer cleanup()
 
+	// Mọi lệnh trên code PR (gofmt/go vet, Claude CLI) chạy trong sandbox
+	// của job này (issue #78). Không tạo được thì dừng, không chạy thẳng
+	// trên server.
+	box, err := j.startSandbox(dir)
+	if err != nil {
+		j.reportFailure(fmt.Errorf("không tạo được sandbox: %w", err))
+		return
+	}
+	defer func() {
+		if err := box.Close(); err != nil {
+			fmt.Println("Close sandbox error:", err)
+		}
+	}()
+
 	// Chạy 1 lần cho cả PR (không phụ thuộc bundle nào) — kết quả gofmt/go
 	// vet là thuộc tính của code sau khi đổi, không phải của từng phần diff
 	// bị chia nhỏ (xem issue #8).
-	staticReport := staticCheckReport(dir)
+	staticReport := staticCheckReport(box)
 
 	// Cấu hình riêng của repo (issue #7) — không có file .yuumi.yml (đa số
 	// repo) hay parse lỗi đều không chặn review, chỉ log rồi dùng default.
@@ -277,7 +299,7 @@ func (j *Job) Run() {
 			effectiveBundles = []string{""}
 		}
 
-		merged, hadError, inline, allFindings, anyParsed, allParsed = j.reviewBundles(effectiveBundles, dir, sha, staticReport, repoCfg.Instructions, validationDiff, primer)
+		merged, hadError, inline, allFindings, anyParsed, allParsed = j.reviewBundles(effectiveBundles, box, sha, staticReport, repoCfg.Instructions, validationDiff, primer)
 		if anyParsed {
 			// partial=true khi có bundle KHÔNG đóng góp được vào allFindings
 			// (lỗi hoặc Claude trả văn xuôi tự do) — renderReviewHeader cần
@@ -525,7 +547,7 @@ func (j *Job) diffTruncationWarning(diff string) string {
 // finding nào thì header nói review chưa đủ để kết luận, không được mở đầu
 // bằng "✅ không có vấn đề" (issue #69). Khi đã đếm được N thì cảnh báo
 // đứng trước bảng, vì "Tổng: N" không phải toàn bộ PR (issue #57).
-func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticReport string, repoInstructions string, validationDiff string, primer string) (merged string, hadError bool, inline []pendingComment, allFindings []Finding, anyParsed bool, allParsed bool) {
+func (j *Job) reviewBundles(bundles []string, box sandbox.Env, sha string, staticReport string, repoInstructions string, validationDiff string, primer string) (merged string, hadError bool, inline []pendingComment, allFindings []Finding, anyParsed bool, allParsed bool) {
 	single := len(bundles) == 1
 	sections := make([]string, len(bundles))
 	parsedCount := 0
@@ -547,7 +569,7 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 		} else {
 			start := time.Now()
 			var stats CallStats
-			text, stats, err = j.Reviewer.Review(prompt, dir)
+			text, stats, err = j.Reviewer.Review(prompt, box)
 			duration := time.Since(start)
 
 			// Log response gốc của lần review (JSON nếu Claude làm đúng
@@ -581,7 +603,7 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 			}
 			repaired := false
 			if !ok && strings.TrimSpace(text) != "" {
-				findings, ok = j.repairFindingsFormat(dir, sha, i+1, len(bundles), text)
+				findings, ok = j.repairFindingsFormat(box, sha, i+1, len(bundles), text)
 				repaired = ok
 			}
 			if ok {
@@ -667,10 +689,10 @@ func (j *Job) saveCachedBundle(key, text string, findings []Finding, parsed bool
 //
 // Khác retry trong claudecli.Reviewer: retry đó dành cho lỗi tạm thời của
 // CLI (timeout, mạng). Ở đây CLI đã trả kết quả, chỉ sai format bên trong.
-func (j *Job) repairFindingsFormat(dir, sha string, bundleIndex, bundleTotal int, previous string) ([]Finding, bool) {
+func (j *Job) repairFindingsFormat(box sandbox.Env, sha string, bundleIndex, bundleTotal int, previous string) ([]Finding, bool) {
 	prompt := buildFormatRepairPrompt(previous)
 	start := time.Now()
-	text, stats, err := j.Reviewer.Review(prompt, dir)
+	text, stats, err := j.Reviewer.Review(prompt, box)
 	duration := time.Since(start)
 
 	errMsg := ""
@@ -769,4 +791,13 @@ func skippedNote(skipped []string) string {
 		suffix = fmt.Sprintf(" và %d file khác", len(skipped)-showLimit)
 	}
 	return fmt.Sprintf("_(Đã bỏ qua %d file không cần review: %s%s)_", len(skipped), strings.Join(shown, ", "), suffix)
+}
+
+// startSandbox tạo sandbox cho thư mục clone dir, mặc định chạy thẳng trên
+// máy server khi Job không cấu hình StartSandbox.
+func (j *Job) startSandbox(dir string) (sandbox.Env, error) {
+	if j.StartSandbox == nil {
+		return sandbox.Local(dir), nil
+	}
+	return j.StartSandbox(dir)
 }

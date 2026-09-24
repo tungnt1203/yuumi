@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tungnt1203/yuumi/internal/sandbox"
 )
 
 type fakeGitHubClient struct {
@@ -209,9 +211,9 @@ type fakeReviewer struct {
 	repairPrompts []string
 }
 
-func (f *fakeReviewer) Review(prompt string, dir string) (string, CallStats, error) {
+func (f *fakeReviewer) Review(prompt string, box sandbox.Env) (string, CallStats, error) {
 	f.called = true
-	f.gotDir = dir
+	f.gotDir = box.Dir()
 	attempts := f.attempts
 	if attempts == 0 {
 		attempts = 1
@@ -251,7 +253,7 @@ type scriptedReviewer struct {
 	repairPrompts []string
 }
 
-func (s *scriptedReviewer) Review(prompt string, dir string) (string, CallStats, error) {
+func (s *scriptedReviewer) Review(prompt string, box sandbox.Env) (string, CallStats, error) {
 	if isFormatRepairPrompt(prompt) {
 		s.repairPrompts = append(s.repairPrompts, prompt)
 		if s.repairErr != nil {
@@ -430,7 +432,7 @@ func TestJobRun_ReviewerPanic_Recovered(t *testing.T) {
 		GitHub:        gh,
 		PlaceholderID: 42,
 		Clone:         fakeCloner("/tmp/fake-dir", nil, &cleanupCalled),
-		Reviewer: reviewerFunc(func(prompt, dir string) (string, CallStats, error) {
+		Reviewer: reviewerFunc(func(prompt string, box sandbox.Env) (string, CallStats, error) {
 			panic("unexpected panic")
 		}),
 	}
@@ -483,10 +485,10 @@ func (panickingStateStore) SetLastReviewedSHA(string, int, string) error {
 }
 
 // reviewerFunc cho phép dựng 1 Reviewer từ closure, dùng riêng cho test panic.
-type reviewerFunc func(prompt, dir string) (string, CallStats, error)
+type reviewerFunc func(prompt string, box sandbox.Env) (string, CallStats, error)
 
-func (f reviewerFunc) Review(prompt, dir string) (string, CallStats, error) {
-	return f(prompt, dir)
+func (f reviewerFunc) Review(prompt string, box sandbox.Env) (string, CallStats, error) {
+	return f(prompt, box)
 }
 
 func TestJobRun_LargeDiff_SplitsIntoBundlesAndMergesResults(t *testing.T) {

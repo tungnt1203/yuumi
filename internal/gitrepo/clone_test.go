@@ -10,7 +10,8 @@ import (
 )
 
 // withFakeGit đặt 1 script "git" giả lên đầu PATH: mỗi lần chạy ghi 1 dòng
-// "args=<args> | header=<GIT_CONFIG_VALUE_0> | prompt=<GIT_TERMINAL_PROMPT>"
+// "args=<args> | count=<GIT_CONFIG_COUNT> | header=<GIT_CONFIG_VALUE_0> |
+// prompt=<GIT_TERMINAL_PROMPT>"
 // vào file log rồi thoát 0, để test xem CloneRepo gọi git với args/env nào
 // mà không cần mạng hay repo thật. Trả về đường dẫn file log.
 func withFakeGit(t *testing.T) string {
@@ -22,7 +23,7 @@ func withFakeGit(t *testing.T) string {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "calls.log")
 	script := "#!/bin/sh\n" +
-		`echo "args=$* | header=$GIT_CONFIG_VALUE_0 | prompt=$GIT_TERMINAL_PROMPT" >> "` + logPath + `"` + "\n"
+		`echo "args=$* | count=$GIT_CONFIG_COUNT | header=$GIT_CONFIG_VALUE_0 | prompt=$GIT_TERMINAL_PROMPT" >> "` + logPath + `"` + "\n"
 	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
 		t.Fatalf("cannot write fake git script: %v", err)
 	}
@@ -71,7 +72,7 @@ func TestCloneRepo_TokenOnlyInFetchEnv(t *testing.T) {
 		}
 
 		isFetch := strings.Contains(args, " fetch ")
-		hasHeader := strings.Contains(call, "header="+wantHeader+" |")
+		hasHeader := strings.Contains(call, "count=1 | header="+wantHeader+" |")
 		if isFetch && !hasHeader {
 			t.Errorf("fetch call missing auth header: %q", call)
 		}
@@ -100,8 +101,16 @@ func TestCloneRepo_NoTokenFetchesWithoutAuth(t *testing.T) {
 		if strings.Contains(call, "header=AUTHORIZATION") {
 			t.Errorf("call has auth header without token: %q", call)
 		}
-		if strings.Contains(call, " fetch ") && !strings.Contains(call, "prompt=0") {
+		if !strings.Contains(call, " fetch ") {
+			continue
+		}
+		if !strings.Contains(call, "prompt=0") {
 			t.Errorf("fetch call must set GIT_TERMINAL_PROMPT=0: %q", call)
+		}
+		// COUNT=0 để git bỏ qua GIT_CONFIG_* có sẵn của server
+		// ("stale-header" trong withFakeGit) cả khi không có token.
+		if !strings.Contains(call, "count=0 |") {
+			t.Errorf("fetch without token must set GIT_CONFIG_COUNT=0: %q", call)
 		}
 	}
 }

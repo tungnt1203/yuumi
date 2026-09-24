@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 )
 
 type CommentResponse struct {
@@ -16,6 +17,11 @@ type PullRequestResponse struct {
 	Head struct {
 		SHA string `json:"sha"`
 	} `json:"head"`
+	// Base.SHA là commit của nhánh đích mà PR so sánh tới — dùng để đọc cấu
+	// hình mà tác giả PR không tự sửa được (xem GetPullRequestBaseSHA).
+	Base struct {
+		SHA string `json:"sha"`
+	} `json:"base"`
 	// ChangedFiles là số file GitHub ghi nhận PR đã đổi — dùng để phát hiện
 	// khi GetPullRequestDiff bị GitHub tự giới hạn/cắt bớt (xem
 	// GetPullRequestChangedFilesCount).
@@ -218,6 +224,48 @@ func (c *Client) GetPullRequestHeadSHA(repoFullName string, pullRequestNumber in
 		return "", err
 	}
 	return pr.Head.SHA, nil
+}
+
+// GetPullRequestBaseSHA trả về SHA commit base của PR. review.Job đọc
+// block_severity trong .yuumi.yml ở commit này thay vì ở head, để tác giả
+// PR không tự tắt được severity gate (issue #60).
+func (c *Client) GetPullRequestBaseSHA(repoFullName string, pullRequestNumber int) (string, error) {
+	pr, err := c.getPullRequest(repoFullName, pullRequestNumber)
+	if err != nil {
+		return "", err
+	}
+	return pr.Base.SHA, nil
+}
+
+// GetFileContent đọc nội dung file path tại ref (SHA/nhánh) qua Contents
+// API, dạng raw. File không tồn tại (404) trả found=false và err=nil — đa
+// số repo không có file cấu hình, đó không phải lỗi.
+func (c *Client) GetFileContent(repoFullName string, path string, ref string) (content []byte, found bool, err error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/contents/%s?ref=%s", repoFullName, path, neturl.QueryEscape(ref))
+	req, err := c.newRequest("GET", url, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	req.Header.Set("Accept", "application/vnd.github.raw+json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, false, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, false, fmt.Errorf("cannot read file response: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, false, nil
+	}
+	if resp.StatusCode >= 300 {
+		return nil, false, fmt.Errorf("github api error %d: %s", resp.StatusCode, string(body))
+	}
+	return body, true, nil
 }
 
 // GetPullRequestChangedFilesCount trả về số file GitHub ghi nhận PR đã đổi.

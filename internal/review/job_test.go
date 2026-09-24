@@ -46,6 +46,13 @@ type fakeGitHubClient struct {
 	// checkRunID là ID CreateCheckRun trả về (0 mặc định vẫn hợp lệ với
 	// test không quan tâm check run: Job coi 0 là "không tạo được" và bỏ
 	// qua bước complete). completedCheckRuns ghi lại từng lần complete.
+	// baseSHA/baseFiles giả lập PR base và file ở base (severity gate,
+	// issue #60). baseFiles key là "<ref>:<path>"; không có key = 404.
+	baseSHA    string
+	baseSHAErr error
+	baseFiles  map[string]string
+	fileErr    error
+
 	checkRunID          int64
 	createCheckRunErr   error
 	createCheckRunSHAs  []string
@@ -103,6 +110,21 @@ func (f *fakeGitHubClient) CreateReview(repoFullName string, pullRequestNumber i
 		commentsJSON: string(commentsJSON),
 	})
 	return f.createReviewErr
+}
+
+func (f *fakeGitHubClient) GetPullRequestBaseSHA(repoFullName string, pullRequestNumber int) (string, error) {
+	return f.baseSHA, f.baseSHAErr
+}
+
+func (f *fakeGitHubClient) GetFileContent(repoFullName string, path string, ref string) ([]byte, bool, error) {
+	if f.fileErr != nil {
+		return nil, false, f.fileErr
+	}
+	content, ok := f.baseFiles[ref+":"+path]
+	if !ok {
+		return nil, false, nil
+	}
+	return []byte(content), true, nil
 }
 
 func (f *fakeGitHubClient) CreateCheckRun(repoFullName string, headSHA string, name string) (int64, error) {

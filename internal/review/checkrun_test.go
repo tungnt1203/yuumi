@@ -165,8 +165,133 @@ func TestJobRun_CheckRun_PanicIsNeutral(t *testing.T) {
 // Một bundle parse được, một bundle văn xuôi: title không được nói như thể
 // đã đếm đủ góp ý.
 func TestReviewedCheckRunResult_PartialTitle(t *testing.T) {
-	got := reviewedCheckRunResult(false, true, true, 1, "header", "https://example/c")
+	got := reviewedCheckRunResult(reviewOutcome{
+		Parsed:     true,
+		Partial:    true,
+		Findings:   []Finding{{Severity: "low"}},
+		Header:     "header",
+		CommentURL: "https://example/c",
+	})
 	if got.Conclusion != "success" || got.Title != "1 góp ý, còn phần chưa đếm" {
 		t.Errorf("got conclusion=%q title=%q, want success / %q", got.Conclusion, got.Title, "1 góp ý, còn phần chưa đếm")
+	}
+}
+
+// gateJob chạy 1 review trả đúng 1 finding HIGH, với .yuumi.yml ở base (sha
+// "base1") và ở head (thư mục clone) tuỳ test. Trả về lần complete check run.
+func gateJob(t *testing.T, gh *fakeGitHubClient, headConfig string) completedCheckRun {
+	t.Helper()
+	dir := t.TempDir()
+	if headConfig != "" {
+		dir = writeRepoConfig(t, headConfig)
+	}
+	gh.headSHA = "abc123"
+	gh.diff = "diff --git a/x b/x"
+	gh.checkRunID = 7
+	if gh.baseSHA == "" {
+		gh.baseSHA = "base1"
+	}
+	cleanupCalled := false
+	job := &Job{
+		GitHub:        gh,
+		Clone:         fakeCloner(dir, nil, &cleanupCalled),
+		Reviewer:      &fakeReviewer{result: `[{"category":"bug","severity":"high","message":"nil pointer"}]`},
+		RepoFullName:  "octo/repo",
+		IssueNumber:   5,
+		PlaceholderID: 42,
+	}
+	job.Run()
+	return onlyCompletedCheckRun(t, gh)
+}
+
+func TestSeverityGate_BlockedFindingFails(t *testing.T) {
+	got := gateJob(t, &fakeGitHubClient{
+		baseFiles: map[string]string{"base1:.yuumi.yml": "block_severity: [critical, high]\n"},
+	}, "")
+
+	if got.conclusion != "failure" {
+		t.Errorf("conclusion = %q, want failure", got.conclusion)
+	}
+	if got.title != "1 góp ý ở mức chặn merge (CRITICAL/HIGH)" {
+		t.Errorf("title = %q", got.title)
+	}
+	if !strings.Contains(got.summary, "Severity gate") {
+		t.Errorf("summary should explain the gate: %s", got.summary)
+	}
+}
+
+func TestSeverityGate_FindingBelowThresholdSucceeds(t *testing.T) {
+	got := gateJob(t, &fakeGitHubClient{
+		baseFiles: map[string]string{"base1:.yuumi.yml": "block_severity: [critical]\n"},
+	}, "")
+
+	if got.conclusion != "success" {
+		t.Errorf("conclusion = %q, want success (HIGH không nằm trong [critical])", got.conclusion)
+	}
+}
+
+// Không set block_severity: hành vi cũ, có finding vẫn success.
+func TestSeverityGate_NotConfiguredSucceeds(t *testing.T) {
+	got := gateJob(t, &fakeGitHubClient{}, "")
+
+	if got.conclusion != "success" || got.title != "1 góp ý" {
+		t.Errorf("got conclusion=%q title=%q, want success / 1 góp ý", got.conclusion, got.title)
+	}
+}
+
+// Tác giả PR sửa .yuumi.yml ở head để tắt gate: không có tác dụng, gate đọc
+// từ base.
+func TestSeverityGate_HeadConfigCannotDisableGate(t *testing.T) {
+	got := gateJob(t, &fakeGitHubClient{
+		baseFiles: map[string]string{"base1:.yuumi.yml": "block_severity: [high]\n"},
+	}, "block_severity: []\n")
+
+	if got.conclusion != "failure" {
+		t.Errorf("conclusion = %q, want failure (head config must not override base)", got.conclusion)
+	}
+}
+
+// Ngược lại: PR tự thêm gate ở head cũng không có hiệu lực cho tới khi merge.
+func TestSeverityGate_HeadConfigCannotEnableGate(t *testing.T) {
+	got := gateJob(t, &fakeGitHubClient{}, "block_severity: [high]\n")
+
+	if got.conclusion != "success" {
+		t.Errorf("conclusion = %q, want success (gate chỉ đọc từ base)", got.conclusion)
+	}
+}
+
+// Không đọc được config ở base: gate không áp dụng (không fail oan mọi PR vì
+// API lỗi) nhưng phải nói rõ trên check run.
+func TestSeverityGate_BaseConfigErrorSkipsGateWithNote(t *testing.T) {
+	got := gateJob(t, &fakeGitHubClient{fileErr: errors.New("github 502")}, "")
+
+	if got.conclusion != "success" {
+		t.Errorf("conclusion = %q, want success", got.conclusion)
+	}
+	if !strings.Contains(got.summary, "severity gate không áp dụng") {
+		t.Errorf("summary should warn gate was skipped: %s", got.summary)
+	}
+}
+
+// Có finding bị chặn thì failure, kể cả khi 1 phần review lỗi.
+func TestReviewedCheckRunResult_BlockedWinsOverError(t *testing.T) {
+	got := reviewedCheckRunResult(reviewOutcome{
+		HadError:      true,
+		Parsed:        true,
+		Findings:      []Finding{{Severity: "Critical "}},
+		BlockSeverity: []string{"critical"},
+	})
+	if got.Conclusion != "failure" {
+		t.Errorf("conclusion = %q, want failure", got.Conclusion)
+	}
+}
+
+func TestNormalizeSeverities(t *testing.T) {
+	valid, invalid := normalizeSeverities([]string{" High", "critical", "hight", "", "HIGH"})
+	if strings.Join(valid, ",") != "high,critical" {
+		t.Errorf("valid = %v, want [high critical]", valid)
+	}
+	if len(invalid) != 1 || invalid[0] != "hight" {
+		t.Errorf("invalid = %v, want [hight]", invalid)
 	}
 }

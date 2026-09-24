@@ -34,6 +34,8 @@ type GitHubClient interface {
 	GetPullRequestDiff(repoFullName string, pullRequestNumber int) (string, error)
 	GetCompareDiff(repoFullName string, baseSHA string, headSHA string) (string, error)
 	GetPullRequestChangedFilesCount(repoFullName string, pullRequestNumber int) (int, error)
+	GetPullRequestBaseSHA(repoFullName string, pullRequestNumber int) (string, error)
+	GetFileContent(repoFullName string, path string, ref string) (content []byte, found bool, err error)
 	EditComment(repoFullName string, commentID int64, body string) error
 	CreateReview(repoFullName string, pullRequestNumber int, commitSHA string, body string, commentsJSON []byte) error
 	CreateCheckRun(repoFullName string, headSHA string, name string) (int64, error)
@@ -307,7 +309,17 @@ func (j *Job) Run() {
 	}
 	posted = true
 	fmt.Println("Comment posted successfully")
-	checkResult = reviewedCheckRunResult(hadError, anyParsed, anyParsed && !allParsed, len(allFindings), header, j.reviewCommentURL())
+	blockSeverity, gateNote := j.loadBlockSeverity()
+	checkResult = reviewedCheckRunResult(reviewOutcome{
+		HadError:      hadError,
+		Parsed:        anyParsed,
+		Partial:       anyParsed && !allParsed,
+		Findings:      allFindings,
+		Header:        header,
+		CommentURL:    j.reviewCommentURL(),
+		BlockSeverity: blockSeverity,
+		GateNote:      gateNote,
+	})
 
 	if len(inline) > 0 {
 		// Best-effort, KHÔNG return/chặn gì nếu lỗi — comment tổng hợp

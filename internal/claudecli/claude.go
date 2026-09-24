@@ -6,11 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"time"
 
 	"github.com/tungnt1203/yuumi/internal/procenv"
 	"github.com/tungnt1203/yuumi/internal/review"
+	"github.com/tungnt1203/yuumi/internal/sandbox"
 )
 
 type ClaudeResult struct {
@@ -104,7 +104,7 @@ func NewReviewer() *Reviewer {
 // exit != 0 nhưng vẫn in JSON ra stdout. Lần thử bị timeout/kill giữa chừng
 // không có output nên không đếm được — con số này có thể thấp hơn thực tế
 // (issue #63).
-func (r *Reviewer) Review(prompt string, dir string) (result string, stats review.CallStats, err error) {
+func (r *Reviewer) Review(prompt string, box sandbox.Env) (result string, stats review.CallStats, err error) {
 	maxAttempts := r.MaxAttempts
 	if maxAttempts <= 0 {
 		maxAttempts = defaultMaxAttempts
@@ -121,7 +121,7 @@ func (r *Reviewer) Review(prompt string, dir string) (result string, stats revie
 	var lastErr error
 	var usage review.Usage
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		res, err, retryable := runOnce(prompt, dir)
+		res, err, retryable := runOnce(prompt, box)
 		usage = usage.Add(res.usage())
 		stats = review.CallStats{Attempts: attempt, NumTurns: res.NumTurns, Usage: usage}
 		if err == nil {
@@ -181,13 +181,11 @@ func claudeArgs(prompt string) []string {
 // res là output đã parse, kể cả khi is_error=true hoặc lệnh thoát exit != 0
 // mà stdout vẫn là JSON (để caller đọc num_turns, usage); zero value nếu
 // không có output JSON để đọc.
-func runOnce(prompt string, dir string) (res ClaudeResult, err error, retryable bool) {
+func runOnce(prompt string, box sandbox.Env) (res ClaudeResult, err error, retryable bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "claude", claudeArgs(prompt)...)
-	cmd.Dir = dir
-	cmd.Env = procenv.WithoutSecrets(os.Environ())
+	cmd := box.Command(ctx, procenv.WithoutSecrets(os.Environ()), "claude", claudeArgs(prompt)...)
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

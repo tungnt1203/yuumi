@@ -21,6 +21,7 @@ import (
 	"sort"
 
 	"github.com/tungnt1203/yuumi/internal/review"
+	"github.com/tungnt1203/yuumi/internal/sandbox"
 )
 
 // Fixture là 1 fixture đánh giá: thư mục con của fixtures root, chứa
@@ -123,7 +124,7 @@ func Run(reviewer review.Reviewer, f Fixture) (Result, error) {
 	expected, _ := os.ReadFile(filepath.Join(f.Dir, "expected.md"))
 
 	prompt := review.BuildReviewPrompt("review", diff, "", "", "")
-	response, stats, err := reviewer.Review(prompt, dir)
+	response, stats, err := reviewer.Review(prompt, sandbox.Local(dir))
 	if err != nil {
 		return Result{Fixture: f, Diff: diff, Expected: string(expected)}, err
 	}

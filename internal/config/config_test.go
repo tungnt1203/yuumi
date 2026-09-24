@@ -159,3 +159,38 @@ func TestLoad_MaxDiffBundleCharsAndMaxConcurrentReviews_Independent(t *testing.T
 			cfg.MaxDiffBundleChars, cfg.MaxConcurrentReviews)
 	}
 }
+
+func TestLoad_Sandbox(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     map[string]string
+		wantErr bool
+	}{
+		{"unset keeps local", map[string]string{}, false},
+		{"docker with image and work dir", map[string]string{"SANDBOX": "docker", "SANDBOX_IMAGE": "yuumi:dev", "WORK_DIR": "/srv/yuumi/work"}, false},
+		// Thiếu image/work dir thì server không khởi động, thay vì mọi review
+		// đều fail lúc tạo sandbox.
+		{"docker without image", map[string]string{"SANDBOX": "docker", "WORK_DIR": "/srv/yuumi/work"}, true},
+		{"docker without work dir", map[string]string{"SANDBOX": "docker", "SANDBOX_IMAGE": "yuumi:dev"}, true},
+		// Gõ sai (vd "Docker") không được âm thầm chạy code PR trên server.
+		{"unknown mode", map[string]string{"SANDBOX": "Docker"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setRequiredEnv(t)
+			for _, k := range []string{"SANDBOX", "SANDBOX_IMAGE", "WORK_DIR"} {
+				t.Setenv(k, "")
+			}
+			for k, v := range tt.env {
+				t.Setenv(k, v)
+			}
+			cfg, err := Load()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Load() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err == nil && cfg.Sandbox != tt.env["SANDBOX"] {
+				t.Errorf("Sandbox = %q, want %q", cfg.Sandbox, tt.env["SANDBOX"])
+			}
+		})
+	}
+}

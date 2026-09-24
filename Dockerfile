@@ -50,6 +50,26 @@ RUN set -eu; \
     installed="$(claude --version | cut -d' ' -f1)"; \
     [ "${installed}" = "${CLAUDE_VERSION}" ] || { echo "claude version ${installed} != ${CLAUDE_VERSION}" >&2; exit 1; }
 
+# Docker CLI để server tạo container sandbox cho mỗi job review (SANDBOX=docker,
+# issue #78) qua docker.sock mount từ host. Chỉ lấy binary `docker` (client),
+# không có daemon. Docker không công bố checksum cho bản static: sha256 dưới
+# đây tính lúc ghim bản 29.8.1, nâng phiên bản thì tải về và tính lại.
+ARG DOCKER_CLI_VERSION=29.8.1
+ARG DOCKER_CLI_SHA256_AMD64=d8db66739d2e28d4933786d73e918d9be643a67fbd835db1bf740d650a259e70
+ARG DOCKER_CLI_SHA256_ARM64=667395fbffab52901b80181dfbb39ea76da2fbd7642c4fbddd24e42146b07b48
+RUN set -eu; \
+    case "${TARGETARCH:-amd64}" in \
+      amd64) arch=x86_64;  sha="${DOCKER_CLI_SHA256_AMD64}" ;; \
+      arm64) arch=aarch64; sha="${DOCKER_CLI_SHA256_ARM64}" ;; \
+      *) echo "unsupported arch: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/docker.tgz \
+      "https://download.docker.com/linux/static/stable/${arch}/docker-${DOCKER_CLI_VERSION}.tgz"; \
+    echo "${sha}  /tmp/docker.tgz" | sha256sum -c -; \
+    tar -xzf /tmp/docker.tgz -C /usr/local/bin --strip-components=1 docker/docker; \
+    rm /tmp/docker.tgz; \
+    docker --version
+
 # Không chạy bằng root: code PR không tin cậy được clone và chạy go vet
 # trong container này.
 RUN useradd --create-home --uid 10001 yuumi \

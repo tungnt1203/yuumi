@@ -17,9 +17,13 @@ import (
 // remote: URL remote nằm trong .git/config của thư mục clone, mà thư mục đó
 // được giao cho Claude CLI đọc — code PR không tin cậy có thể dụ Claude đọc
 // ra token.
-func CloneRepo(repoFullName string, sha string, token string) (dir string, cleanup func(), err error) {
+//
+// baseDir là thư mục chứa thư mục clone, rỗng thì dùng thư mục tạm của hệ
+// thống. Chạy sandbox Docker (issue #78) thì baseDir phải là thư mục mount
+// từ host, để Docker daemon mount được thư mục clone vào container sandbox.
+func CloneRepo(repoFullName string, sha string, token string, baseDir string) (dir string, cleanup func(), err error) {
 	repoURL := fmt.Sprintf("https://github.com/%s.git", repoFullName)
-	dir, err = os.MkdirTemp("", "yuumi-review-*")
+	dir, err = os.MkdirTemp(baseDir, "yuumi-review-*")
 	if err != nil {
 		return "", nil, err
 	}

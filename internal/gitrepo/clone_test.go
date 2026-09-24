@@ -50,7 +50,7 @@ func TestCloneRepo_TokenOnlyInFetchEnv(t *testing.T) {
 	logPath := withFakeGit(t)
 	const token = "ghs_supersecret"
 
-	dir, cleanup, err := CloneRepo("owner/private-repo", "abc123", token)
+	dir, cleanup, err := CloneRepo("owner/private-repo", "abc123", token, "")
 	if err != nil {
 		t.Fatalf("CloneRepo() error = %v", err)
 	}
@@ -91,7 +91,7 @@ func TestCloneRepo_TokenOnlyInFetchEnv(t *testing.T) {
 func TestCloneRepo_NoTokenFetchesWithoutAuth(t *testing.T) {
 	logPath := withFakeGit(t)
 
-	_, cleanup, err := CloneRepo("owner/public-repo", "abc123", "")
+	_, cleanup, err := CloneRepo("owner/public-repo", "abc123", "", "")
 	if err != nil {
 		t.Fatalf("CloneRepo() error = %v", err)
 	}
@@ -112,5 +112,19 @@ func TestCloneRepo_NoTokenFetchesWithoutAuth(t *testing.T) {
 		if !strings.Contains(call, "count=0 |") {
 			t.Errorf("fetch without token must set GIT_CONFIG_COUNT=0: %q", call)
 		}
+	}
+}
+
+func TestCloneRepo_UsesBaseDir(t *testing.T) {
+	withFakeGit(t)
+	base := t.TempDir()
+
+	dir, cleanup, err := CloneRepo("owner/repo", "abc123", "", base)
+	if err != nil {
+		t.Fatalf("CloneRepo() error = %v", err)
+	}
+	defer cleanup()
+	if filepath.Dir(dir) != base {
+		t.Errorf("clone dir = %q, want it inside %q", dir, base)
 	}
 }

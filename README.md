@@ -128,6 +128,9 @@ ALLOWED_USERS=<username1,username2,...>   # danh sách GitHub username được 
 | `REVIEW_LOG_DIR` | `logs/reviews` | Thư mục ghi log mỗi lần gọi Claude CLI (xem mục Log review). |
 | `REVIEW_STATE_FILE` | `logs/review-state.json` | File lưu SHA đã review gần nhất cho từng PR (xem mục review lần 2 trở đi). |
 | `BUNDLE_CACHE_DIR` | `logs/bundle-cache` | Thư mục lưu kết quả từng phần (bundle) đã review xong, để review bị ngắt giữa chừng chạy lại không phải review lại phần đã xong. |
+| `SANDBOX` | _(rỗng)_ | `docker`: mỗi job review chạy `gofmt`/`go vet` và Claude CLI trong một container riêng (xem [Sandbox mỗi job](#sandbox-mỗi-job-sandboxdocker)). Rỗng: chạy thẳng trên máy server. Giá trị khác là lỗi khởi động. |
+| `SANDBOX_IMAGE` | _(rỗng)_ | Image của container sandbox, bắt buộc khi `SANDBOX=docker`. Dùng chính image của server. |
+| `WORK_DIR` | thư mục tạm hệ thống | Thư mục chứa các bản clone PR. Bắt buộc khi `SANDBOX=docker`. |
 
 ## Cấu hình review riêng cho từng repo (`.yuumi.yml`)
 
@@ -186,7 +189,31 @@ docker run -d --name yuumi -p 8080:8080 \
 - `GET /health` trả `503` kèm lý do nếu Claude CLI chưa đăng nhập hoặc GitHub App auth lỗi; Docker `HEALTHCHECK` dùng chính endpoint này. Server check lại mỗi 5 phút, nên trạng thái có thể trễ tối đa chừng đó.
 - Nâng phiên bản Claude CLI: sửa `CLAUDE_VERSION` và 2 checksum `CLAUDE_SHA256_AMD64`/`CLAUDE_SHA256_ARM64` trong Dockerfile (lấy từ `https://downloads.claude.ai/claude-code-releases/<version>/manifest.json`), nhưng kiểm chứng lại các flag bảo mật ở mục [Chạy an toàn trên code PR không tin cậy](#chạy-an-toàn-trên-code-pr-không-tin-cậy) trước. Build tự kiểm sha256 và `claude --version` phải khớp bản ghim.
 
-Image hiện chạy cả server lẫn review job trong cùng container. Tách mỗi review job ra một container ngắn hạn riêng (giới hạn tài nguyên/network, không có secret) là giai đoạn 2 của issue #78, dùng lại chính image này.
+### Sandbox mỗi job (`SANDBOX=docker`)
+
+Mặc định, `gofmt`/`go vet` và Claude CLI chạy ngay trong container server, trên code PR không tin cậy. Bật `SANDBOX=docker` thì mỗi job review có một container riêng, tạo từ chính image này và xoá khi job xong (issue #78, bước 1):
+
+- Thư mục code PR mount **chỉ đọc**, root filesystem chỉ đọc. Chỉ `/tmp` và `$HOME` ghi được, dạng tmpfs, mất khi container bị xoá.
+- `--cap-drop ALL`, `no-new-privileges`, giới hạn 2 GB RAM, 2 CPU, 512 tiến trình.
+- Không có secret nào của server. Chỉ các biến trong allowlist (`forwardEnvKeys` trong `internal/sandbox/docker.go`: credential Claude và cấu hình Go) được chuyển vào từng lệnh, dạng `-e KEY` nên giá trị không nằm trong args.
+- Server vẫn tự clone (`git fetch` không chạy code PR), nên installation token không vào sandbox.
+- Chưa làm: mạng của sandbox chưa bị giới hạn (bước 2), và credential Claude vẫn nằm trong sandbox (bước 3).
+
+```bash
+WORK="$PWD/work"   # đường dẫn trên host
+docker run -d --name yuumi -p 8080:8080 \
+  ... các biến như trên ... \
+  -e SANDBOX=docker -e SANDBOX_IMAGE=yuumi -e WORK_DIR="$WORK" \
+  -v "$WORK:$WORK" \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  --group-add "$(stat -c %g /var/run/docker.sock)" \
+  yuumi
+```
+
+- **`WORK_DIR` phải mount ở cùng đường dẫn** trên host và trong container server. Docker daemon hiểu đường dẫn mount theo host, nên server clone vào `$WORK/...` thì sandbox mount được đúng thư mục đó.
+- **`docker.sock`**: user `yuumi` cần thuộc nhóm sở hữu socket. Trên Linux là gid của nhóm `docker` (lệnh `stat` ở trên). Trên Docker Desktop (macOS) socket thuộc `root:root`, dùng `--group-add 0`. Lưu ý: ai chiếm được tiến trình server thì có quyền như root trên host qua socket này. Code PR thì chạy trong sandbox, không có socket.
+- Không tạo được sandbox (vd Docker daemon không chạy) thì review báo thất bại, **không** chạy code PR thẳng trên server.
+- Container sandbox có nhãn `yuumi.sandbox=1` và tự thoát sau tối đa 2 giờ nếu server chết giữa chừng. Dọn tay: `docker rm -f $(docker ps -aq --filter label=yuumi.sandbox=1)`.
 
 ## Cách hoạt động chi tiết
 
@@ -243,7 +270,7 @@ Code của PR có thể đến từ bất kỳ ai, nên mọi tiến trình con 
 - Installation token chỉ được truyền cho riêng lệnh `git fetch` (qua `GIT_CONFIG_*`, header `Authorization`), không nhúng vào URL remote. Vì vậy token không nằm trong `.git/config` của thư mục clone mà Claude CLI đọc, cũng không nằm trong args của tiến trình.
 - Claude CLI mặc định từ chối `Read`/`Grep`/`Glob` ra ngoài thư mục review, kể cả qua symlink trong repo (nên không đọc được file private key, `.env` hay `/proc/<pid>/environ` của server). **Không thêm `additionalDirectories` hay rule `allow` cho Read/Grep/Glob vào `~/.claude/settings.json` của user chạy server** — làm vậy là mở lại đường đọc secret.
 
-Còn lại cho giai đoạn 2 (sandbox riêng mỗi job): `CLAUDE.md` của repo vẫn được Claude CLI đọc, và các tiến trình con vẫn chạy cùng user/filesystem/network với server.
+Giai đoạn 2: bật `SANDBOX=docker` để các tiến trình con chạy trong container riêng mỗi job, không cùng filesystem với server (xem [Sandbox mỗi job](#sandbox-mỗi-job-sandboxdocker)). Còn lại: `CLAUDE.md` của repo vẫn được Claude CLI đọc, mạng của sandbox chưa bị giới hạn.
 
 </details>
 

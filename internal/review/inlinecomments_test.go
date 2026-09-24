@@ -422,6 +422,59 @@ func TestLocateExistingCode_MultipleMatches(t *testing.T) {
 	if _, _, ok := locateExistingCode(fd, want, 0); ok {
 		t.Error("hint 0 with 3 matches: want ok=false")
 	}
+	if start, _, ok := locateExistingCode(fd, []string{"y := 1"}, 0); !ok || start != 2 {
+		t.Errorf("hint 0 with a single match: got start=%d ok=%v, want 2", start, ok)
+	}
+}
+
+// Claude để line=0 (vd đường sửa định dạng) nhưng existing_code khớp đúng
+// 1 chỗ: vẫn gắn inline.
+func TestSplitFindingsForPosting_ExistingCodeWithoutLine_GoesInline(t *testing.T) {
+	findings := []Finding{
+		{File: "main.go", Severity: "low", Message: "m", ExistingCode: "return x"},
+	}
+
+	inline, general := splitFindingsForPosting(twoHunkDiff, findings)
+
+	if len(general) != 0 || len(inline) != 1 || inline[0].Line != 11 {
+		t.Fatalf("inline = %+v general = %d, want 1 inline at line 11", inline, len(general))
+	}
+}
+
+// existing_code chỉ chép dòng đầu nhưng Claude báo end_line: giữ độ dài
+// khoảng, dời theo chỗ khớp (line 3..4 báo lệch, khớp thật ở 10 → 10..11).
+func TestSplitFindingsForPosting_ExistingCodeFirstLineOnly_ShiftsEndLine(t *testing.T) {
+	findings := []Finding{
+		{File: "main.go", Line: 9, EndLine: 10, Severity: "low", Message: "m", ExistingCode: "func f() {", Suggestion: "func f() int {\n\treturn x"},
+	}
+
+	inline, _ := splitFindingsForPosting(twoHunkDiff, findings)
+
+	if len(inline) != 1 || inline[0].StartLine != 10 || inline[0].Line != 11 {
+		t.Fatalf("inline = %+v, want range 10..11", inline)
+	}
+}
+
+// Dòng trống giữa existing_code khớp với dòng context trống trong diff
+// (diff ghi là 1 dấu cách).
+func TestSplitFindingsForPosting_ExistingCodeWithBlankLine(t *testing.T) {
+	diff := "diff --git a/main.go b/main.go\n" +
+		"--- a/main.go\n" +
+		"+++ b/main.go\n" +
+		"@@ -1,3 +1,4 @@\n" +
+		" a := 1\n" +
+		" \n" +
+		"+b := 2\n" +
+		" c := 3"
+	findings := []Finding{
+		{File: "main.go", Line: 1, Severity: "low", Message: "m", ExistingCode: "a := 1\n\nb := 2"},
+	}
+
+	inline, _ := splitFindingsForPosting(diff, findings)
+
+	if len(inline) != 1 || inline[0].StartLine != 1 || inline[0].Line != 3 {
+		t.Fatalf("inline = %+v, want range 1..3", inline)
+	}
 }
 
 // existing_code chỉ gồm "}" không đủ để định vị: bỏ qua, tin Line như cũ.

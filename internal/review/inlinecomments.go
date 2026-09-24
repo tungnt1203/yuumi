@@ -45,7 +45,11 @@ func splitFindingsForPosting(diff string, findings []Finding) (inline []pendingC
 	index := buildFileDiffIndex(diff)
 
 	for _, f := range findings {
-		if f.File == "" || f.Line <= 0 {
+		code := codeLines(f.ExistingCode)
+		useCode := hasDistinctiveLine(code)
+		// Line <= 0 vẫn gắn inline được nếu existing_code định vị được
+		// (khớp đúng 1 chỗ, xem locateExistingCode).
+		if f.File == "" || (f.Line <= 0 && !useCode) {
 			general = append(general, f)
 			continue
 		}
@@ -54,7 +58,7 @@ func splitFindingsForPosting(diff string, findings []Finding) (inline []pendingC
 			general = append(general, f)
 			continue
 		}
-		if code := codeLines(f.ExistingCode); hasDistinctiveLine(code) {
+		if useCode {
 			start, end, ok := locateExistingCode(fd, code, f.Line)
 			if !ok {
 				// Đoạn code Claude trích không có trong diff: gắn theo số
@@ -62,10 +66,17 @@ func splitFindingsForPosting(diff string, findings []Finding) (inline []pendingC
 				general = append(general, f)
 				continue
 			}
-			f.Line, f.EndLine = start, 0
-			if end > start {
+			switch {
+			case end > start:
 				f.EndLine = end
+			case f.Line > 0 && f.EndLine > f.Line:
+				// existing_code chỉ chép dòng đầu của khoảng Claude báo:
+				// giữ độ dài khoảng đó, dời theo chỗ khớp.
+				f.EndLine += start - f.Line
+			default:
+				f.EndLine = 0
 			}
+			f.Line = start
 		}
 		if _, ok := fd.LineAtNew(f.Line); !ok {
 			general = append(general, f)

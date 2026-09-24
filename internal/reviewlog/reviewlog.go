@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/tungnt1203/yuumi/internal/review"
 )
 
 // defaultDir dùng khi FileLogger.Dir rỗng.
@@ -43,11 +45,26 @@ type entry struct {
 	Attempts int `json:"attempts"`
 
 	// NumTurns là số turn Claude CLI dùng ở lần gọi cuối để ra được kết
-	// quả/lỗi này (0 nếu lỗi trước khi có output để đọc, vd lệnh chạy thất
-	// bại). Proxy rẻ để biết model có thực sự đọc thêm file ngoài diff hay
+	// quả/lỗi này (0 nếu không có output JSON để đọc, vd timeout/kill).
+	// Proxy rẻ để biết model có thực sự đọc thêm file ngoài diff hay
 	// chỉ review mù trên diff — num_turns thấp bất thường trên 1 bundle
 	// nhiều file là dấu hiệu đáng ngờ (xem claudecli.Reviewer, issue #20).
 	NumTurns int `json:"num_turns"`
+
+	// Usage là token/chi phí của lần gọi này, cộng dồn qua retry (issue
+	// #63). Toàn 0 khi Reviewer không báo được usage — review vẫn chạy
+	// bình thường, chỉ thiếu số liệu.
+	Usage usage `json:"usage"`
+}
+
+// usage là bản ghi của review.Usage. Tách riêng để json tag nằm ở package
+// lưu trữ, không gắn vào kiểu domain của review.
+type usage struct {
+	InputTokens              int     `json:"input_tokens"`
+	CacheCreationInputTokens int     `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int     `json:"cache_read_input_tokens"`
+	OutputTokens             int     `json:"output_tokens"`
+	CostUSD                  float64 `json:"cost_usd"`
 }
 
 // FileLogger implement review.ReviewLogger bằng cách ghi mỗi lần gọi thành
@@ -69,7 +86,7 @@ func NewFileLogger(dir string) *FileLogger {
 	return &FileLogger{Dir: dir}
 }
 
-func (l *FileLogger) LogReview(repoFullName string, issueNumber int, sha string, bundleIndex, bundleTotal int, prompt, response, errMsg string, duration time.Duration, attempts int, numTurns int) {
+func (l *FileLogger) LogReview(repoFullName string, issueNumber int, sha string, bundleIndex, bundleTotal int, prompt, response, errMsg string, duration time.Duration, stats review.CallStats) {
 	dir := l.Dir
 	if dir == "" {
 		dir = defaultDir
@@ -90,8 +107,15 @@ func (l *FileLogger) LogReview(repoFullName string, issueNumber int, sha string,
 		Response:     response,
 		Error:        errMsg,
 		DurationMs:   duration.Milliseconds(),
-		Attempts:     attempts,
-		NumTurns:     numTurns,
+		Attempts:     stats.Attempts,
+		NumTurns:     stats.NumTurns,
+		Usage: usage{
+			InputTokens:              stats.Usage.InputTokens,
+			CacheCreationInputTokens: stats.Usage.CacheCreationInputTokens,
+			CacheReadInputTokens:     stats.Usage.CacheReadInputTokens,
+			OutputTokens:             stats.Usage.OutputTokens,
+			CostUSD:                  stats.Usage.CostUSD,
+		},
 	}
 
 	data, err := json.MarshalIndent(e, "", "  ")

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tungnt1203/yuumi/internal/review"
 )
 
 // withFakeClaude tạo 1 script tên "claude" trong thư mục tạm, chèn thư mục
@@ -63,18 +65,18 @@ func TestReview_Success(t *testing.T) {
 echo '{"type":"result","subtype":"success","is_error":false,"result":"looks good","num_turns":3}'
 `)
 
-	got, attempts, numTurns, err := (&Reviewer{}).Review("review this", t.TempDir())
+	got, stats, err := (&Reviewer{}).Review("review this", t.TempDir())
 	if err != nil {
 		t.Fatalf("Review() unexpected error: %v", err)
 	}
 	if got != "looks good" {
 		t.Errorf("Review() = %q, want %q", got, "looks good")
 	}
-	if attempts != 1 {
-		t.Errorf("Review() attempts = %d, want 1 (no retry needed)", attempts)
+	if stats.Attempts != 1 {
+		t.Errorf("Review() attempts = %d, want 1 (no retry needed)", stats.Attempts)
 	}
-	if numTurns != 3 {
-		t.Errorf("Review() numTurns = %d, want 3", numTurns)
+	if stats.NumTurns != 3 {
+		t.Errorf("Review() numTurns = %d, want 3", stats.NumTurns)
 	}
 }
 
@@ -83,7 +85,7 @@ func TestReview_ClaudeReportsError_DoesNotRetry(t *testing.T) {
 	withFakeClaude(t, countingScript(counter, `echo '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"gave up","num_turns":2}'`))
 
 	r := &Reviewer{sleep: noSleep}
-	_, attempts, numTurns, err := r.Review("review this", t.TempDir())
+	_, stats, err := r.Review("review this", t.TempDir())
 	if err == nil {
 		t.Fatal("Review() expected error when is_error is true, got nil")
 	}
@@ -93,12 +95,12 @@ func TestReview_ClaudeReportsError_DoesNotRetry(t *testing.T) {
 	// is_error=true là lỗi Claude tự xác định rõ ràng — retry không giúp
 	// gì, không nên gọi lại (xem issue #11).
 	assertAttempts(t, counter, 1)
-	if attempts != 1 {
-		t.Errorf("Review() attempts = %d, want 1", attempts)
+	if stats.Attempts != 1 {
+		t.Errorf("Review() attempts = %d, want 1", stats.Attempts)
 	}
 	// JSON vẫn parse được dù is_error=true — num_turns đọc được bình thường.
-	if numTurns != 2 {
-		t.Errorf("Review() numTurns = %d, want 2", numTurns)
+	if stats.NumTurns != 2 {
+		t.Errorf("Review() numTurns = %d, want 2", stats.NumTurns)
 	}
 }
 
@@ -107,17 +109,17 @@ func TestReview_InvalidJSON_DoesNotRetry(t *testing.T) {
 	withFakeClaude(t, countingScript(counter, `echo 'not json'`))
 
 	r := &Reviewer{sleep: noSleep}
-	_, attempts, numTurns, err := r.Review("review this", t.TempDir())
+	_, stats, err := r.Review("review this", t.TempDir())
 	if err == nil {
 		t.Fatal("Review() expected error on invalid JSON output, got nil")
 	}
 	assertAttempts(t, counter, 1)
-	if attempts != 1 {
-		t.Errorf("Review() attempts = %d, want 1", attempts)
+	if stats.Attempts != 1 {
+		t.Errorf("Review() attempts = %d, want 1", stats.Attempts)
 	}
 	// Không parse được JSON thì không có gì để đọc num_turns.
-	if numTurns != 0 {
-		t.Errorf("Review() numTurns = %d, want 0", numTurns)
+	if stats.NumTurns != 0 {
+		t.Errorf("Review() numTurns = %d, want 0", stats.NumTurns)
 	}
 }
 
@@ -127,7 +129,7 @@ func TestReview_CommandFails_RetriesThenGivesUp(t *testing.T) {
 exit 1`))
 
 	r := &Reviewer{sleep: noSleep}
-	_, attempts, numTurns, err := r.Review("review this", t.TempDir())
+	_, stats, err := r.Review("review this", t.TempDir())
 	if err == nil {
 		t.Fatal("Review() expected error when claude command exits non-zero, got nil")
 	}
@@ -137,12 +139,12 @@ exit 1`))
 	// Lỗi chạy lệnh (exec) là ứng viên retry — mặc định thử đủ
 	// defaultMaxAttempts lần rồi mới chịu thua.
 	assertAttempts(t, counter, defaultMaxAttempts)
-	if attempts != defaultMaxAttempts {
-		t.Errorf("Review() attempts = %d, want %d", attempts, defaultMaxAttempts)
+	if stats.Attempts != defaultMaxAttempts {
+		t.Errorf("Review() attempts = %d, want %d", stats.Attempts, defaultMaxAttempts)
 	}
 	// Lệnh chạy thất bại thì không có output để đọc num_turns.
-	if numTurns != 0 {
-		t.Errorf("Review() numTurns = %d, want 0", numTurns)
+	if stats.NumTurns != 0 {
+		t.Errorf("Review() numTurns = %d, want 0", stats.NumTurns)
 	}
 }
 
@@ -155,7 +157,7 @@ fi
 echo '{"type":"result","subtype":"success","is_error":false,"result":"ok after retry","num_turns":4}'`))
 
 	r := &Reviewer{sleep: noSleep}
-	got, attempts, numTurns, err := r.Review("review this", t.TempDir())
+	got, stats, err := r.Review("review this", t.TempDir())
 	if err != nil {
 		t.Fatalf("Review() unexpected error after retry: %v", err)
 	}
@@ -163,11 +165,11 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"ok after r
 		t.Errorf("Review() = %q, want %q", got, "ok after retry")
 	}
 	assertAttempts(t, counter, 2)
-	if attempts != 2 {
-		t.Errorf("Review() attempts = %d, want 2", attempts)
+	if stats.Attempts != 2 {
+		t.Errorf("Review() attempts = %d, want 2", stats.Attempts)
 	}
-	if numTurns != 4 {
-		t.Errorf("Review() numTurns = %d, want 4", numTurns)
+	if stats.NumTurns != 4 {
+		t.Errorf("Review() numTurns = %d, want 4", stats.NumTurns)
 	}
 }
 
@@ -177,13 +179,13 @@ func TestReview_MaxAttempts_Override(t *testing.T) {
 exit 1`))
 
 	r := &Reviewer{MaxAttempts: 2, sleep: noSleep}
-	_, attempts, _, err := r.Review("review this", t.TempDir())
+	_, stats, err := r.Review("review this", t.TempDir())
 	if err == nil {
 		t.Fatal("Review() expected error after exhausting retries, got nil")
 	}
 	assertAttempts(t, counter, 2)
-	if attempts != 2 {
-		t.Errorf("Review() attempts = %d, want 2", attempts)
+	if stats.Attempts != 2 {
+		t.Errorf("Review() attempts = %d, want 2", stats.Attempts)
 	}
 }
 
@@ -199,11 +201,128 @@ fi
 `)
 
 	dir := t.TempDir()
-	got, _, _, err := (&Reviewer{}).Review("hello prompt", dir)
+	got, _, err := (&Reviewer{}).Review("hello prompt", dir)
 	if err != nil {
 		t.Fatalf("Review() unexpected error: %v", err)
 	}
 	if got != "got-prompt" {
 		t.Errorf("Review() = %q, want claude to receive the prompt via -p", got)
+	}
+}
+
+// usageJSON là phần usage/cost theo đúng shape output thật của
+// `claude -p --output-format json` (đã rút gọn các field không dùng).
+const usageJSON = `"total_cost_usd":0.0636,"usage":{"input_tokens":2,"cache_creation_input_tokens":7735,"cache_read_input_tokens":8257,"output_tokens":4,"service_tier":"standard"}`
+
+var wantUsage = review.Usage{
+	InputTokens:              2,
+	CacheCreationInputTokens: 7735,
+	CacheReadInputTokens:     8257,
+	OutputTokens:             4,
+	CostUSD:                  0.0636,
+}
+
+func TestReview_ParsesUsage(t *testing.T) {
+	withFakeClaude(t, `#!/bin/sh
+echo '{"type":"result","subtype":"success","is_error":false,"result":"ok",`+usageJSON+`}'
+`)
+
+	_, stats, err := (&Reviewer{}).Review("review this", t.TempDir())
+	if err != nil {
+		t.Fatalf("Review() unexpected error: %v", err)
+	}
+	if stats.Usage != wantUsage {
+		t.Errorf("Review() usage = %+v, want %+v", stats.Usage, wantUsage)
+	}
+}
+
+func TestReview_NoUsageFields_ZeroUsage(t *testing.T) {
+	withFakeClaude(t, `#!/bin/sh
+echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'
+`)
+
+	_, stats, err := (&Reviewer{}).Review("review this", t.TempDir())
+	if err != nil {
+		t.Fatalf("Review() unexpected error: %v", err)
+	}
+	if stats.Usage != (review.Usage{}) {
+		t.Errorf("Review() usage = %+v, want zero value", stats.Usage)
+	}
+}
+
+// Lần gọi Claude tự báo lỗi vẫn tốn token thật — phải được ghi lại.
+func TestReview_ClaudeReportsError_KeepsUsage(t *testing.T) {
+	withFakeClaude(t, `#!/bin/sh
+echo '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"gave up",`+usageJSON+`}'
+`)
+
+	_, stats, err := (&Reviewer{sleep: noSleep}).Review("review this", t.TempDir())
+	if err == nil {
+		t.Fatal("Review() expected error when is_error is true, got nil")
+	}
+	if stats.Usage != wantUsage {
+		t.Errorf("Review() usage = %+v, want %+v", stats.Usage, wantUsage)
+	}
+}
+
+// Lần thử lỗi chạy lệnh không có output nên không cộng usage; tổng bằng
+// usage của lần thành công.
+func TestReview_RetryThenSucceeds_UsageFromParsedAttempts(t *testing.T) {
+	counter := filepath.Join(t.TempDir(), "attempts")
+	withFakeClaude(t, countingScript(counter, `if [ "$count" -eq 1 ]; then
+  echo 'network blip' >&2
+  exit 1
+fi
+echo '{"type":"result","subtype":"success","is_error":false,"result":"ok",`+usageJSON+`}'`))
+
+	_, stats, err := (&Reviewer{sleep: noSleep}).Review("review this", t.TempDir())
+	if err != nil {
+		t.Fatalf("Review() unexpected error after retry: %v", err)
+	}
+	if stats.Attempts != 2 {
+		t.Errorf("Review() attempts = %d, want 2", stats.Attempts)
+	}
+	if stats.Usage != wantUsage {
+		t.Errorf("Review() usage = %+v, want %+v", stats.Usage, wantUsage)
+	}
+}
+
+// Lệnh thoát exit != 0 nhưng stdout vẫn là JSON thành công: lỗi chạy lệnh
+// nên vẫn retry, và usage của lần đó vẫn được cộng (issue #63).
+func TestReview_CommandFailsWithJSON_KeepsUsageAndRetries(t *testing.T) {
+	counter := filepath.Join(t.TempDir(), "attempts")
+	withFakeClaude(t, countingScript(counter, `echo '{"type":"result","subtype":"success","is_error":false,"result":"ok","num_turns":2,`+usageJSON+`}'
+exit 1`))
+
+	_, stats, err := (&Reviewer{MaxAttempts: 2, sleep: noSleep}).Review("review this", t.TempDir())
+	if err == nil {
+		t.Fatal("Review() expected error when claude exits non-zero, got nil")
+	}
+	assertAttempts(t, counter, 2)
+	if want := wantUsage.Add(wantUsage); stats.Usage != want {
+		t.Errorf("Review() usage = %+v, want %+v (usage of both attempts)", stats.Usage, want)
+	}
+	if stats.NumTurns != 2 {
+		t.Errorf("Review() numTurns = %d, want 2", stats.NumTurns)
+	}
+}
+
+// Lệnh thoát exit != 0 vì Claude tự báo is_error: lỗi xác định trước, không
+// retry, error message giữ subtype.
+func TestReview_CommandFailsWithIsError_DoesNotRetry(t *testing.T) {
+	counter := filepath.Join(t.TempDir(), "attempts")
+	withFakeClaude(t, countingScript(counter, `echo '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"gave up",`+usageJSON+`}'
+exit 1`))
+
+	_, stats, err := (&Reviewer{sleep: noSleep}).Review("review this", t.TempDir())
+	if err == nil {
+		t.Fatal("Review() expected error when is_error is true, got nil")
+	}
+	if !strings.Contains(err.Error(), "error_max_turns") {
+		t.Errorf("Review() error = %v, want it to include subtype error_max_turns", err)
+	}
+	assertAttempts(t, counter, 1)
+	if stats.Usage != wantUsage {
+		t.Errorf("Review() usage = %+v, want %+v", stats.Usage, wantUsage)
 	}
 }

@@ -49,7 +49,9 @@ func main() {
 			continue
 		}
 
-		fmt.Printf("(attempts=%d, num_turns=%d)\n\n", result.Attempts, result.NumTurns)
+		fmt.Printf("(attempts=%d, num_turns=%d, input=%d, cache write=%d, cache read=%d, output=%d, cost=$%.4f)\n\n",
+			result.Attempts, result.NumTurns, result.Usage.InputTokens, result.Usage.CacheCreationInputTokens,
+			result.Usage.CacheReadInputTokens, result.Usage.OutputTokens, result.Usage.CostUSD)
 		fmt.Println("--- Response ---")
 		fmt.Println(result.Response)
 		if result.Expected != "" {

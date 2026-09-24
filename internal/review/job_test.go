@@ -136,6 +136,7 @@ type fakeReviewer struct {
 	err      error
 	attempts int // 0 nghĩa là "chưa chỉ định", Review() trả về 1 (không retry)
 	numTurns int // 0 nghĩa là "chưa chỉ định" (fake không giả lập num_turns thật)
+	usage    Usage
 
 	called    bool
 	gotPrompt string
@@ -154,7 +155,7 @@ type fakeReviewer struct {
 	repairPrompts []string
 }
 
-func (f *fakeReviewer) Review(prompt string, dir string) (string, int, int, error) {
+func (f *fakeReviewer) Review(prompt string, dir string) (string, CallStats, error) {
 	f.called = true
 	f.gotDir = dir
 	attempts := f.attempts
@@ -167,16 +168,16 @@ func (f *fakeReviewer) Review(prompt string, dir string) (string, int, int, erro
 	if isFormatRepairPrompt(prompt) {
 		f.repairPrompts = append(f.repairPrompts, prompt)
 		if f.repairErr != nil {
-			return "", 1, 0, f.repairErr
+			return "", CallStats{Attempts: 1}, f.repairErr
 		}
 		if f.repairSet {
-			return f.repairResult, 1, 0, nil
+			return f.repairResult, CallStats{Attempts: 1}, nil
 		}
-		return "không phải JSON", 1, 0, nil
+		return "không phải JSON", CallStats{Attempts: 1}, nil
 	}
 	f.gotPrompt = prompt
 	f.gotPrompts = append(f.gotPrompts, prompt)
-	return f.result, attempts, f.numTurns, f.err
+	return f.result, CallStats{Attempts: attempts, NumTurns: f.numTurns, Usage: f.usage}, f.err
 }
 
 // scriptedReviewer trả về kết quả/lỗi khác nhau cho từng lần gọi Review()
@@ -196,16 +197,16 @@ type scriptedReviewer struct {
 	repairPrompts []string
 }
 
-func (s *scriptedReviewer) Review(prompt string, dir string) (string, int, int, error) {
+func (s *scriptedReviewer) Review(prompt string, dir string) (string, CallStats, error) {
 	if isFormatRepairPrompt(prompt) {
 		s.repairPrompts = append(s.repairPrompts, prompt)
 		if s.repairErr != nil {
-			return "", 1, 0, s.repairErr
+			return "", CallStats{Attempts: 1}, s.repairErr
 		}
 		if s.repairSet {
-			return s.repairResult, 1, 0, nil
+			return s.repairResult, CallStats{Attempts: 1}, nil
 		}
-		return "không phải JSON", 1, 0, nil
+		return "không phải JSON", CallStats{Attempts: 1}, nil
 	}
 
 	i := len(s.prompts)
@@ -219,7 +220,7 @@ func (s *scriptedReviewer) Review(prompt string, dir string) (string, int, int, 
 	if i < len(s.errs) {
 		err = s.errs[i]
 	}
-	return res, 1, 0, err
+	return res, CallStats{Attempts: 1}, err
 }
 
 // fakeCloner trả về dir cố định và đánh dấu lại khi cleanup được gọi, để
@@ -375,7 +376,7 @@ func TestJobRun_ReviewerPanic_Recovered(t *testing.T) {
 		GitHub:        gh,
 		PlaceholderID: 42,
 		Clone:         fakeCloner("/tmp/fake-dir", nil, &cleanupCalled),
-		Reviewer: reviewerFunc(func(prompt, dir string) (string, int, int, error) {
+		Reviewer: reviewerFunc(func(prompt, dir string) (string, CallStats, error) {
 			panic("unexpected panic")
 		}),
 	}
@@ -428,9 +429,9 @@ func (panickingStateStore) SetLastReviewedSHA(string, int, string) error {
 }
 
 // reviewerFunc cho phép dựng 1 Reviewer từ closure, dùng riêng cho test panic.
-type reviewerFunc func(prompt, dir string) (string, int, int, error)
+type reviewerFunc func(prompt, dir string) (string, CallStats, error)
 
-func (f reviewerFunc) Review(prompt, dir string) (string, int, int, error) {
+func (f reviewerFunc) Review(prompt, dir string) (string, CallStats, error) {
 	return f(prompt, dir)
 }
 
@@ -679,13 +680,14 @@ type loggedCall struct {
 	prompt, response, err string
 	attempts              int
 	numTurns              int
+	usage                 Usage
 }
 
 type fakeReviewLogger struct {
 	calls []loggedCall
 }
 
-func (f *fakeReviewLogger) LogReview(repoFullName string, issueNumber int, sha string, bundleIndex, bundleTotal int, prompt, response, errMsg string, duration time.Duration, attempts int, numTurns int) {
+func (f *fakeReviewLogger) LogReview(repoFullName string, issueNumber int, sha string, bundleIndex, bundleTotal int, prompt, response, errMsg string, duration time.Duration, stats CallStats) {
 	f.calls = append(f.calls, loggedCall{
 		repoFullName: repoFullName,
 		issueNumber:  issueNumber,
@@ -695,8 +697,9 @@ func (f *fakeReviewLogger) LogReview(repoFullName string, issueNumber int, sha s
 		prompt:       prompt,
 		response:     response,
 		err:          errMsg,
-		attempts:     attempts,
-		numTurns:     numTurns,
+		attempts:     stats.Attempts,
+		numTurns:     stats.NumTurns,
+		usage:        stats.Usage,
 	})
 }
 
@@ -704,7 +707,8 @@ func TestJobRun_LogsEachBundleReview(t *testing.T) {
 	diff := "diff --git a/main.go b/main.go\n+fmt.Println(1)"
 
 	gh := &fakeGitHubClient{headSHA: "abc123", diff: diff}
-	reviewer := &fakeReviewer{result: "trông ổn"}
+	wantUsage := Usage{InputTokens: 1, CacheCreationInputTokens: 2, CacheReadInputTokens: 3, OutputTokens: 4, CostUSD: 0.5}
+	reviewer := &fakeReviewer{result: "trông ổn", usage: wantUsage}
 	logger := &fakeReviewLogger{}
 
 	job := &Job{
@@ -737,6 +741,9 @@ func TestJobRun_LogsEachBundleReview(t *testing.T) {
 	}
 	if call.attempts != 1 {
 		t.Errorf("expected attempts=1 for a review that succeeded on the first try, got %d", call.attempts)
+	}
+	if call.usage != wantUsage {
+		t.Errorf("expected usage %+v to be passed through to the logger, got %+v", wantUsage, call.usage)
 	}
 	if !isFormatRepairPrompt(logger.calls[1].prompt) {
 		t.Errorf("expected second log to be the format-repair call, got prompt: %s", logger.calls[1].prompt)

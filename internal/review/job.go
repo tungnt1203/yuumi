@@ -52,12 +52,9 @@ type Cloner func(repoFullName string, sha string) (dir string, cleanup func(), e
 // PR lớn bị chia nhiều phần (xem bundleDiffs). Logger là optional: Job.Logger
 // == nil nghĩa là "không ghi log", Run() vẫn hoạt động bình thường.
 //
-// attempts là số lần Reviewer.Review thực sự tốn để ra được kết quả/lỗi
-// cuối (xem review.Reviewer, issue #28) — 1 nghĩa là không phải retry.
-// numTurns là số turn model dùng ở lần gọi cuối (xem review.Reviewer, issue
-// #20) — tín hiệu rẻ để biết model có thực sự đọc thêm file ngoài diff.
+// stats là CallStats mà Reviewer.Review trả về cho lần gọi đó.
 type ReviewLogger interface {
-	LogReview(repoFullName string, issueNumber int, sha string, bundleIndex, bundleTotal int, prompt, response, errMsg string, duration time.Duration, attempts int, numTurns int)
+	LogReview(repoFullName string, issueNumber int, sha string, bundleIndex, bundleTotal int, prompt, response, errMsg string, duration time.Duration, stats CallStats)
 }
 
 // ReviewStateStore tra cứu/lưu lại SHA đã review lần gần nhất cho 1 (repo,
@@ -487,7 +484,7 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 
 		prompt := BuildReviewPrompt(j.UserCommand, promptDiff, staticReport, repoInstructions, primer)
 		start := time.Now()
-		text, attempts, numTurns, err := j.Reviewer.Review(prompt, dir)
+		text, stats, err := j.Reviewer.Review(prompt, dir)
 		duration := time.Since(start)
 
 		// Log response gốc của lần review (JSON nếu Claude làm đúng format,
@@ -498,7 +495,7 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 		if err != nil {
 			errMsg = err.Error()
 		}
-		j.logBundleReview(sha, i+1, len(bundles), prompt, text, errMsg, duration, attempts, numTurns)
+		j.logBundleReview(sha, i+1, len(bundles), prompt, text, errMsg, duration, stats)
 
 		// display là những gì thực sự được post lên comment tổng hợp — mặc
 		// định giống hệt text (raw), chỉ khác khi có lỗi (bọc thêm thông báo
@@ -554,7 +551,7 @@ func (j *Job) reviewBundles(bundles []string, dir string, sha string, staticRepo
 func (j *Job) repairFindingsFormat(dir, sha string, bundleIndex, bundleTotal int, previous string) ([]Finding, bool) {
 	prompt := buildFormatRepairPrompt(previous)
 	start := time.Now()
-	text, attempts, numTurns, err := j.Reviewer.Review(prompt, dir)
+	text, stats, err := j.Reviewer.Review(prompt, dir)
 	duration := time.Since(start)
 
 	errMsg := ""
@@ -562,7 +559,7 @@ func (j *Job) repairFindingsFormat(dir, sha string, bundleIndex, bundleTotal int
 		fmt.Println("Repair bundle", bundleIndex, "/", bundleTotal, "format error:", err)
 		errMsg = err.Error()
 	}
-	j.logBundleReview(sha, bundleIndex, bundleTotal, prompt, text, errMsg, duration, attempts, numTurns)
+	j.logBundleReview(sha, bundleIndex, bundleTotal, prompt, text, errMsg, duration, stats)
 	if err != nil || strings.TrimSpace(text) == formatRepairNotAReview {
 		return nil, false
 	}
@@ -628,14 +625,14 @@ func cleanPhraseNegated(lower string, at int) bool {
 // logBundleReview ghi 1 lần gọi Reviewer. errMsg khác rỗng thì response ghi
 // rỗng — lỗi CLI không có output đáng giữ, đúng như trước khi tách helper
 // này ra (issue #9). Logger nil nghĩa là không ghi log.
-func (j *Job) logBundleReview(sha string, bundleIndex, bundleTotal int, prompt, response, errMsg string, duration time.Duration, attempts, numTurns int) {
+func (j *Job) logBundleReview(sha string, bundleIndex, bundleTotal int, prompt, response, errMsg string, duration time.Duration, stats CallStats) {
 	if j.Logger == nil {
 		return
 	}
 	if errMsg != "" {
 		response = ""
 	}
-	j.Logger.LogReview(j.RepoFullName, j.IssueNumber, sha, bundleIndex, bundleTotal, prompt, response, errMsg, duration, attempts, numTurns)
+	j.Logger.LogReview(j.RepoFullName, j.IssueNumber, sha, bundleIndex, bundleTotal, prompt, response, errMsg, duration, stats)
 }
 
 // skippedNote render 1 dòng thông báo các file bị bundleDiffs bỏ qua

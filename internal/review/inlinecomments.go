@@ -33,6 +33,11 @@ type pendingComment struct {
 // luôn hay post sai chỗ trong im lặng (đúng ghi chú "fallback verify" của
 // issue #24).
 //
+// Finding có ExistingCode thì vị trí lấy theo chỗ đoạn code đó xuất hiện
+// trong diff (locateExistingCode), không theo Line: đúng file nhưng lệch
+// dòng vẫn gắn đúng chỗ, còn đoạn code không có trong diff thì về general
+// (issue #71).
+//
 // diff phải là diff của ĐÚNG bundle đã gửi cho Reviewer sinh ra findings
 // này (không phải diff của cả PR khi PR bị chia nhiều bundle) — Line trong
 // Finding chỉ có nghĩa trong phạm vi diff Claude thực sự đã thấy.
@@ -48,6 +53,19 @@ func splitFindingsForPosting(diff string, findings []Finding) (inline []pendingC
 		if !ok {
 			general = append(general, f)
 			continue
+		}
+		if code := codeLines(f.ExistingCode); hasDistinctiveLine(code) {
+			start, end, ok := locateExistingCode(fd, code, f.Line)
+			if !ok {
+				// Đoạn code Claude trích không có trong diff: gắn theo số
+				// dòng dễ trúng sai chỗ, đưa về comment tổng hợp.
+				general = append(general, f)
+				continue
+			}
+			f.Line, f.EndLine = start, 0
+			if end > start {
+				f.EndLine = end
+			}
 		}
 		if _, ok := fd.LineAtNew(f.Line); !ok {
 			general = append(general, f)
@@ -115,6 +133,87 @@ func suggestionRepeatsNeighbor(fd FileDiff, startLine, line int, suggestion stri
 
 func hasLetterOrDigit(s string) bool {
 	return strings.IndexFunc(s, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) >= 0
+}
+
+// codeLines tách đoạn code thành từng dòng đã bỏ khoảng trắng hai đầu, bỏ
+// dòng trống ở đầu/cuối. So khớp bỏ qua thụt lề vì model hay chép lệch tab
+// với space.
+func codeLines(code string) []string {
+	var lines []string
+	for _, l := range strings.Split(strings.ReplaceAll(code, "\r\n", "\n"), "\n") {
+		lines = append(lines, strings.TrimSpace(l))
+	}
+	for len(lines) > 0 && lines[0] == "" {
+		lines = lines[1:]
+	}
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
+}
+
+// hasDistinctiveLine báo có ít nhất 1 dòng chứa chữ/số. Đoạn chỉ gồm "}"
+// hay ")" khớp ở quá nhiều chỗ, không dùng để xác định vị trí được.
+func hasDistinctiveLine(lines []string) bool {
+	for _, l := range lines {
+		if hasLetterOrDigit(l) {
+			return true
+		}
+	}
+	return false
+}
+
+// locateExistingCode tìm các dòng liên tiếp trong cùng 1 hunk (file mới,
+// bỏ dòng removed) có nội dung khớp want, trả khoảng dòng của chỗ khớp gần
+// hint (Finding.Line) nhất. ok=false khi không khớp chỗ nào, hoặc có nhiều
+// chỗ khớp mà không chọn được 1 chỗ gần hint nhất (hint <= 0 hoặc 2 chỗ
+// cách đều) — thà không gắn inline còn hơn gắn nhầm (issue #71).
+func locateExistingCode(fd FileDiff, want []string, hint int) (start, end int, ok bool) {
+	matches := 0
+	bestDist := -1
+	tie := false
+	for _, h := range fd.Hunks {
+		var lines []HunkLine
+		for _, l := range h.Lines {
+			if l.Kind != LineRemoved {
+				lines = append(lines, l)
+			}
+		}
+		for i := 0; i+len(want) <= len(lines); i++ {
+			if !linesMatch(lines[i:i+len(want)], want) {
+				continue
+			}
+			matches++
+			dist := abs(lines[i].NewLine - hint)
+			switch {
+			case bestDist == -1 || dist < bestDist:
+				bestDist, tie = dist, false
+				start, end = lines[i].NewLine, lines[i+len(want)-1].NewLine
+			case dist == bestDist:
+				tie = true
+			}
+		}
+	}
+	if matches == 0 || tie || (hint <= 0 && matches > 1) {
+		return 0, 0, false
+	}
+	return start, end, true
+}
+
+func linesMatch(lines []HunkLine, want []string) bool {
+	for i, l := range lines {
+		if strings.TrimSpace(l.Content) != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
 
 // buildFileDiffIndex parse hunk-level từng file trong diff, index theo

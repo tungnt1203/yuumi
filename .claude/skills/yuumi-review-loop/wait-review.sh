@@ -15,12 +15,16 @@ repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
 head="$(gh pr view "$pr" --json headRefOid --jq .headRefOid)"
 echo "PR #$pr ($repo), head ${head:0:7}: chờ check run \"yuumi review\"..."
 
+# 1 commit có thể có nhiều check run "yuumi review" (vd review lỗi rồi
+# mention review lại cùng SHA): luôn lấy lần mới nhất (id lớn nhất).
+checks_url="repos/$repo/commits/$head/check-runs?check_name=yuumi%20review"
+latest_run='.check_runs | max_by(.id)'
+
 deadline=$(( $(date +%s) + timeout ))
 status=""
 while :; do
   # `|| true`: 1 lần gọi API lỗi (mạng chập chờn) không được làm vòng chờ chết.
-  status="$(gh api "repos/$repo/commits/$head/check-runs" \
-    --jq '.check_runs[] | select(.name=="yuumi review") | .status' 2>/dev/null | head -1 || true)"
+  status="$(gh api "$checks_url" --jq "$latest_run | .status // \"\"" 2>/dev/null || true)"
   [ "$status" = "completed" ] && break
   if [ "$(date +%s)" -ge "$deadline" ]; then
     echo "HẾT THỜI GIAN CHỜ sau ${timeout}s, check run status='${status:-chưa tạo}'."
@@ -32,8 +36,7 @@ done
 
 echo
 echo "=== Check run"
-gh api "repos/$repo/commits/$head/check-runs" \
-  --jq '.check_runs[] | select(.name=="yuumi review") | "\(.conclusion): \(.output.title)"'
+gh api "$checks_url" --jq "$latest_run | \"\\(.conclusion): \\(.output.title)\""
 
 echo
 echo "=== Góp ý inline của bot trên ${head:0:7}"
@@ -45,5 +48,13 @@ gh api --paginate "repos/$repo/pulls/$pr/comments" \
         | \"--- id=\(.id) \(.path):\(.line // .original_line)\n\(.body)\n\""
 
 echo "=== Comment tổng hợp mới nhất của bot"
-gh api --paginate "repos/$repo/issues/$pr/comments" \
-  --jq "[.[] | select(.user.login==\"$bot\")] | last | .body // \"(không có)\""
+# --paginate áp --jq riêng cho từng trang (và --slurp không đi chung với
+# --jq), nên không dùng được `last` trong jq: lấy id của mọi comment khớp
+# qua tất cả các trang, chọn id cuối, rồi mới đọc body.
+summary_id="$(gh api --paginate "repos/$repo/issues/$pr/comments" \
+  --jq ".[] | select(.user.login==\"$bot\") | .id" | tail -1)"
+if [ -n "$summary_id" ]; then
+  gh api "repos/$repo/issues/comments/$summary_id" --jq .body
+else
+  echo "(không có)"
+fi

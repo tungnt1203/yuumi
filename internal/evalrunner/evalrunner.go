@@ -59,6 +59,7 @@ type Result struct {
 	Response string
 	Attempts int
 	NumTurns int
+	Usage    review.Usage
 }
 
 // BuildFixtureDiff dựng diff thật (unified diff, đúng shape git/GitHub trả
@@ -134,6 +135,7 @@ func Run(reviewer review.Reviewer, f Fixture) (Result, error) {
 		Response: response,
 		Attempts: stats.Attempts,
 		NumTurns: stats.NumTurns,
+		Usage:    stats.Usage,
 	}, nil
 }
 

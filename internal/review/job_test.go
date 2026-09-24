@@ -136,6 +136,7 @@ type fakeReviewer struct {
 	err      error
 	attempts int // 0 nghĩa là "chưa chỉ định", Review() trả về 1 (không retry)
 	numTurns int // 0 nghĩa là "chưa chỉ định" (fake không giả lập num_turns thật)
+	usage    Usage
 
 	called    bool
 	gotPrompt string
@@ -176,7 +177,7 @@ func (f *fakeReviewer) Review(prompt string, dir string) (string, CallStats, err
 	}
 	f.gotPrompt = prompt
 	f.gotPrompts = append(f.gotPrompts, prompt)
-	return f.result, CallStats{Attempts: attempts, NumTurns: f.numTurns}, f.err
+	return f.result, CallStats{Attempts: attempts, NumTurns: f.numTurns, Usage: f.usage}, f.err
 }
 
 // scriptedReviewer trả về kết quả/lỗi khác nhau cho từng lần gọi Review()
@@ -679,6 +680,7 @@ type loggedCall struct {
 	prompt, response, err string
 	attempts              int
 	numTurns              int
+	usage                 Usage
 }
 
 type fakeReviewLogger struct {
@@ -697,6 +699,7 @@ func (f *fakeReviewLogger) LogReview(repoFullName string, issueNumber int, sha s
 		err:          errMsg,
 		attempts:     stats.Attempts,
 		numTurns:     stats.NumTurns,
+		usage:        stats.Usage,
 	})
 }
 
@@ -704,7 +707,8 @@ func TestJobRun_LogsEachBundleReview(t *testing.T) {
 	diff := "diff --git a/main.go b/main.go\n+fmt.Println(1)"
 
 	gh := &fakeGitHubClient{headSHA: "abc123", diff: diff}
-	reviewer := &fakeReviewer{result: "trông ổn"}
+	wantUsage := Usage{InputTokens: 1, CacheCreationInputTokens: 2, CacheReadInputTokens: 3, OutputTokens: 4, CostUSD: 0.5}
+	reviewer := &fakeReviewer{result: "trông ổn", usage: wantUsage}
 	logger := &fakeReviewLogger{}
 
 	job := &Job{
@@ -737,6 +741,9 @@ func TestJobRun_LogsEachBundleReview(t *testing.T) {
 	}
 	if call.attempts != 1 {
 		t.Errorf("expected attempts=1 for a review that succeeded on the first try, got %d", call.attempts)
+	}
+	if call.usage != wantUsage {
+		t.Errorf("expected usage %+v to be passed through to the logger, got %+v", wantUsage, call.usage)
 	}
 	if !isFormatRepairPrompt(logger.calls[1].prompt) {
 		t.Errorf("expected second log to be the format-repair call, got prompt: %s", logger.calls[1].prompt)

@@ -35,17 +35,27 @@ type Summary struct {
 	ByRepo map[string]Totals `json:"by_repo"`
 	ByDay  map[string]Totals `json:"by_day"`
 
-	// Skipped là số file .json không đọc/parse được. Bỏ qua thay vì dừng
-	// hẳn, để 1 file hỏng không che mất số liệu của các file còn lại.
+	// Skipped là số file .json không đọc/parse được hoặc không phải review
+	// log (thiếu time). Bỏ qua thay vì dừng hẳn, để 1 file hỏng không che
+	// mất số liệu của các file còn lại.
 	Skipped int `json:"skipped"`
+
+	// NoUsage là số entry ghi trước khi có field usage: vẫn đếm vào Calls
+	// nhưng token/chi phí bằng 0, để phân biệt "không có số liệu" với "chi
+	// phí thật bằng 0".
+	NoUsage int `json:"no_usage"`
 }
 
 // Summarize đọc mọi file log .json trong dir (rỗng thì dùng defaultDir,
 // giống FileLogger) và cộng usage theo repo, theo ngày. Entry ghi trước khi
-// có field usage vẫn được đếm vào Calls với token/chi phí bằng 0.
+// có field usage vẫn được đếm vào Calls với token/chi phí bằng 0 (xem
+// Summary.NoUsage). loc nil thì dùng time.Local.
 func Summarize(dir string, loc *time.Location) (Summary, error) {
 	if dir == "" {
 		dir = defaultDir
+	}
+	if loc == nil {
+		loc = time.Local
 	}
 	files, err := os.ReadDir(dir)
 	if err != nil {
@@ -62,21 +72,33 @@ func Summarize(dir string, loc *time.Location) (Summary, error) {
 			s.Skipped++
 			continue
 		}
-		var e entry
-		if err := json.Unmarshal(data, &e); err != nil {
+		// Chỉ decode field cần cho thống kê, bỏ qua prompt/response (có thể
+		// rất lớn). Usage là con trỏ để biết entry có field usage hay không.
+		var e struct {
+			Time         time.Time `json:"time"`
+			RepoFullName string    `json:"repo_full_name"`
+			Usage        *usage    `json:"usage"`
+		}
+		if err := json.Unmarshal(data, &e); err != nil || e.Time.IsZero() {
 			s.Skipped++
 			continue
 		}
+		var u usage
+		if e.Usage == nil {
+			s.NoUsage++
+		} else {
+			u = *e.Usage
+		}
 
-		s.Total.add(e.Usage)
+		s.Total.add(u)
 
 		repo := s.ByRepo[e.RepoFullName]
-		repo.add(e.Usage)
+		repo.add(u)
 		s.ByRepo[e.RepoFullName] = repo
 
 		dayKey := e.Time.In(loc).Format(time.DateOnly)
 		day := s.ByDay[dayKey]
-		day.add(e.Usage)
+		day.add(u)
 		s.ByDay[dayKey] = day
 	}
 	return s, nil

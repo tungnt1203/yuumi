@@ -97,9 +97,10 @@ func NewReviewer() *Reviewer {
 // (xem reviewlog, issue #20).
 //
 // stats.Usage cộng dồn token/chi phí của mọi lần thử có output parse được,
-// kể cả lần Claude tự báo is_error (vẫn tốn tiền thật). Lần thử lỗi chạy lệnh
-// (timeout, exit != 0) không có output nên không đếm được — con số này có
-// thể thấp hơn thực tế khi CLI bị kill giữa chừng (issue #63).
+// kể cả lần Claude tự báo is_error (vẫn tốn tiền thật) và lần lệnh thoát
+// exit != 0 nhưng vẫn in JSON ra stdout. Lần thử bị timeout/kill giữa chừng
+// không có output nên không đếm được — con số này có thể thấp hơn thực tế
+// (issue #63).
 func (r *Reviewer) Review(prompt string, dir string) (result string, stats review.CallStats, err error) {
 	maxAttempts := r.MaxAttempts
 	if maxAttempts <= 0 {
@@ -140,8 +141,9 @@ func (r *Reviewer) Review(prompt string, dir string) (result string, stats revie
 // cho lỗi xác định trước (output không parse được đúng định dạng kỳ vọng,
 // hoặc Claude tự báo is_error=true) — retry không thay đổi được kết quả.
 //
-// res là output đã parse, kể cả khi is_error=true (để caller đọc num_turns,
-// usage); zero value nếu lệnh lỗi hoặc output không phải JSON.
+// res là output đã parse, kể cả khi is_error=true hoặc lệnh thoát exit != 0
+// mà stdout vẫn là JSON (để caller đọc num_turns, usage); zero value nếu
+// không có output JSON để đọc.
 func runOnce(prompt string, dir string) (res ClaudeResult, err error, retryable bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -154,7 +156,11 @@ func runOnce(prompt string, dir string) (res ClaudeResult, err error, retryable 
 
 	output, cmdErr := cmd.Output()
 	if cmdErr != nil {
-		return ClaudeResult{}, fmt.Errorf("claude command failed: %w (stderr: %s)", cmdErr, stderr.String()), true
+		// cmd.Output() vẫn trả stdout khi exit != 0 — CLI có thể đã in JSON
+		// kèm usage trước khi thoát, giữ lại để không mất số liệu chi phí.
+		var partial ClaudeResult
+		_ = json.Unmarshal(output, &partial)
+		return partial, fmt.Errorf("claude command failed: %w (stderr: %s)", cmdErr, stderr.String()), true
 	}
 
 	var claudeResult ClaudeResult

@@ -48,6 +48,9 @@ func main() {
 	if s.Skipped > 0 {
 		fmt.Fprintf(os.Stderr, "\n%d file log không đọc được, đã bỏ qua\n", s.Skipped)
 	}
+	if s.NoUsage > 0 {
+		fmt.Fprintf(os.Stderr, "%d lần gọi ghi trước khi có usage, token/chi phí tính là 0\n", s.NoUsage)
+	}
 }
 
 // printTable in 1 bảng: mỗi key 1 dòng (sắp theo key) và dòng tổng ở cuối.
@@ -56,7 +59,11 @@ func printTable(title string, groups map[string]reviewlog.Totals, total reviewlo
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "\tcalls\tinput\tcache write\tcache read\toutput\tcost (USD)")
 	for _, key := range slices.Sorted(maps.Keys(groups)) {
-		printRow(w, key, groups[key])
+		label := key
+		if label == "" {
+			label = "(không rõ)"
+		}
+		printRow(w, label, groups[key])
 	}
 	printRow(w, "TỔNG", total)
 	w.Flush()

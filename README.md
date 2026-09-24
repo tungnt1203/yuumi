@@ -197,7 +197,7 @@ go run ./cmd/reviewstats                 # đọc $REVIEW_LOG_DIR hoặc logs/re
 go run ./cmd/reviewstats -dir <dir> -json
 ```
 
-Log ghi trước khi có `usage` vẫn được đếm số lần gọi, token/chi phí tính là 0. Lần thử bị timeout/kill giữa chừng không có output nên không đếm được token, chi phí thực tế có thể cao hơn một chút.
+Log ghi trước khi có `usage` vẫn được đếm số lần gọi, token/chi phí tính là 0; `reviewstats` báo số lần gọi như vậy (`no_usage` trong `-json`). Lần thử bị timeout/kill giữa chừng không có output nên không đếm được token, chi phí thực tế có thể cao hơn một chút.
 
 </details>
 

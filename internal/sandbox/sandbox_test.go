@@ -49,6 +49,9 @@ func TestRunArgs_LocksDownContainer(t *testing.T) {
 		{"--volume", "/work/clone-1:/work:ro"},
 		{"--name", "yuumi-job-abc"},
 		{"--entrypoint", "sleep", "yuumi:test"},
+		// Chỉ network internal, đường ra duy nhất là egress proxy.
+		{"--network", "yuumi-sandbox"},
+		{"--env", "HTTPS_PROXY=http://yuumi-egress:3128"},
 	} {
 		if !containsSeq(args, want...) {
 			t.Errorf("docker run args missing %v: %v", want, args)
@@ -56,7 +59,11 @@ func TestRunArgs_LocksDownContainer(t *testing.T) {
 	}
 	// Không env nào của server lúc tạo container, chỉ các giá trị cố định.
 	for i, a := range args {
-		if a == "--env" && !slices.Contains([]string{"HOME=/home/yuumi", "GOCACHE=/tmp/go-cache", "GOMODCACHE=/tmp/go-mod", "GOPATH=/tmp/go"}, args[i+1]) {
+		if a == "--env" && !slices.Contains([]string{
+			"HOME=/home/yuumi", "GOCACHE=/tmp/go-cache", "GOMODCACHE=/tmp/go-mod", "GOPATH=/tmp/go",
+			"HTTPS_PROXY=http://yuumi-egress:3128", "HTTP_PROXY=http://yuumi-egress:3128",
+			"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+		}, args[i+1]) {
 			t.Errorf("unexpected --env %q at docker run", args[i+1])
 		}
 	}
@@ -70,6 +77,8 @@ func TestDockerCommand_ForwardsOnlyAllowlistedEnvWithoutValuesInArgs(t *testing.
 		"PATH=/server/path",
 		"GITHUB_WEBHOOK_SECRET=server-secret",
 		"SOME_NEW_SECRET=x",
+		// Proxy của server không được ghi đè egress proxy của sandbox.
+		"HTTPS_PROXY=http://corp-proxy:8080",
 	}
 	cmd := d.Command(context.Background(), env, "claude", "-p", "hi")
 
@@ -88,7 +97,7 @@ func TestDockerCommand_ForwardsOnlyAllowlistedEnvWithoutValuesInArgs(t *testing.
 		t.Errorf("Env missing forwarded credential: %v", cmd.Env)
 	}
 	for _, kv := range cmd.Env {
-		if strings.HasPrefix(kv, "GITHUB_WEBHOOK_SECRET=") || strings.HasPrefix(kv, "SOME_NEW_SECRET=") {
+		if strings.HasPrefix(kv, "GITHUB_WEBHOOK_SECRET=") || strings.HasPrefix(kv, "SOME_NEW_SECRET=") || kv == "HTTPS_PROXY=http://corp-proxy:8080" {
 			t.Errorf("non-allowlisted var reached docker env: %q", kv)
 		}
 	}

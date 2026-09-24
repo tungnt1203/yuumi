@@ -92,7 +92,13 @@ func main() {
 		startSandbox = func(dir string) (sandbox.Env, error) {
 			return sandbox.StartDocker(dockerCfg, dir)
 		}
-		fmt.Println("Sandbox: docker, image", cfg.SandboxImage, "| work dir", cfg.WorkDir)
+		// Network --internal + egress proxy (issue #78 bước 2). Không dựng
+		// được thì dừng: chạy sandbox mà không giới hạn mạng là âm thầm mất
+		// lớp bảo vệ đã bật.
+		if err := sandbox.SetupNetwork(cfg.SandboxImage); err != nil {
+			log.Fatal("cannot set up sandbox network: ", err)
+		}
+		fmt.Println("Sandbox: docker, image", cfg.SandboxImage, "| work dir", cfg.WorkDir, "| network", sandbox.NetworkName)
 	}
 	if cfg.WorkDir != "" {
 		if err := os.MkdirAll(cfg.WorkDir, 0o700); err != nil {

@@ -32,7 +32,10 @@ var failedCheckRunResult = checkRunResult{
 // header là bảng tổng hợp của comment (renderReviewHeader), rỗng khi không
 // có finding nào được cấu trúc (Claude trả văn xuôi, hoặc không có file nào
 // cần review) — khi đó summary chỉ trỏ về comment.
-func reviewedCheckRunResult(hadError bool, parsed bool, findingCount int, header string, commentURL string) checkRunResult {
+//
+// partial: có phần review parse được, có phần là văn xuôi (giống cảnh báo
+// "còn phần chưa đếm" của header) — title phải nói rõ số góp ý chưa đủ.
+func reviewedCheckRunResult(hadError bool, parsed bool, partial bool, findingCount int, header string, commentURL string) checkRunResult {
 	result := checkRunResult{Conclusion: "success"}
 	switch {
 	case hadError:
@@ -40,6 +43,8 @@ func reviewedCheckRunResult(hadError bool, parsed bool, findingCount int, header
 		result.Title = "Review chưa trọn vẹn: một phần bị lỗi"
 	case !parsed:
 		result.Title = "Review xong"
+	case partial:
+		result.Title = fmt.Sprintf("%d góp ý, còn phần chưa đếm", findingCount)
 	case findingCount == 0:
 		result.Title = "Không phát hiện vấn đề"
 	default:

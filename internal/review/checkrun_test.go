@@ -44,6 +44,11 @@ func TestJobRun_CheckRun_SuccessWithFindings(t *testing.T) {
 	if len(gh.createCheckRunSHAs) != 1 || gh.createCheckRunSHAs[0] != "abc123" {
 		t.Errorf("CreateCheckRun SHAs = %v, want [abc123]", gh.createCheckRunSHAs)
 	}
+	// Tên check run là thứ branch protection trỏ vào — đổi nhầm là rule
+	// bắt buộc của repo không còn khớp.
+	if len(gh.createCheckRunNames) != 1 || gh.createCheckRunNames[0] != "yuumi review" {
+		t.Errorf("CreateCheckRun names = %v, want [yuumi review]", gh.createCheckRunNames)
+	}
 	got := onlyCompletedCheckRun(t, gh)
 	if got.id != 7 {
 		t.Errorf("completed check run id = %d, want 7", got.id)
@@ -154,5 +159,14 @@ func TestJobRun_CheckRun_PanicIsNeutral(t *testing.T) {
 
 	if got := onlyCompletedCheckRun(t, gh); got.conclusion != "neutral" {
 		t.Errorf("conclusion = %q, want neutral", got.conclusion)
+	}
+}
+
+// Một bundle parse được, một bundle văn xuôi: title không được nói như thể
+// đã đếm đủ góp ý.
+func TestReviewedCheckRunResult_PartialTitle(t *testing.T) {
+	got := reviewedCheckRunResult(false, true, true, 1, "header", "https://example/c")
+	if got.Conclusion != "success" || got.Title != "1 góp ý, còn phần chưa đếm" {
+		t.Errorf("got conclusion=%q title=%q, want success / %q", got.Conclusion, got.Title, "1 góp ý, còn phần chưa đếm")
 	}
 }

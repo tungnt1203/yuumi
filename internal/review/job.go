@@ -307,7 +307,7 @@ func (j *Job) Run() {
 	}
 	posted = true
 	fmt.Println("Comment posted successfully")
-	checkResult = reviewedCheckRunResult(hadError, anyParsed, len(allFindings), header, j.reviewCommentURL())
+	checkResult = reviewedCheckRunResult(hadError, anyParsed, anyParsed && !allParsed, len(allFindings), header, j.reviewCommentURL())
 
 	if len(inline) > 0 {
 		// Best-effort, KHÔNG return/chặn gì nếu lỗi — comment tổng hợp

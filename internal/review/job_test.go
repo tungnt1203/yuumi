@@ -46,10 +46,11 @@ type fakeGitHubClient struct {
 	// checkRunID là ID CreateCheckRun trả về (0 mặc định vẫn hợp lệ với
 	// test không quan tâm check run: Job coi 0 là "không tạo được" và bỏ
 	// qua bước complete). completedCheckRuns ghi lại từng lần complete.
-	checkRunID         int64
-	createCheckRunErr  error
-	createCheckRunSHAs []string
-	completedCheckRuns []completedCheckRun
+	checkRunID          int64
+	createCheckRunErr   error
+	createCheckRunSHAs  []string
+	createCheckRunNames []string
+	completedCheckRuns  []completedCheckRun
 }
 
 // completedCheckRun ghi lại tham số 1 lần gọi CompleteCheckRun (issue #59).
@@ -106,6 +107,7 @@ func (f *fakeGitHubClient) CreateReview(repoFullName string, pullRequestNumber i
 
 func (f *fakeGitHubClient) CreateCheckRun(repoFullName string, headSHA string, name string) (int64, error) {
 	f.createCheckRunSHAs = append(f.createCheckRunSHAs, headSHA)
+	f.createCheckRunNames = append(f.createCheckRunNames, name)
 	return f.checkRunID, f.createCheckRunErr
 }
 

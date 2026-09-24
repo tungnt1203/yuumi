@@ -75,9 +75,9 @@ type ReviewStateStore interface {
 
 // BundleCache lưu kết quả của từng bundle đã review xong, để lần chạy lại
 // sau khi review bị ngắt giữa chừng (bundle lỗi, server restart...) bỏ qua
-// các bundle đã có kết quả (issue #76). key tính từ prompt (xem
-// bundleCacheKey), nên chỉ khớp khi prompt giống hệt: đổi diff, hướng dẫn
-// repo hay lệnh của người review đều thành key mới.
+// các bundle đã có kết quả (issue #76). key tính từ head SHA + prompt (xem
+// bundleCacheKey), nên chỉ khớp khi cùng SHA và prompt giống hệt: đổi SHA,
+// diff, hướng dẫn repo hay lệnh của người review đều thành key mới.
 //
 // nil (Job.BundleCache == nil) nghĩa là không bật — mọi bundle luôn gọi
 // Reviewer như trước.

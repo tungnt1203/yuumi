@@ -1,6 +1,7 @@
 package reviewstate
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,7 +20,8 @@ const bundleCacheTTL = 7 * 24 * time.Hour
 // BundleCache lưu kết quả review của từng bundle đã chạy xong, để lần
 // review lại cùng PR sau khi bị ngắt giữa chừng không phải gọi lại Claude
 // cho các bundle đã xong (issue #76). Mỗi entry là 1 file
-// "<repo>#<pr>#<key>.txt" trong Dir; key do review.Job tính từ prompt.
+// "<repo>#<pr>#<key>.txt" trong Dir; key do review.Job tính từ head SHA +
+// prompt.
 type BundleCache struct {
 	Dir string
 
@@ -73,16 +75,27 @@ func (c *BundleCache) LoadBundle(repoFullName string, issueNumber int, key strin
 // SaveBundle ghi kết quả của 1 bundle, tạo Dir nếu chưa có. Ghi ra file
 // tạm rồi rename: process bị kill giữa lúc ghi thì không để lại file .txt
 // cắt dở mà LoadBundle đọc nhầm như kết quả hợp lệ.
+//
+// File tạm có tên riêng cho mỗi lần ghi (os.CreateTemp): 2 job cùng PR
+// chạy song song không ghi đè file tạm của nhau. Tên bắt đầu bằng
+// ".tmp-", không trùng prefix PR nào, nên ClearBundles của job khác không
+// xoá mất file đang ghi; file tạm sót lại sau crash được dọn khi quá TTL.
 func (c *BundleCache) SaveBundle(repoFullName string, issueNumber int, key, text string) error {
 	if err := os.MkdirAll(c.dir(), 0o755); err != nil {
 		return fmt.Errorf("cannot create bundle cache dir: %w", err)
 	}
-	p := c.path(repoFullName, issueNumber, key)
-	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, []byte(text), 0o644); err != nil {
+	tmp, err := os.CreateTemp(c.dir(), ".tmp-*")
+	if err != nil {
+		return fmt.Errorf("cannot create bundle cache temp file: %w", err)
+	}
+	_, writeErr := tmp.WriteString(text)
+	closeErr := tmp.Close()
+	if err := errors.Join(writeErr, closeErr); err != nil {
+		os.Remove(tmp.Name())
 		return fmt.Errorf("cannot write bundle cache entry: %w", err)
 	}
-	if err := os.Rename(tmp, p); err != nil {
+	if err := os.Rename(tmp.Name(), c.path(repoFullName, issueNumber, key)); err != nil {
+		os.Remove(tmp.Name())
 		return fmt.Errorf("cannot save bundle cache entry: %w", err)
 	}
 	return nil
@@ -108,7 +121,13 @@ func (c *BundleCache) ClearBundles(repoFullName string, issueNumber int) error {
 			continue
 		}
 		if err := os.Remove(filepath.Join(c.dir(), e.Name())); err != nil && !os.IsNotExist(err) {
-			return err
+			// Dọn entry hết hạn của PR khác chỉ là tiện tay, lỗi thì bỏ
+			// qua để không chặn việc xoá entry của PR đang cần dọn.
+			if !strings.HasPrefix(e.Name(), p) {
+				fmt.Println("Remove expired bundle cache entry error (bỏ qua):", err)
+				continue
+			}
+			return fmt.Errorf("cannot remove bundle cache entry: %w", err)
 		}
 	}
 	return nil

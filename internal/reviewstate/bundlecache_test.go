@@ -3,6 +3,8 @@ package reviewstate
 import (
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -104,5 +106,38 @@ func TestBundleCache_SaveLeavesNoTempFile(t *testing.T) {
 	entries, _ := os.ReadDir(dir)
 	if len(entries) != 1 || filepath.Ext(entries[0].Name()) != ".txt" {
 		t.Errorf("entries = %v, want exactly 1 .txt file", entries)
+	}
+}
+
+// Nhiều lần ghi song song cùng key: không lỗi, kết quả cuối là 1 trong các
+// nội dung đã ghi (không bị cắt dở), không sót file tạm.
+func TestBundleCache_ConcurrentSaveSameKey(t *testing.T) {
+	dir := t.TempDir()
+	c := NewBundleCache(dir)
+	texts := []string{strings.Repeat("a", 100000), strings.Repeat("b", 100000)}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 20)
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(text string) {
+			defer wg.Done()
+			errs <- c.SaveBundle("o/r", 1, "k", text)
+		}(texts[i%2])
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Errorf("SaveBundle error: %v", err)
+		}
+	}
+
+	got, found, _ := c.LoadBundle("o/r", 1, "k")
+	if !found || (got != texts[0] && got != texts[1]) {
+		t.Errorf("LoadBundle after concurrent saves: found=%v len=%d, want one full text", found, len(got))
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Errorf("dir has %d entries, want 1 (no temp files left)", len(entries))
 	}
 }

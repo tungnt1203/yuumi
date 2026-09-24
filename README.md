@@ -178,8 +178,8 @@ docker run -d --name yuumi -p 8080:8080 \
 - **Claude CLI trong container không đọc được login trên máy host** (keychain). Truyền `CLAUDE_CODE_OAUTH_TOKEN` (tạo bằng `claude setup-token`, dùng gói Claude đang có) hoặc `ANTHROPIC_API_KEY`. Không bake credential vào image.
 - **`/app/logs`** chứa review log, review state và bundle cache — mount volume để không mất khi container bị tạo lại.
 - **Private key** của GitHub App mount dạng file read-only như trên, hoặc truyền base64 qua `GITHUB_APP_PRIVATE_KEY`.
-- `GET /health` trả `503` kèm lý do nếu Claude CLI chưa đăng nhập hoặc GitHub App auth lỗi; Docker `HEALTHCHECK` dùng chính endpoint này.
-- Nâng phiên bản Claude CLI: `docker build --build-arg CLAUDE_VERSION=x.y.z`, nhưng kiểm chứng lại các flag bảo mật ở mục [Chạy an toàn trên code PR không tin cậy](#chạy-an-toàn-trên-code-pr-không-tin-cậy) trước.
+- `GET /health` trả `503` kèm lý do nếu Claude CLI chưa đăng nhập hoặc GitHub App auth lỗi; Docker `HEALTHCHECK` dùng chính endpoint này. Server check lại mỗi 5 phút, nên trạng thái có thể trễ tối đa chừng đó.
+- Nâng phiên bản Claude CLI: sửa `CLAUDE_VERSION` và 2 checksum `CLAUDE_SHA256_AMD64`/`CLAUDE_SHA256_ARM64` trong Dockerfile (lấy từ `https://downloads.claude.ai/claude-code-releases/<version>/manifest.json`), nhưng kiểm chứng lại các flag bảo mật ở mục [Chạy an toàn trên code PR không tin cậy](#chạy-an-toàn-trên-code-pr-không-tin-cậy) trước. Build tự kiểm sha256 và `claude --version` phải khớp bản ghim.
 
 Image hiện chạy cả server lẫn review job trong cùng container. Tách mỗi review job ra một container ngắn hạn riêng (giới hạn tài nguyên/network, không có secret) là giai đoạn 2 của issue #78, dùng lại chính image này.
 

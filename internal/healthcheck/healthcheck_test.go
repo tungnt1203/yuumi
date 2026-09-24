@@ -1,6 +1,7 @@
 package healthcheck
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -9,7 +10,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // withFakeClaude tạo 1 script tên "claude" trong thư mục tạm và chèn lên
@@ -18,13 +21,20 @@ import (
 // claude hay không. Script in stdout rồi thoát với exitCode.
 func withFakeClaude(t *testing.T, exitCode int, stdout string) {
 	t.Helper()
+	withFakeClaudeScript(t, fmt.Sprintf("echo %q\nexit %d", stdout, exitCode))
+}
+
+// withFakeClaudeScript giống withFakeClaude nhưng nhận thẳng thân script sh,
+// cho test cần hành vi khác (vd in ra stderr).
+func withFakeClaudeScript(t *testing.T, body string) {
+	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("fake claude script is a shell script, skip on windows")
 	}
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "claude")
-	script := fmt.Sprintf("#!/bin/sh\necho %q\nexit %d\n", stdout, exitCode)
+	script := "#!/bin/sh\n" + body + "\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("cannot write fake claude script: %v", err)
 	}
@@ -129,6 +139,62 @@ func TestMonitor_Last_ReturnsCachedResultWithoutRechecking(t *testing.T) {
 	}
 }
 
+func TestMonitor_Run_RechecksUntilCancelled(t *testing.T) {
+	// Lúc đầu CLI hỏng, sau đó hồi phục: Run phải cập nhật Last() theo.
+	var cliErr atomicError
+	cliErr.Store(errors.New("not ready"))
+	m := &Monitor{
+		CheckClaudeCLI: cliErr.Load,
+		CheckGitHubApp: func() error { return nil },
+	}
+	if m.Check().Healthy() {
+		t.Fatal("initial Check() healthy, want unhealthy")
+	}
+	cliErr.Store(nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	reports := make(chan Report, 10)
+	done := make(chan struct{})
+	go func() {
+		m.Run(ctx, time.Millisecond, func(r Report) {
+			select {
+			case reports <- r:
+			default:
+			}
+		})
+		close(done)
+	}()
+
+	select {
+	case r := <-reports:
+		if !r.Healthy() {
+			t.Errorf("report after recovery = %+v, want healthy", r)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run did not recheck within 1s")
+	}
+	if !m.Last().Healthy() {
+		t.Errorf("Last() after recheck = %+v, want healthy", m.Last())
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Run did not return after ctx cancelled")
+	}
+}
+
+// atomicError cho test đổi kết quả check trong lúc Run chạy ở goroutine
+// khác mà không bị data race.
+type atomicError struct {
+	mu  sync.Mutex
+	err error
+}
+
+func (a *atomicError) Store(err error) { a.mu.Lock(); a.err = err; a.mu.Unlock() }
+func (a *atomicError) Load() error     { a.mu.Lock(); defer a.mu.Unlock(); return a.err }
+
 func TestNewMonitor_UsesDefaultChecks(t *testing.T) {
 	m := NewMonitor("some-app-id", []byte("some-key"))
 	if m.CheckClaudeCLI == nil {
@@ -168,6 +234,16 @@ func TestDefaultClaudeCLICheck(t *testing.T) {
 		withFakeClaude(t, 1, "")
 		if err := DefaultClaudeCLICheck(); err == nil {
 			t.Error("DefaultClaudeCLICheck() = nil, want error")
+		}
+	})
+
+	// Lý do thật chỉ có ở stderr — phải lọt vào message, không chỉ
+	// "exit status 1".
+	t.Run("claude exits with stderr", func(t *testing.T) {
+		withFakeClaudeScript(t, "echo 'cannot write ~/.claude' >&2\nexit 1")
+		err := DefaultClaudeCLICheck()
+		if err == nil || !strings.Contains(err.Error(), "cannot write ~/.claude") {
+			t.Errorf("DefaultClaudeCLICheck() = %v, want error containing stderr", err)
 		}
 	})
 

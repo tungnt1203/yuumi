@@ -28,6 +28,11 @@ ARG CLAUDE_SHA256_AMD64=56fe3da88458465fb27d7e9299dddb3fead55750fb9c2de795f233b5
 ARG CLAUDE_SHA256_ARM64=dd27b36438a4fed1670cd29bad2fda6a73b628b6da55443e5c2f647fe6ed328f
 ARG TARGETARCH
 
+# DISABLE_AUTOUPDATER: Claude CLI native tự cập nhật, trong container phải
+# giữ đúng bản đã ghim. Set trước bước cài để cả lệnh `claude --version`
+# kiểm bản ghim bên dưới cũng không tự cập nhật.
+ENV DISABLE_AUTOUPDATER=1
+
 # Tải thẳng binary đúng bản + kiểm sha256 ghim sẵn, thay vì curl install.sh |
 # bash (script lấy từ mạng mỗi lần build, và tự tải bản latest trước khi cài
 # bản ghim). Cài vào /usr/local/bin bằng root: user yuumi (và code PR) không
@@ -53,10 +58,6 @@ RUN useradd --create-home --uid 10001 yuumi \
 
 USER yuumi
 WORKDIR /app
-
-# DISABLE_AUTOUPDATER: Claude CLI native tự cập nhật, trong container phải
-# giữ đúng bản đã ghim.
-ENV DISABLE_AUTOUPDATER=1
 
 COPY --from=build /out/yuumi-server /usr/local/bin/yuumi-server
 

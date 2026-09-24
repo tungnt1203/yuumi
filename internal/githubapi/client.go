@@ -19,7 +19,7 @@ type PullRequestResponse struct {
 		SHA string `json:"sha"`
 	} `json:"head"`
 	// Base.SHA là commit của nhánh đích mà PR so sánh tới — dùng để đọc cấu
-	// hình mà tác giả PR không tự sửa được (xem GetPullRequestBaseSHA).
+	// hình mà tác giả PR không tự sửa được (xem GetPullRequestSHAs).
 	Base struct {
 		SHA string `json:"sha"`
 	} `json:"base"`
@@ -190,9 +190,9 @@ func (c *Client) CreateReview(repoFullName string, pullRequestNumber int, commit
 
 // getPullRequest gọi GET /repos/{repo}/pulls/{number} (JSON mặc định, không
 // phải Accept diff của GetPullRequestDiff) — dùng chung cho
-// GetPullRequestHeadSHA và GetPullRequestChangedFilesCount, vì cả 2 chỉ cần
-// 2 field khác nhau từ CÙNG 1 response, không đáng gọi API 2 lần hay lặp
-// lại boilerplate request/decode.
+// GetPullRequestHeadSHA, GetPullRequestSHAs và
+// GetPullRequestChangedFilesCount, vì cả 3 chỉ cần vài field khác nhau từ
+// CÙNG 1 response, không đáng lặp lại boilerplate request/decode.
 func (c *Client) getPullRequest(repoFullName string, pullRequestNumber int) (PullRequestResponse, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/pulls/%d", repoFullName, pullRequestNumber)
 	req, err := c.newRequest("GET", url, nil)

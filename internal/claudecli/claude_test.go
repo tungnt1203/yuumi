@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -324,5 +325,42 @@ exit 1`))
 	assertAttempts(t, counter, 1)
 	if stats.Usage != wantUsage {
 		t.Errorf("Review() usage = %+v, want %+v", stats.Usage, wantUsage)
+	}
+}
+
+// Claude CLI chạy trong repo của PR: không đọc settings/MCP của repo, không
+// được dùng tool chạy lệnh/sửa file, không thấy secret của server (#78).
+func TestReview_HardenedArgsAndEnv(t *testing.T) {
+	out := t.TempDir()
+	withFakeClaude(t, fmt.Sprintf(`#!/bin/sh
+for a in "$@"; do echo "$a"; done > %q
+env > %q
+echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'
+`, filepath.Join(out, "args"), filepath.Join(out, "env")))
+	t.Setenv("GITHUB_WEBHOOK_SECRET", "top-secret")
+	t.Setenv("GITHUB_APP_PRIVATE_KEY", "pem")
+
+	if _, _, err := (&Reviewer{}).Review("p", t.TempDir()); err != nil {
+		t.Fatalf("Review() unexpected error: %v", err)
+	}
+
+	args, _ := os.ReadFile(filepath.Join(out, "args"))
+	for _, want := range []string{"--setting-sources\nuser\n", "--strict-mcp-config\n", "--disallowedTools\n" + disallowedTools + "\n"} {
+		if !strings.Contains(string(args), want) {
+			t.Errorf("claude args missing %q, got:\n%s", want, args)
+		}
+	}
+	for _, tool := range []string{"Bash", "Edit", "Write", "WebFetch"} {
+		if !slices.Contains(strings.Split(disallowedTools, ","), tool) {
+			t.Errorf("disallowedTools = %q, want it to include %s", disallowedTools, tool)
+		}
+	}
+
+	env, _ := os.ReadFile(filepath.Join(out, "env"))
+	if strings.Contains(string(env), "top-secret") || strings.Contains(string(env), "GITHUB_APP_PRIVATE_KEY=") {
+		t.Errorf("claude env leaks server secrets:\n%s", env)
+	}
+	if !strings.Contains(string(env), "PATH=") {
+		t.Errorf("claude env should keep PATH, got:\n%s", env)
 	}
 }

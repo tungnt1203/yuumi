@@ -186,6 +186,20 @@ Nếu repo được review có `go.mod`, bot chạy `gofmt` và `go vet` trên b
 
 </details>
 
+<details id="chạy-an-toàn-trên-code-pr-không-tin-cậy">
+<summary><strong>Chạy an toàn trên code PR không tin cậy</strong></summary>
+
+Code của PR có thể đến từ bất kỳ ai, nên mọi tiến trình con chạy trên thư mục clone đều bị siết lại (issue #78, giai đoạn 1):
+
+- **Claude CLI** chạy với `--setting-sources user` và `--strict-mcp-config`: bỏ `.claude/settings*.json` và `.mcp.json` của repo (các file này khai báo được hook chạy lệnh shell trên server). Tool `Bash`, `Edit`, `Write`, `NotebookEdit`, `WebFetch`, `WebSearch` bị chặn; review chỉ đọc code.
+- **`gofmt`/`go vet`** có timeout 2 phút, `GOTOOLCHAIN=local` (không tải toolchain do `go.mod` của PR yêu cầu), `CGO_ENABLED=0`, `GOPROXY` chỉ `proxy.golang.org` (không clone VCS tuỳ ý).
+- Không tiến trình con nào nhận secret của server (`GITHUB_WEBHOOK_SECRET`, private key của App...) qua biến môi trường.
+- Claude CLI mặc định từ chối `Read`/`Grep`/`Glob` ra ngoài thư mục review, kể cả qua symlink trong repo (nên không đọc được file private key, `.env` hay `/proc/<pid>/environ` của server). **Không thêm `additionalDirectories` hay rule `allow` cho Read/Grep/Glob vào `~/.claude/settings.json` của user chạy server** — làm vậy là mở lại đường đọc secret.
+
+Còn lại cho giai đoạn 2 (sandbox riêng mỗi job): `CLAUDE.md` của repo vẫn được Claude CLI đọc, và các tiến trình con vẫn chạy cùng user/filesystem/network với server.
+
+</details>
+
 <details id="log-mỗi-lần-review">
 <summary><strong>Log mỗi lần review</strong></summary>
 

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-yuumi is a Go GitHub App that reviews Pull Requests: it receives webhooks, clones the PR head, runs the `claude` CLI on it, and posts a summary comment, inline findings, and a `yuumi review` check run. Code comments, commit messages, PR bodies, and README are written in Vietnamese. Keep that convention.
+yuumi is a Go GitHub App that reviews Pull Requests: it receives webhooks, clones the PR head, runs the `claude` CLI on it, and posts a summary comment, inline findings, and a `yuumi review` check run. Docs, commit messages, PR titles/bodies, and new code comments are written in English (`README.md` is canonical; `README.vi.md` is a Vietnamese translation to keep in sync). Older code comments are still in Vietnamese and are being translated package by package. The bot's own output on PRs (comments, findings, check run text, prompts asking for Vietnamese messages) stays in Vietnamese: that is product behavior, not docs. Eval fixture code (`evalsuite/testdata/*/before|after`) is model input: never translate or edit it.
 
 ## Commands
 
@@ -59,10 +59,11 @@ Both paths skip a head SHA that was already reviewed (`review.AlreadyReviewedSHA
 
 ## Security invariants (PR code is untrusted input)
 
-Keep these when changing anything that touches the clone directory or subprocesses (README "Chạy an toàn trên code PR không tin cậy", issue #78):
+Keep these when changing anything that touches the clone directory or subprocesses (README "Running safely on untrusted PR code", issue #78):
 - `claude` runs with `--tools Read,Grep,Glob` (an allowlist, never go back to `--disallowedTools`: with a blocklist CLI 2.1.281 still exposes Agent, Workflow, Skill, ToolSearch...), `--restricted`, `--setting-sources user`, `--strict-mcp-config`, `--no-session-persistence`, and `--max-budget-usd`. It must not gain write, shell, network, or agent tools.
 - Subprocesses that run on PR code (`claude`, `gofmt`/`go vet`) get their env from `internal/procenv`, which strips server secrets.
 - The Docker sandbox runs only on the `--internal` network `yuumi-sandbox`. Its only way out is container `yuumi-egress` (`internal/egress`): a `CONNECT :443` proxy limited to `egress.DefaultAllowedHosts`, and a credential proxy to the Anthropic API (`ANTHROPIC_BASE_URL`, paths under `/v1/` only). The real Claude credential never enters the sandbox: the sandbox gets a same-kind placeholder, and the credential proxy swaps in the real one. Never add `CLAUDE_CODE_OAUTH_TOKEN`/`ANTHROPIC_API_KEY` to `forwardEnvKeys`. A new outbound dependency of a review step must be added to that allowlist, or it fails with a `DENY` line in `docker logs yuumi-egress`. Do not forward the server's `HTTP(S)_PROXY` into the sandbox (it would bypass the egress proxy).
+- Server-side reads of files in the clone (`.yuumi.yml`, `.gitignore`, `.gitmodules`) go through `readCloneFile` (`os.Root`), never `os.ReadFile`: the PR author controls those files and can make them symlinks to server files.
 - Never exec directly on the clone dir: go through `sandbox.Env.Command`. The Docker sandbox forwards only `forwardEnvKeys` (an allowlist), passed as `-e KEY` so values stay out of args. If the sandbox cannot start, the review fails; it must not fall back to running on the server.
 - `gofmt`/`go vet` run with a timeout, `GOTOOLCHAIN=local`, `CGO_ENABLED=0`, and a restricted `GOPROXY`.
 - The installation token is passed to `git fetch` only, through `GIT_CONFIG_*` env (`http.extraheader`). Never put it in the remote URL (it would land in `.git/config`, which Claude reads) or in command args.
@@ -72,5 +73,5 @@ Keep these when changing anything that touches the clone directory or subprocess
 
 ## Conventions
 
-- Branches: `feat/<topic>-<issue>` or `fix/...`. Commits and PR titles: `feat: <mô tả> (#<issue>)`. A follow-up commit for review feedback is titled `fix: xử lý góp ý review PR #<n>`.
+- Branches: `feat/<topic>-<issue>`, `fix/...`, `docs/...`, `chore/...`. Commits and PR titles: `feat: <summary> (#<issue>)`. A follow-up commit for review feedback is titled `fix: address review feedback on PR #<n>`.
 - The bot reviews every push to a PR. Use the `yuumi-review-loop` skill (`.claude/skills/`) to wait for its review, fix the findings, and reply.

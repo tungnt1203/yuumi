@@ -1,19 +1,20 @@
-# Kỳ vọng: hardcoded-secret-go
+# Expected: hardcoded-secret-go
 
-PR thêm `AccessKeyID`/`SecretAccessKey` vào `Config` nhưng gán thẳng giá
-trị AWS credential dạng string literal trong code, thay vì đọc từ biến môi
-trường như `Bucket`/`Region` ngay bên cạnh — credential lộ lên git history
-(issue #64). Giá trị dùng trong fixture là key ví dụ công khai trong tài
-liệu AWS, không phải key thật.
+The PR adds `AccessKeyID`/`SecretAccessKey` to `Config` but assigns AWS
+credentials as string literals in code, instead of reading them from
+environment variables like `Bucket`/`Region` right next to them. The
+credentials end up in git history (issue #64). The values in this fixture
+are the public example keys from the AWS documentation, not real keys.
 
-Bot PHẢI bắt được:
+The bot MUST catch:
 
-- [ ] Có finding `category: "security"`, `severity: "critical"` (chấp nhận
-      `"high"`) nhắc tới credential/secret hardcode.
-- [ ] Finding gắn đúng vào file `storage.go`, dòng `AccessKeyID:` hoặc
-      `SecretAccessKey:`.
-- [ ] `suggestion` (nếu có) đọc từ biến môi trường (`os.Getenv`) hoặc
-      secret manager, không chép lại giá trị key vào message/suggestion.
+- [ ] A `category: "security"`, `severity: "critical"` (`"high"` accepted)
+      finding about hardcoded credentials/secrets.
+- [ ] The finding is on `storage.go`, at the `AccessKeyID:` or
+      `SecretAccessKey:` line.
+- [ ] The `suggestion` (if any) reads from environment variables
+      (`os.Getenv`) or a secret manager, and does not copy the key values
+      into the message/suggestion.
 
-Không nên báo sai (false positive) ở `Bucket`/`Region` — 2 field này đã
-đọc từ biến môi trường, không đổi gì trong PR này.
+It should not report false positives on `Bucket`/`Region`: those fields
+already come from environment variables and are unchanged in this PR.

@@ -1,17 +1,18 @@
-# Kỳ vọng: sql-injection-go
+# Expected: sql-injection-go
 
-PR thêm hàm `FindUsersBySearchTerm` build câu SQL bằng `fmt.Sprintf` nối
-thẳng `term` (input từ ô search) vào query, thay vì dùng placeholder `?`
-như 2 hàm còn lại trong cùng file — SQL injection kinh điển.
+The PR adds `FindUsersBySearchTerm`, which builds the SQL query with
+`fmt.Sprintf`, concatenating `term` (input from a search box) directly into
+the query instead of using a `?` placeholder like the other two functions in
+the same file. Classic SQL injection.
 
-Bot PHẢI bắt được:
+The bot MUST catch:
 
-- [ ] Có finding `category: "security"` (hoặc `"bug"`, chấp nhận cả 2 nếu
-      Claude phân loại khác) nhắc tới SQL injection / nối string vào query.
-- [ ] Finding gắn đúng vào file `query.go`, dòng chứa `fmt.Sprintf(...)`
-      hoặc dòng `db.Query(query)`.
-- [ ] `suggestion` (nếu có) gợi ý dùng placeholder/parameterized query,
-      không tự ý "sửa" bằng cách escape string thủ công.
+- [ ] A `category: "security"` finding (`"bug"` also accepted) about SQL
+      injection / string concatenation into the query.
+- [ ] The finding is on `query.go`, at the `fmt.Sprintf(...)` line or the
+      `db.Query(query)` line.
+- [ ] The `suggestion` (if any) uses a placeholder/parameterized query, not
+      hand-rolled string escaping.
 
-Không nên báo sai (false positive) ở `FindUserByName`/`FindUsersByRole` —
-2 hàm này đã dùng placeholder đúng cách, không đổi gì trong PR này.
+It should not report false positives on `FindUserByName`/`FindUsersByRole`:
+both already use placeholders correctly and are unchanged in this PR.

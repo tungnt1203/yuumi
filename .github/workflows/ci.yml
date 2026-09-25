@@ -24,3 +24,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: docker build -t yuumi:ci .
+      # Job build ở trên test bằng Go theo go.mod; server và sandbox chạy
+      # bằng Go của image (Dockerfile). Chạy lại vet/test trong chính image
+      # để bản bump Go của Dependabot được kiểm tra thật, không chỉ build.
+      # -buildvcs=false: thư mục checkout thuộc user khác user trong image,
+      # git sẽ từ chối đọc .git ("dubious ownership").
+      - run: >-
+          docker run --rm -v "$PWD":/src:ro -w /src -e GOFLAGS=-buildvcs=false
+          --entrypoint sh yuumi:ci -c 'go version && go vet ./... && go test ./...'

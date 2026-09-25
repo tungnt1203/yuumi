@@ -178,6 +178,18 @@ func loadGitHubAppPrivateKey() ([]byte, error) {
 // Config coi là "chưa cấu hình, tự dùng default riêng của nó". Nếu biến CÓ
 // set nhưng không phải số nguyên dương thì coi là lỗi cấu hình rõ ràng
 // (thà fail sớm lúc khởi động còn hơn âm thầm dùng default sai ý người set).
+func parseOptionalPositiveIntEnv(name string) (int, error) {
+	raw, ok := os.LookupEnv(name)
+	if !ok {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer, got %q", name, raw)
+	}
+	return n, nil
+}
+
 // parseOptionalPositiveFloatEnv giống parseOptionalPositiveIntEnv cho số
 // thực dương (vd số tiền USD).
 func parseOptionalPositiveFloatEnv(name string) (float64, error) {
@@ -190,16 +202,4 @@ func parseOptionalPositiveFloatEnv(name string) (float64, error) {
 		return 0, fmt.Errorf("%s must be a positive number, got %q", name, raw)
 	}
 	return f, nil
-}
-
-func parseOptionalPositiveIntEnv(name string) (int, error) {
-	raw, ok := os.LookupEnv(name)
-	if !ok {
-		return 0, nil
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil || n <= 0 {
-		return 0, fmt.Errorf("%s must be a positive integer, got %q", name, raw)
-	}
-	return n, nil
 }

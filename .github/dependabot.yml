@@ -1,0 +1,49 @@
+# Dependabot tự mở PR bump phiên bản phụ thuộc mỗi tuần.
+#
+# Không tự bump được (cập nhật tay):
+#   - Claude CLI (CLAUDE_VERSION + sha256 trong Dockerfile): bản ghim đã được
+#     kiểm chứng các cờ bảo mật (--tools, --restricted, --json-schema...).
+#     Nâng bản thì kiểm chứng lại các cờ đó và chạy eval (evalsuite/README.md).
+#   - Docker CLI (DOCKER_CLI_VERSION + sha256 trong Dockerfile).
+#   - Directive `go` trong go.mod.
+#
+# PR của Dependabot không được bot yuumi review (tác giả không nằm trong
+# ALLOWED_USERS) nhưng vẫn chạy CI (build, vet, test, docker build).
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      timezone: Asia/Ho_Chi_Minh
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      go-minor-patch:
+        update-types: [minor, patch]
+
+  # Image golang của cả 2 stage trong Dockerfile.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      timezone: Asia/Ho_Chi_Minh
+    commit-message:
+      prefix: chore
+      include: scope
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      timezone: Asia/Ho_Chi_Minh
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      actions:
+        patterns: ["*"]

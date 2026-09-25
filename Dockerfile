@@ -5,9 +5,9 @@
 # Claude CLI — để sau này chính image này chạy được sandbox riêng cho mỗi
 # job (issue #78 giai đoạn 2).
 
-ARG GO_VERSION=1.26.5
-
-FROM golang:${GO_VERSION}-bookworm AS build
+# Tag golang viết thẳng (không qua ARG) để Dependabot đọc và bump được —
+# Dependabot không hiểu FROM dùng biến. 2 dòng FROM phải cùng tag.
+FROM golang:1.26.5-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
@@ -17,7 +17,7 @@ RUN CGO_ENABLED=0 go build -trimpath -o /out/yuumi-server ./cmd/server \
 
 # Runtime dùng luôn image golang (đã có go + git + curl): go vet cần toolchain
 # thật, tự ráp Go vào image slim không tiết kiệm được bao nhiêu.
-FROM golang:${GO_VERSION}-bookworm
+FROM golang:1.26.5-bookworm
 
 # Ghim đúng bản đã kiểm chứng các flag bảo mật (--setting-sources,
 # --strict-mcp-config, chặn đọc ngoài thư mục review — xem PR #85). Nâng

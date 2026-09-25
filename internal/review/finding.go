@@ -254,8 +254,8 @@ func renderFileGroup(file string, findings []Finding) string {
 //
 // partial=true nghĩa là findings KHÔNG đại diện cho toàn bộ PR: có ít nhất
 // 1 bundle khác lỗi hoặc Claude trả văn xuôi tự do (không parse được, xem
-// Job.reviewBundles's allParsed) — phần nội dung đó chỉ hiển thị dạng raw
-// text ở bên dưới banner này, không được tính vào bảng/"Tổng" ở đây.
+// Job.reviewBundles's allParsed), hoặc có submodule mang code mới mà bot
+// không review (issue #93) — phần đó không được tính vào bảng/"Tổng" ở đây.
 //
 // Khi partial, dòng đầu KHÔNG được là "✅ không có vấn đề". Dòng đó là phần
 // người đọc lướt qua; một caveat in nghiêng phía dưới không thắng được một
@@ -266,7 +266,7 @@ func renderReviewHeader(findings []Finding, partial bool) string {
 	b.WriteString("## 🟣 Yuumi Review\n\n")
 
 	if partial && len(findings) == 0 {
-		b.WriteString("⚠️ Review chưa đủ để kết luận. Có phần review không đếm được (lỗi hoặc văn xuôi) — xem chi tiết bên dưới, có thể còn vấn đề chưa được đếm.")
+		b.WriteString("⚠️ Review chưa đủ để kết luận. Có phần chưa được review hoặc không đếm được (lỗi, văn xuôi, submodule) — xem chi tiết bên dưới, có thể còn vấn đề chưa được đếm.")
 		return b.String()
 	}
 	if partial {

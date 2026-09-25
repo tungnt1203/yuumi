@@ -260,7 +260,27 @@ func (j *Job) Run() {
 		}
 	}
 
-	plan := BuildBundlePlan(dir, j.UserCommand, diff, j.BundleBudgetChars, extraIgnoredPatterns, staticReport, repoCfg.Instructions)
+	// Submodule (issue #93): diff của gitlink chỉ có "Subproject commit",
+	// bot không có code của submodule. Bỏ khỏi prompt để Claude không kết
+	// luận "sạch" về code nó chưa thấy, và ghi rõ phần chưa review.
+	// validationDiff giữ nguyên: nó chỉ dùng để đối chiếu inline comment.
+	promptDiff, subChanges := splitSubmoduleChanges(diff)
+	unreviewedSubmodules := unreviewedSubmoduleCount(subChanges)
+	if note := submoduleNote(subChanges); note != "" {
+		notes = append(notes, note)
+	}
+	subFindings, subNote := j.submoduleURLFindings(dir, baseSHA, validationDiff)
+	if subNote != "" {
+		notes = append(notes, subNote)
+	}
+
+	// PR chỉ đổi submodule: không có gì của repo này để gửi Claude. Không
+	// gọi BuildBundlePlan với diff rỗng — nó coi đó là "không lấy được diff"
+	// và bảo Claude tự đọc file.
+	var plan BundlePlan
+	if strings.TrimSpace(promptDiff) != "" || len(subChanges) == 0 {
+		plan = BuildBundlePlan(dir, j.UserCommand, promptDiff, j.BundleBudgetChars, extraIgnoredPatterns, staticReport, repoCfg.Instructions)
+	}
 	if len(plan.Skipped) > 0 {
 		notes = append(notes, skippedNote(plan.Skipped))
 	}
@@ -277,16 +297,23 @@ func (j *Job) Run() {
 		// chỉ để nó nói "không có gì để xem". Không có finding nào để tổng
 		// hợp nên bỏ qua header luôn, tránh 1 banner "0 góp ý" thừa thãi.
 		merged = "Không có file nào cần review."
+		if len(subChanges) > 0 {
+			merged = "Không có file nào của repo này cần review."
+		}
 	} else {
 		merged, hadError, inline, allFindings, anyParsed, allParsed = j.reviewBundles(plan.Prompts, box, sha, validationDiff)
-		if anyParsed {
-			// partial=true khi có bundle KHÔNG đóng góp được vào allFindings
-			// (lỗi hoặc Claude trả văn xuôi tự do) — renderReviewHeader cần
-			// biết để cảnh báo "Tổng: N" chỉ tính phần parse được, tránh
-			// người đọc tưởng N là toàn bộ vấn đề của PR trong khi nội dung
-			// raw-text bên dưới có thể còn thêm vấn đề chưa được đếm.
-			header = renderReviewHeader(allFindings, anyParsed && !allParsed)
-		}
+	}
+	if len(subFindings) > 0 {
+		allFindings = append(allFindings, subFindings...)
+		merged += "\n\n### Submodule\n" + renderFindings(subFindings)
+	}
+	// partial=true khi allFindings không đại diện cho toàn bộ PR: có bundle
+	// KHÔNG đóng góp được finding (lỗi hoặc Claude trả văn xuôi tự do), hoặc
+	// có submodule mang code mới mà bot không review. renderReviewHeader khi
+	// đó không mở đầu bằng "✅ không có vấn đề" (issue #69, #93).
+	partial := (anyParsed && !allParsed) || unreviewedSubmodules > 0
+	if anyParsed || len(subFindings) > 0 || unreviewedSubmodules > 0 {
+		header = renderReviewHeader(allFindings, partial)
 	}
 
 	// Thứ tự hiển thị: header tổng quan (nếu có) trước tiên, rồi tới các
@@ -317,14 +344,15 @@ func (j *Job) Run() {
 		blockSeverity, gateNote = j.loadBlockSeverity(baseSHA)
 	}
 	checkResult = reviewedCheckRunResult(reviewOutcome{
-		HadError:      hadError,
-		Parsed:        anyParsed,
-		Partial:       anyParsed && !allParsed,
-		Findings:      allFindings,
-		Header:        header,
-		CommentURL:    j.reviewCommentURL(),
-		BlockSeverity: blockSeverity,
-		GateNote:      gateNote,
+		HadError:             hadError,
+		Parsed:               anyParsed || len(subFindings) > 0,
+		Partial:              partial,
+		Findings:             allFindings,
+		Header:               header,
+		CommentURL:           j.reviewCommentURL(),
+		BlockSeverity:        blockSeverity,
+		GateNote:             gateNote,
+		UnreviewedSubmodules: unreviewedSubmodules,
 	})
 
 	if len(inline) > 0 {

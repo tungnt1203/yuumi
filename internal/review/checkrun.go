@@ -45,6 +45,10 @@ type reviewOutcome struct {
 	// cấu hình gate (gate khi đó không áp dụng).
 	BlockSeverity []string
 	GateNote      string
+
+	// UnreviewedSubmodules là số submodule PR đưa code mới vào mà bot không
+	// review (issue #93).
+	UnreviewedSubmodules int
 }
 
 // reviewedCheckRunResult dựng kết quả check run khi review đã post xong.
@@ -52,6 +56,7 @@ type reviewOutcome struct {
 //   - Có finding ở mức trong BlockSeverity: failure, kể cả khi có bundle lỗi
 //     — vấn đề đã tìm thấy là thật, phần lỗi chỉ có thể thêm vấn đề.
 //   - Có bundle lỗi: neutral, review chưa đủ để kết luận.
+//   - Có submodule mang code mới chưa review: neutral, cùng lý do.
 //   - Còn lại: success. BlockSeverity rỗng (mặc định) thì luôn thế, dù có
 //     finding gì — giữ hành vi chỉ góp ý, không chặn merge.
 func reviewedCheckRunResult(o reviewOutcome) checkRunResult {
@@ -65,6 +70,12 @@ func reviewedCheckRunResult(o reviewOutcome) checkRunResult {
 	case o.HadError:
 		result.Conclusion = "neutral"
 		result.Title = "Review chưa trọn vẹn: một phần bị lỗi"
+	case o.UnreviewedSubmodules > 0:
+		result.Conclusion = "neutral"
+		result.Title = fmt.Sprintf("%d submodule chưa được review", o.UnreviewedSubmodules)
+		if len(o.Findings) > 0 {
+			result.Title = fmt.Sprintf("%d góp ý; %d submodule chưa được review", len(o.Findings), o.UnreviewedSubmodules)
+		}
 	case !o.Parsed:
 		result.Title = "Review xong"
 	case o.Partial:

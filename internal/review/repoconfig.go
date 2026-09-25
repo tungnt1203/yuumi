@@ -1,8 +1,8 @@
 package review
 
 import (
-	"os"
-	"path/filepath"
+	"errors"
+	"io/fs"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -43,9 +43,9 @@ type repoConfig struct {
 // nhất quán với cách GetPullRequestDiff/GetPullRequestChangedFilesCount lỗi
 // cũng không chặn Run (xem job.go).
 func loadRepoConfig(dir string) (repoConfig, error) {
-	data, err := os.ReadFile(filepath.Join(dir, repoConfigFileName))
+	data, err := readCloneFile(dir, repoConfigFileName)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return repoConfig{}, nil
 		}
 		return repoConfig{}, err

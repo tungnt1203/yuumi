@@ -1,8 +1,8 @@
 package review
 
 import (
-	"os"
-	"path/filepath"
+	"errors"
+	"io/fs"
 	"strings"
 )
 
@@ -19,9 +19,9 @@ const gitignoreFileName = ".gitignore"
 // lỗi (quyền, ...) → trả lỗi kèm nil để nơi gọi tự log, không chặn review —
 // nhất quán với loadRepoConfig (xem repoconfig.go, issue #7).
 func loadGitignorePatterns(dir string) ([]string, error) {
-	data, err := os.ReadFile(filepath.Join(dir, gitignoreFileName))
+	data, err := readCloneFile(dir, gitignoreFileName)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, err

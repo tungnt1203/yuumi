@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"sort"
 	"strings"
 )
@@ -145,17 +144,10 @@ func gitmodulesURLFindings(base, head map[string]string) []Finding {
 	return findings
 }
 
-// readHeadGitmodules đọc .gitmodules trong thư mục clone (head). Không có
-// file thì trả map rỗng. Đọc qua os.Root: file do tác giả PR kiểm soát,
-// symlink trỏ ra ngoài thư mục clone (vd tới file bí mật trên server) bị
-// từ chối thay vì bị đọc rồi đưa vào comment.
+// readHeadGitmodules đọc .gitmodules trong thư mục clone (head), qua
+// readCloneFile. Không có file thì trả map rỗng.
 func readHeadGitmodules(dir string) (map[string]string, error) {
-	root, err := os.OpenRoot(dir)
-	if err != nil {
-		return nil, err
-	}
-	defer root.Close()
-	data, err := root.ReadFile(gitmodulesFile)
+	data, err := readCloneFile(dir, gitmodulesFile)
 	if errors.Is(err, fs.ErrNotExist) {
 		return map[string]string{}, nil
 	}

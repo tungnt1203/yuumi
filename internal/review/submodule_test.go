@@ -73,6 +73,25 @@ func TestSplitSubmoduleChanges_IgnoresNormalFiles(t *testing.T) {
 	}
 }
 
+// File thường bị thay bằng submodule: git không in "old mode 100644 / new
+// mode 160000" mà tách thành 2 mục — xoá file cũ và "new file mode 160000"
+// (output thật của git diff, kể cả với -M). Mục xoá file vẫn đi vào prompt,
+// mục gitlink được nhận diện.
+func TestSplitSubmoduleChanges_FileReplacedBySubmodule(t *testing.T) {
+	deleted := "diff --git a/dep b/dep\ndeleted file mode 100644\nindex 45b983b..0000000\n--- a/dep\n+++ /dev/null\n@@ -1 +0,0 @@\n-hi"
+	added := "diff --git a/dep b/dep\nnew file mode 160000\nindex 0000000..1111111\n--- /dev/null\n+++ b/dep\n@@ -0,0 +1 @@\n+Subproject commit 1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	rest, changes := splitSubmoduleChanges(deleted + "\n" + added)
+
+	if rest != deleted {
+		t.Errorf("rest = %q, want only the deleted regular file", rest)
+	}
+	want := submoduleChange{Path: "dep", NewSHA: "1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+	if len(changes) != 1 || changes[0] != want {
+		t.Errorf("changes = %+v, want [%+v]", changes, want)
+	}
+}
+
 func TestSubmoduleNote(t *testing.T) {
 	_, changes := splitSubmoduleChanges(strings.Join([]string{bumpDiff, addSubmoduleDiff, removeSubmoduleDiff}, "\n"))
 

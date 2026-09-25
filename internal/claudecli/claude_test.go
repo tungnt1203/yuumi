@@ -82,6 +82,38 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"looks good
 	}
 }
 
+// Chạy với --json-schema thì kết quả là structured_output (CLI đã validate
+// theo schema), không phải field result (issue #72).
+func TestReview_ReturnsStructuredOutput(t *testing.T) {
+	withFakeClaude(t, `#!/bin/sh
+echo '{"type":"result","subtype":"success","is_error":false,"result":"văn xuôi","structured_output":{"findings":[]}}'
+`)
+
+	got, _, err := (&Reviewer{}).Review("review this", sandbox.Local(t.TempDir()))
+	if err != nil {
+		t.Fatalf("Review() unexpected error: %v", err)
+	}
+	if got != `{"findings":[]}` {
+		t.Errorf("Review() = %q, want the structured output", got)
+	}
+}
+
+// Không có structured output (null) thì trả result, để Job còn hiển thị
+// được nguyên văn thay vì mất nội dung review.
+func TestReview_NullStructuredOutput_FallsBackToResult(t *testing.T) {
+	withFakeClaude(t, `#!/bin/sh
+echo '{"type":"result","subtype":"success","is_error":false,"result":"văn xuôi","structured_output":null}'
+`)
+
+	got, _, err := (&Reviewer{}).Review("review this", sandbox.Local(t.TempDir()))
+	if err != nil {
+		t.Fatalf("Review() unexpected error: %v", err)
+	}
+	if got != "văn xuôi" {
+		t.Errorf("Review() = %q, want result text", got)
+	}
+}
+
 func TestReview_ClaudeReportsError_DoesNotRetry(t *testing.T) {
 	counter := filepath.Join(t.TempDir(), "attempts")
 	withFakeClaude(t, countingScript(counter, `echo '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"gave up","num_turns":2}'`))
@@ -346,7 +378,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'
 	}
 
 	args, _ := os.ReadFile(filepath.Join(out, "args"))
-	for _, want := range []string{"--setting-sources\nuser\n", "--strict-mcp-config\n", "--disallowedTools\n" + disallowedTools + "\n"} {
+	for _, want := range []string{"--setting-sources\nuser\n", "--strict-mcp-config\n", "--disallowedTools\n" + disallowedTools + "\n", "--json-schema\n" + review.FindingsSchema + "\n"} {
 		if !strings.Contains(string(args), want) {
 			t.Errorf("claude args missing %q, got:\n%s", want, args)
 		}

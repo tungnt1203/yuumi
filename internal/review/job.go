@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
@@ -574,8 +573,7 @@ func (j *Job) reviewBundles(bundles []string, box sandbox.Env, sha string, stati
 
 			// Log response gốc của lần review (JSON nếu Claude làm đúng
 			// format, text tự do nếu không — rỗng nếu lỗi), KHÔNG phải
-			// display đã render lại. Ghi trước lần sửa định dạng bên dưới
-			// để file log giữ đúng thứ tự: review trước, repair sau.
+			// display đã render lại.
 			if err != nil {
 				errMsg = err.Error()
 			}
@@ -595,16 +593,14 @@ func (j *Job) reviewBundles(bundles []string, box sandbox.Env, sha string, stati
 			hadError = true
 		} else {
 			fmt.Println("Review bundle", i+1, "/", len(bundles), "result:", text)
-			findings, ok := parseFindings(text)
+			findings, dropped, ok := parseFindings(text)
+			if dropped > 0 {
+				fmt.Println("Review bundle", i+1, "/", len(bundles), "bỏ", dropped, "finding sai định dạng")
+			}
 			if !ok && strings.TrimSpace(text) == "" {
 				// Output trắng không phải kết luận sạch. Ghi một câu để người
 				// đọc thấy phần này không có kết quả, thay vì một mục trống.
 				display = "⚠️ Reviewer không trả về nội dung cho phần này."
-			}
-			repaired := false
-			if !ok && strings.TrimSpace(text) != "" {
-				findings, ok = j.repairFindingsFormat(box, sha, i+1, len(bundles), text)
-				repaired = ok
 			}
 			if ok {
 				anyParsed = true
@@ -614,9 +610,7 @@ func (j *Job) reviewBundles(bundles []string, box sandbox.Env, sha string, stati
 				inline = append(inline, bundleInline...)
 				display = renderBundleSummary(findings, general)
 			}
-			// Bundle lấy từ cache mà lần này mới sửa được định dạng thì lưu
-			// lại bản JSON, để lần sau không phải gọi repair nữa.
-			if !cached || repaired {
+			if !cached {
 				j.saveCachedBundle(cacheKey, text, findings, ok)
 			}
 		}
@@ -656,9 +650,8 @@ func (j *Job) loadCachedBundle(key string) (string, bool) {
 }
 
 // saveCachedBundle lưu kết quả của bundle vừa review xong. parsed=true thì
-// lưu findings dạng JSON (kể cả khi phải qua lần sửa định dạng), để lần
-// resume parse được ngay, không gọi lại repair. Không parse được thì lưu
-// nguyên văn — lần review đó vẫn đã chạy xong. Output trắng không lưu:
+// lưu findings đã lọc dạng mảng JSON (parseFindings đọc lại được). Không
+// parse được thì lưu nguyên văn — lần review đó vẫn đã chạy xong. Output trắng không lưu:
 // chạy lại có thể ra nội dung thật.
 func (j *Job) saveCachedBundle(key, text string, findings []Finding, parsed bool) {
 	if j.BundleCache == nil || (!parsed && strings.TrimSpace(text) == "") {
@@ -678,89 +671,6 @@ func (j *Job) saveCachedBundle(key, text string, findings []Finding, parsed bool
 	if err := j.BundleCache.SaveBundle(j.RepoFullName, j.IssueNumber, key, text); err != nil {
 		fmt.Println("Save bundle cache error:", err)
 	}
-}
-
-// repairFindingsFormat gọi Reviewer thêm đúng 1 lần khi lần review đã chạy
-// xong nhưng parseFindings thất bại (issue #69). Prompt chỉ mang output vừa
-// rồi và yêu cầu JSON, không gửi lại diff. Lần này cũng thất bại thì caller
-// giữ nguyên văn xuôi — không đặt hadError, vì review code đã chạy; lỗi sửa
-// định dạng không được chặn ghi SHA nếu không review incremental sẽ lặp lại
-// cùng diff mỗi lần model không tuân format.
-//
-// Khác retry trong claudecli.Reviewer: retry đó dành cho lỗi tạm thời của
-// CLI (timeout, mạng). Ở đây CLI đã trả kết quả, chỉ sai format bên trong.
-func (j *Job) repairFindingsFormat(box sandbox.Env, sha string, bundleIndex, bundleTotal int, previous string) ([]Finding, bool) {
-	prompt := buildFormatRepairPrompt(previous)
-	start := time.Now()
-	text, stats, err := j.Reviewer.Review(prompt, box)
-	duration := time.Since(start)
-
-	errMsg := ""
-	if err != nil {
-		fmt.Println("Repair bundle", bundleIndex, "/", bundleTotal, "format error:", err)
-		errMsg = err.Error()
-	}
-	j.logBundleReview(sha, bundleIndex, bundleTotal, prompt, text, errMsg, duration, stats)
-	if err != nil || strings.TrimSpace(text) == formatRepairNotAReview {
-		return nil, false
-	}
-	findings, ok := parseFindings(text)
-	// [] là một kết luận "sạch". Chỉ nhận khi văn xuôi lần trước thực sự
-	// kết luận không có vấn đề, không phải một đoạn còn liệt kê bug.
-	if !ok || (len(findings) == 0 && !proseConcludesClean(previous)) {
-		return nil, false
-	}
-	return findings, true
-}
-
-// findingListPattern bắt danh sách đánh số hoặc tham chiếu file:dòng.
-// Những đoạn đó không phải một câu kết luận sạch, dù có chứa cụm
-// "không có vấn đề".
-var findingListPattern = regexp.MustCompile(`(?:^|\n)\s*\d+[\.\)]\s|\S+\.\w+:\d+`)
-
-// proseConcludesClean báo văn xuôi đã kết luận không có vấn đề đáng chú ý,
-// nên lần sửa định dạng trả [] là hợp lệ.
-func proseConcludesClean(text string) bool {
-	lower := strings.ToLower(strings.TrimSpace(text))
-	if findingListPattern.MatchString(lower) {
-		return false
-	}
-	for _, phrase := range []string{
-		"không có vấn đề",
-		"không đáng chú ý",
-		"no issues",
-		"lgtm",
-	} {
-		from := 0
-		for {
-			i := strings.Index(lower[from:], phrase)
-			if i < 0 {
-				break
-			}
-			at := from + i
-			if !cleanPhraseNegated(lower, at) {
-				return true
-			}
-			from = at + len(phrase)
-		}
-	}
-	return false
-}
-
-// cleanPhraseNegated báo cụm kết luận sạch đang bị phủ định ở ngay trước nó
-// (vd "chưa thể kết luận là không có vấn đề").
-func cleanPhraseNegated(lower string, at int) bool {
-	start := at - 48
-	if start < 0 {
-		start = 0
-	}
-	window := lower[start:at]
-	for _, neg := range []string{"chưa", "không phải", "not ", "never"} {
-		if strings.Contains(window, neg) {
-			return true
-		}
-	}
-	return false
 }
 
 // logBundleReview ghi 1 lần gọi Reviewer. errMsg khác rỗng thì response ghi

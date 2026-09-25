@@ -62,36 +62,87 @@ var severityIcon = map[string]string{
 	"low":      "🔵",
 }
 
-// parseFindings thử parse text (kỳ vọng là kết quả Reviewer.Review khi
-// Claude làm theo đúng format JSON được yêu cầu trong resultFormatInstructions)
-// thành danh sách Finding. ok=false nếu không tìm/parse được JSON array hợp
-// lệ (Claude trả văn xuôi tự do bất chấp hướng dẫn, hoặc JSON sai schema) —
-// caller (Job.reviewBundles) fallback hiển thị nguyên văn text, không làm
-// hỏng cả lần review vì lỗi định dạng (xem issue #26 acceptance criteria).
-func parseFindings(text string) (findings []Finding, ok bool) {
-	arr := extractJSONArray(text)
-	if arr == "" {
-		return nil, false
-	}
-	if err := json.Unmarshal([]byte(arr), &findings); err != nil {
-		return nil, false
-	}
-	return findings, true
-}
+// FindingsSchema là JSON Schema của kết quả review, truyền cho Claude CLI
+// qua --json-schema (xem claudecli.claudeArgs, issue #72). CLI đăng ký nó
+// thành 1 tool nội bộ mà model phải gọi để trả kết quả, và tự validate
+// input của lần gọi đó theo schema: sai kiểu (line là chuỗi), thiếu field
+// bắt buộc hay severity/category ngoài danh sách thì CLI bắt model gọi lại,
+// không để lọt ra ngoài. Nhờ vậy không còn nhóm lỗi "Claude trả văn xuôi
+// thay vì JSON" (issue #69) và không cần lượt gọi sửa định dạng.
+//
+// Top-level là object vì structured output của CLI phải là object. Tên
+// property phải khớp json tag của Finding (TestFindingsSchema_MatchesFinding
+// giữ điều này). Ý nghĩa chi tiết từng field nằm ở resultFormatInstructions.
+const FindingsSchema = `{
+  "type": "object",
+  "properties": {
+    "findings": {
+      "type": "array",
+      "description": "Mỗi vấn đề là 1 phần tử. Mảng rỗng nếu không có vấn đề đáng chú ý.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "file": {"type": "string", "description": "Đường dẫn file đúng như trong diff; rỗng nếu là nhận xét tổng quát."},
+          "line": {"type": "integer", "minimum": 0, "description": "Số dòng trong file MỚI; 0 nếu không chắc hoặc nhận xét tổng quát."},
+          "end_line": {"type": "integer", "minimum": 0, "description": "Dòng cuối của đoạn suggestion thay thế; 0 nếu chỉ thay dòng line."},
+          "existing_code": {"type": "string", "description": "Code hiện có từ line đến end_line, chép nguyên văn."},
+          "category": {"type": "string", "enum": ["bug", "security", "performance", "maintainability", "test", "style", "documentation"]},
+          "severity": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+          "message": {"type": "string", "minLength": 1, "description": "Mô tả ngắn gọn vấn đề."},
+          "suggestion": {"type": "string", "description": "Code thay thế nguyên văn các dòng line..end_line; rỗng nếu không áp dụng."}
+        },
+        "required": ["category", "severity", "message"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["findings"],
+  "additionalProperties": false
+}`
 
-// extractJSONArray tìm đoạn "[...]" trong text để parse. Dù prompt đã dặn
-// "CHỈ trả JSON, không bọc trong code fence", Claude thỉnh thoảng vẫn thêm
-// vài câu mở đầu hoặc bọc trong ```json ... ``` — lấy từ dấu "[" đầu tiên
-// tới dấu "]" cuối cùng chịu được các trường hợp bao quanh đó mà không cần
-// parse markdown. Đủ dùng vì output kỳ vọng là 1 mảng phẳng ở top-level,
-// không có mảng lồng nào khác xen vào trước/sau nó trong text.
-func extractJSONArray(text string) string {
-	start := strings.Index(text, "[")
-	end := strings.LastIndex(text, "]")
-	if start == -1 || end == -1 || end < start {
-		return ""
+// parseFindings đọc kết quả Reviewer.Review thành danh sách Finding. text
+// là structured output của CLI ({"findings": [...]}, xem FindingsSchema)
+// hoặc 1 mảng Finding trần (định dạng lưu trong BundleCache, xem
+// saveCachedBundle).
+//
+// ok=false khi text không phải 1 trong 2 dạng đó (vd Reviewer trả văn xuôi
+// vì CLI không có structured output) — caller hiển thị nguyên văn, không
+// làm hỏng cả lần review.
+//
+// Từng phần tử được decode riêng: 1 finding hỏng (sai kiểu, message rỗng)
+// chỉ bị bỏ và đếm vào dropped, không kéo cả mảng xuống. Schema đã chặn
+// những trường hợp này ở CLI; đây là lớp phòng thủ cuối cho dữ liệu đi vào
+// comment.
+func parseFindings(text string) (findings []Finding, dropped int, ok bool) {
+	var items []json.RawMessage
+	var wrapped struct {
+		Findings *[]json.RawMessage `json:"findings"`
 	}
-	return text[start : end+1]
+	trimmed := strings.TrimSpace(text)
+	switch {
+	case strings.HasPrefix(trimmed, "{"):
+		if json.Unmarshal([]byte(trimmed), &wrapped) != nil || wrapped.Findings == nil {
+			return nil, 0, false
+		}
+		items = *wrapped.Findings
+	case strings.HasPrefix(trimmed, "["):
+		if json.Unmarshal([]byte(trimmed), &items) != nil {
+			return nil, 0, false
+		}
+	default:
+		return nil, 0, false
+	}
+
+	findings = []Finding{}
+	for _, raw := range items {
+		var f Finding
+		if json.Unmarshal(raw, &f) != nil || strings.TrimSpace(f.Message) == "" {
+			dropped++
+			continue
+		}
+		findings = append(findings, f)
+	}
+	return findings, dropped, true
 }
 
 // renderBundleSummary render phần hiển thị trong comment tổng hợp cho 1

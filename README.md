@@ -366,11 +366,11 @@ PR lớn được chia thành nhiều phần (bundle). Mỗi phần review xong,
 <details id="kết-quả-review-có-phân-loại--comment-inline-theo-đúng-dòng-code">
 <summary><strong>Kết quả review có phân loại + comment inline theo đúng dòng code</strong></summary>
 
-Claude được yêu cầu trả kết quả dưới dạng JSON array các "finding" (`category`, `severity`, `message`, `suggestion`, kèm `file`/`line` nếu áp dụng được cho 1 dòng cụ thể) thay vì 1 khối text tự do.
+Claude trả kết quả qua structured output của Claude CLI (`--json-schema`, xem `review.FindingsSchema`): danh sách "finding" (`category`, `severity`, `message`, `suggestion`, kèm `file`/`line` nếu áp dụng được cho 1 dòng cụ thể) thay vì 1 khối text tự do. CLI biến schema thành 1 tool mà model phải gọi và tự validate input theo schema (sai kiểu, thiếu field, `severity`/`category` ngoài danh sách thì model phải gọi lại), nên bot không phải tự bóc JSON từ văn xuôi. Bot vẫn decode từng finding riêng: 1 finding hỏng chỉ bị bỏ riêng nó.
 
 - **Finding có `file`/`line` khớp đúng với diff thật** (đối chiếu lại bằng cách tự parse hunk của diff, không tin thẳng Claude) → post thành **comment inline** gắn đúng vào dòng đó qua GitHub Reviews API (`POST /pulls/{number}/reviews`), thay vì 1 dòng text lẫn trong comment tổng.
 - **Finding không có `file`/`line`, hoặc có nhưng không khớp được với diff thật** (Claude "bịa" file/dòng không tồn tại, hoặc diễn giải lại thay vì copy nguyên văn số dòng) → vẫn hiển thị trong comment tổng hợp (placeholder), phân loại rõ theo severity (🔴 critical/🟠 high/🟡 medium/🔵 low) kèm category và gợi ý sửa nếu có — không bao giờ bị mất hay post sai chỗ trong im lặng.
-- Claude trả text không đúng format JSON (bất chấp hướng dẫn) → fallback hiển thị nguyên văn như comment tổng hợp, review không bị coi là lỗi chỉ vì sai định dạng output.
+- CLI không trả được structured output hợp lệ sau số lượt cho phép → bundle đó báo lỗi (❌), SHA không được ghi nên lần push sau review lại. Nếu CLI trả văn xuôi thay vì structured output → hiển thị nguyên văn trong comment tổng hợp, header báo review chưa đủ để kết luận.
 - Post inline comment là bước **best-effort**, tách riêng khỏi comment tổng hợp: lỗi ở bước này (rate limit, lỗi mạng...) chỉ log lại, không làm mất kết quả review đã post thành công ở comment chính.
 
 </details>

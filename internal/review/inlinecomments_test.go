@@ -427,7 +427,7 @@ func TestLocateExistingCode_MultipleMatches(t *testing.T) {
 	}
 }
 
-// Claude để line=0 (vd đường sửa định dạng) nhưng existing_code khớp đúng
+// Claude để line=0 (không chắc số dòng) nhưng existing_code khớp đúng
 // 1 chỗ: vẫn gắn inline.
 func TestSplitFindingsForPosting_ExistingCodeWithoutLine_GoesInline(t *testing.T) {
 	findings := []Finding{

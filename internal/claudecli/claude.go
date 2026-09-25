@@ -19,6 +19,11 @@ type ClaudeResult struct {
 	IsError bool   `json:"is_error"`
 	Result  string `json:"result"`
 
+	// StructuredOutput là object model trả qua tool structured output khi
+	// CLI chạy với --json-schema (issue #72) — CLI đã validate nó theo
+	// schema. Rỗng hoặc "null" khi không có.
+	StructuredOutput json.RawMessage `json:"structured_output"`
+
 	// NumTurns là số turn Claude CLI thực sự dùng để ra kết quả này — proxy
 	// rẻ để biết model có khám phá thêm gì ngoài diff hay không (1 turn bất
 	// thường trên diff nhiều file là dấu hiệu model không tự đọc thêm gì,
@@ -38,6 +43,16 @@ type ClaudeUsage struct {
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 	OutputTokens             int `json:"output_tokens"`
+}
+
+// text là kết quả trả cho review.Job: structured output nếu có, không thì
+// Result (văn xuôi). Job tự nhận ra văn xuôi và hiển thị nguyên văn, nên
+// CLI thiếu structured output không làm mất nội dung review.
+func (c ClaudeResult) text() string {
+	if s := bytes.TrimSpace(c.StructuredOutput); len(s) > 0 && !bytes.Equal(s, []byte("null")) {
+		return string(s)
+	}
+	return c.Result
 }
 
 func (c ClaudeResult) usage() review.Usage {
@@ -125,7 +140,7 @@ func (r *Reviewer) Review(prompt string, box sandbox.Env) (result string, stats 
 		usage = usage.Add(res.usage())
 		stats = review.CallStats{Attempts: attempt, NumTurns: res.NumTurns, Usage: usage}
 		if err == nil {
-			return res.Result, stats, nil
+			return res.text(), stats, nil
 		}
 		lastErr = err
 		if !retryable || attempt == maxAttempts {
@@ -157,6 +172,11 @@ const disallowedTools = "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"
 // khi ~/.claude/settings.json của user chạy server KHÔNG thêm
 // additionalDirectories hay rule allow cho Read/Grep/Glob: đừng nới ở đó.
 //
+// --json-schema (review.FindingsSchema) buộc model trả kết quả qua tool
+// structured output, CLI validate theo schema và bắt model gọi lại nếu sai;
+// hết lượt mà vẫn sai thì CLI báo is_error (issue #72). Đây là tool nội bộ
+// của CLI, không đọc/ghi file hay gọi mạng.
+//
 // CLAUDE.md của repo vẫn được CLI đọc (chỉ --bare tắt được, mà --bare bắt
 // buộc xác thực bằng ANTHROPIC_API_KEY). Với tool đã khoá chỉ còn đọc, nó
 // chỉ ảnh hưởng được nội dung review; cô lập hẳn cần sandbox riêng mỗi job
@@ -168,6 +188,7 @@ func claudeArgs(prompt string) []string {
 		"--setting-sources", "user",
 		"--strict-mcp-config",
 		"--disallowedTools", disallowedTools,
+		"--json-schema", review.FindingsSchema,
 	}
 }
 

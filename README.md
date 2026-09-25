@@ -197,7 +197,8 @@ Mặc định, `gofmt`/`go vet` và Claude CLI chạy ngay trong container serve
 - `--cap-drop ALL`, `no-new-privileges`, giới hạn 2 GB RAM, 2 CPU, 512 tiến trình.
 - Không có secret nào của server. Chỉ các biến trong allowlist (`forwardEnvKeys` trong `internal/sandbox/docker.go`: credential Claude và cấu hình Go) được chuyển vào từng lệnh, dạng `-e KEY` nên giá trị không nằm trong args.
 - Server vẫn tự clone (`git fetch` không chạy code PR), nên installation token không vào sandbox.
-- Chưa làm: mạng của sandbox chưa bị giới hạn (bước 2), và credential Claude vẫn nằm trong sandbox (bước 3).
+- **Mạng bị giới hạn** (bước 2): sandbox chỉ nằm trong Docker network `yuumi-sandbox` tạo với `--internal` (không có route ra Internet). Đường ra duy nhất là egress proxy (`cmd/egressproxy`, container `yuumi-egress`), chỉ cho `CONNECT` cổng 443 tới `api.anthropic.com` và `proxy.golang.org`. Mọi đích khác, HTTP thường, hay gọi thẳng không qua proxy đều bị chặn. Proxy ghi log `ALLOW`/`DENY` cho từng kết nối: `docker logs yuumi-egress`.
+- Chưa làm: credential Claude vẫn nằm trong sandbox (bước 3). Nhờ bước 2, nó chỉ gửi được tới `api.anthropic.com`.
 
 ```bash
 WORK="$PWD/work"   # đường dẫn trên host
@@ -213,6 +214,7 @@ docker run -d --name yuumi -p 8080:8080 \
 - **`WORK_DIR` phải mount ở cùng đường dẫn** trên host và trong container server. Docker daemon hiểu đường dẫn mount theo host, nên server clone vào `$WORK/...` thì sandbox mount được đúng thư mục đó.
 - **`docker.sock`**: user `yuumi` cần thuộc nhóm sở hữu socket. Trên Linux là gid của nhóm `docker` (lệnh `stat` ở trên). Trên Docker Desktop (macOS) socket thuộc `root:root`, dùng `--group-add 0`. Lưu ý: ai chiếm được tiến trình server thì có quyền như root trên host qua socket này. Code PR thì chạy trong sandbox, không có socket.
 - Không tạo được sandbox (vd Docker daemon không chạy) thì review báo thất bại, **không** chạy code PR thẳng trên server.
+- Lúc khởi động, server tự tạo network `yuumi-sandbox` (nếu chưa có) và tạo lại container `yuumi-egress` từ image hiện tại. Không dựng được thì server dừng. Nếu đã có network `yuumi-sandbox` mà không phải `--internal`, server cũng dừng và báo lỗi, thay vì để sandbox ra Internet tự do. Xoá network đó (`docker network rm yuumi-sandbox`) rồi chạy lại.
 - Container sandbox có nhãn `yuumi.sandbox=1` và tự thoát sau tối đa 2 giờ nếu server chết giữa chừng. Dọn tay: `docker rm -f $(docker ps -aq --filter label=yuumi.sandbox=1)`.
 
 ## Cách hoạt động chi tiết
@@ -270,7 +272,7 @@ Code của PR có thể đến từ bất kỳ ai, nên mọi tiến trình con 
 - Installation token chỉ được truyền cho riêng lệnh `git fetch` (qua `GIT_CONFIG_*`, header `Authorization`), không nhúng vào URL remote. Vì vậy token không nằm trong `.git/config` của thư mục clone mà Claude CLI đọc, cũng không nằm trong args của tiến trình.
 - Claude CLI mặc định từ chối `Read`/`Grep`/`Glob` ra ngoài thư mục review, kể cả qua symlink trong repo (nên không đọc được file private key, `.env` hay `/proc/<pid>/environ` của server). **Không thêm `additionalDirectories` hay rule `allow` cho Read/Grep/Glob vào `~/.claude/settings.json` của user chạy server** — làm vậy là mở lại đường đọc secret.
 
-Giai đoạn 2: bật `SANDBOX=docker` để các tiến trình con chạy trong container riêng mỗi job, không cùng filesystem với server (xem [Sandbox mỗi job](#sandbox-mỗi-job-sandboxdocker)). Còn lại: `CLAUDE.md` của repo vẫn được Claude CLI đọc, mạng của sandbox chưa bị giới hạn.
+Giai đoạn 2: bật `SANDBOX=docker` để các tiến trình con chạy trong container riêng mỗi job, không cùng filesystem với server (xem [Sandbox mỗi job](#sandbox-mỗi-job-sandboxdocker)). Mạng của sandbox chỉ ra được `api.anthropic.com` và `proxy.golang.org`. Còn lại: `CLAUDE.md` của repo vẫn được Claude CLI đọc, credential Claude vẫn nằm trong sandbox.
 
 </details>
 

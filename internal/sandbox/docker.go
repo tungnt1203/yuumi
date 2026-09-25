@@ -35,7 +35,8 @@ var forwardEnvKeys = []string{
 	"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "DISABLE_AUTOUPDATER",
 	// Env đã siết cho gofmt/go vet (xem review.goHardenedEnv).
 	"GOTOOLCHAIN", "CGO_ENABLED", "GOPROXY", "GOFLAGS", "GOSUMDB",
-	"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+	// Không chuyển HTTP(S)_PROXY/NO_PROXY của server: `docker exec -e` sẽ
+	// ghi đè proxy egress đặt lúc tạo container (runArgs).
 }
 
 // dockerCLIEnvKeys là env mà chính lệnh `docker` trên máy server cần để nói
@@ -87,8 +88,11 @@ func StartDocker(cfg DockerConfig, dir string) (Env, error) {
 //   - --no-healthcheck: image dùng chung với server nên có HEALTHCHECK gọi
 //     /health, trong sandbox không có server nên luôn báo unhealthy;
 //   - không env nào của server: biến cần cho từng lệnh đi qua `docker exec`.
-//
-// Mạng vẫn là bridge mặc định: giới hạn egress là bước 2 của issue #78.
+//   - mạng: chỉ network --internal NetworkName (không có route ra ngoài);
+//     đường ra duy nhất là egress proxy qua HTTP(S)_PROXY, chỉ cho host
+//     trong allowlist (xem SetupNetwork, package egress);
+//   - CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: Claude CLI không thử gửi
+//     telemetry (proxy cũng chặn, nhưng khỏi tốn kết nối bị từ chối).
 func runArgs(cfg DockerConfig, dir, name string, uid, gid int) []string {
 	return []string{
 		"run", "--detach", "--rm",
@@ -102,6 +106,10 @@ func runArgs(cfg DockerConfig, dir, name string, uid, gid int) []string {
 		"--env", "GOCACHE=/tmp/go-cache",
 		"--env", "GOMODCACHE=/tmp/go-mod",
 		"--env", "GOPATH=/tmp/go",
+		"--network", NetworkName,
+		"--env", "HTTPS_PROXY=" + egressProxyURL,
+		"--env", "HTTP_PROXY=" + egressProxyURL,
+		"--env", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
 		"--init",
 		"--no-healthcheck",
 		"--cap-drop", "ALL",

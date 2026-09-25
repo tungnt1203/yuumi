@@ -12,7 +12,8 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -o /out/yuumi-server ./cmd/server
+RUN CGO_ENABLED=0 go build -trimpath -o /out/yuumi-server ./cmd/server \
+    && CGO_ENABLED=0 go build -trimpath -o /out/yuumi-egressproxy ./cmd/egressproxy
 
 # Runtime dùng luôn image golang (đã có go + git + curl): go vet cần toolchain
 # thật, tự ráp Go vào image slim không tiết kiệm được bao nhiêu.
@@ -80,6 +81,9 @@ USER yuumi
 WORKDIR /app
 
 COPY --from=build /out/yuumi-server /usr/local/bin/yuumi-server
+# Egress proxy cho sandbox (SANDBOX=docker, issue #78 bước 2): server chạy nó
+# trong container "yuumi-egress" từ chính image này.
+COPY --from=build /out/yuumi-egressproxy /usr/local/bin/yuumi-egressproxy
 
 # Review log, review state, bundle cache đều ghi dưới /app/logs (đường dẫn
 # mặc định tương đối "logs/..."): mount volume để không mất khi container

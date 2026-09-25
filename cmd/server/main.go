@@ -83,8 +83,9 @@ func main() {
 	// RepoFullName/IssueNumber/PlaceholderID/UserCommand, tránh 2 luồng tự
 	// xây dựng Job lệch nhau.
 	//
-	// token là installation token đã tạo ghClient — clone cũng dùng nó để
-	// đọc được repo private (issue #48).
+	// token trả installation token còn hạn — clone gọi nó ngay lúc clone
+	// (có thể sau khi job chờ lâu trong hàng đợi Dispatcher) để đọc được
+	// repo private (issue #48, #99).
 	// startSandbox: nil giữ hành vi cũ (lệnh trên code PR chạy thẳng trên
 	// server); SANDBOX=docker cho mỗi job 1 container riêng (issue #78).
 	var startSandbox func(dir string) (sandbox.Env, error)
@@ -113,11 +114,27 @@ func main() {
 		}
 	}
 
-	newJob := func(ghClient *githubapi.Client, token string, repoFullName string, issueNumber int, placeholderID int64, userCommand string) *review.Job {
+	// installationToken trả hàm lấy installation token còn hạn cho 1
+	// installation. Client và clone gọi nó mỗi lần cần, không giữ token lấy
+	// lúc nhận webhook: token chỉ sống 1 giờ, job có thể chờ hàng đợi rồi
+	// chạy lâu hơn thế (issue #99). Provider cache và tự làm mới trước khi
+	// hết hạn, nên gọi nhiều lần không tốn request tới GitHub. Dùng
+	// context.Background: job chạy sau khi HTTP request của webhook đã xong.
+	installationToken := func(installationID int64) func() (string, error) {
+		return func() (string, error) {
+			return tokenProvider.Token(context.Background(), installationID)
+		}
+	}
+
+	newJob := func(ghClient *githubapi.Client, token func() (string, error), repoFullName string, issueNumber int, placeholderID int64, userCommand string) *review.Job {
 		return &review.Job{
 			GitHub: ghClient,
 			Clone: func(repoFullName, sha string) (string, func(), error) {
-				return gitrepo.CloneRepo(repoFullName, sha, token, cfg.WorkDir)
+				tok, err := token()
+				if err != nil {
+					return "", nil, fmt.Errorf("get installation token for clone: %w", err)
+				}
+				return gitrepo.CloneRepo(repoFullName, sha, tok, cfg.WorkDir)
 			},
 			StartSandbox:      startSandbox,
 			Reviewer:          reviewer,
@@ -183,13 +200,13 @@ func main() {
 		// trên đều rẻ và không cần gọi GitHub, để request bị ignore/reject
 		// (sai user, comment cũ, action khác "created"...) không tốn thêm 1
 		// lần gọi mạng đổi token vô ích (xem githubapp.Provider, issue #47).
-		token, err := tokenProvider.Token(r.Context(), payload.Installation.ID)
-		if err != nil {
+		token := installationToken(payload.Installation.ID)
+		if _, err := token(); err != nil {
 			fmt.Println("Get installation token error:", err)
 			http.Error(w, "cannot authenticate with github", http.StatusInternalServerError)
 			return
 		}
-		ghClient := githubapi.NewClient(token)
+		ghClient := githubapi.NewClientWithTokenFunc(token)
 
 		// PR đã được review xong tới đúng head SHA hiện tại (vd auto-review
 		// đã chạy lúc mở/push, giờ có người mention lại) — không có gì mới,
@@ -260,13 +277,13 @@ func main() {
 
 		// Xin installation token đúng lúc này, sau khi mọi check rẻ đã qua —
 		// cùng lý do với handleIssueComment ở trên (xem issue #47).
-		token, err := tokenProvider.Token(r.Context(), payload.Installation.ID)
-		if err != nil {
+		token := installationToken(payload.Installation.ID)
+		if _, err := token(); err != nil {
 			fmt.Println("Get installation token error:", err)
 			http.Error(w, "cannot authenticate with github", http.StatusInternalServerError)
 			return
 		}
-		ghClient := githubapi.NewClient(token)
+		ghClient := githubapi.NewClientWithTokenFunc(token)
 
 		placeholderID, err := ghClient.PostComment(repoFullName, issueNumber, "Đang review... _(tự động khi PR được mở/cập nhật)_")
 		if err != nil {

@@ -38,7 +38,10 @@ func main() {
 	// package githubapp, issue #47) — KHÔNG còn 1 ghClient dùng chung, vì
 	// token giờ gắn theo installation của từng webhook (xem newJob).
 	tokenProvider := githubapp.NewProvider(cfg.GitHubAppID, cfg.GitHubAppPrivateKey)
-	var reviewer review.Reviewer = &claudecli.Reviewer{Timeout: time.Duration(cfg.ReviewTimeoutMinutes) * time.Minute}
+	var reviewer review.Reviewer = &claudecli.Reviewer{
+		Timeout:      time.Duration(cfg.ReviewTimeoutMinutes) * time.Minute,
+		MaxBudgetUSD: cfg.ReviewMaxBudgetUSD,
+	}
 	dispatcher := review.NewDispatcher(cfg.MaxConcurrentReviews)
 	seenComments := webhook.NewSeenComments()
 	reviewLogger := reviewlog.NewFileLogger(cfg.ReviewLogDir)

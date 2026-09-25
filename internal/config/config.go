@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/base64"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -27,6 +28,10 @@ type Config struct {
 	// ReviewTimeoutMinutes override thời gian tối đa của 1 lần gọi Claude
 	// CLI (xem claudecli.defaultTimeout) — 0 nghĩa là "không set".
 	ReviewTimeoutMinutes int
+
+	// ReviewMaxBudgetUSD override trần chi phí 1 lần gọi Claude CLI (xem
+	// claudecli.defaultMaxBudgetUSD) — 0 nghĩa là "không set".
+	ReviewMaxBudgetUSD float64
 
 	// MaxConcurrentReviews override số job review chạy đồng thời tối đa
 	// (xem review.NewDispatcher/defaultMaxConcurrentJobs) — 0 nghĩa là
@@ -100,6 +105,11 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	reviewMaxBudgetUSD, err := parseOptionalPositiveFloatEnv("REVIEW_MAX_BUDGET_USD")
+	if err != nil {
+		return Config{}, err
+	}
+
 	sandboxMode := os.Getenv("SANDBOX")
 	sandboxImage := os.Getenv("SANDBOX_IMAGE")
 	workDir := os.Getenv("WORK_DIR")
@@ -121,6 +131,7 @@ func Load() (Config, error) {
 		MaxDiffBundleChars:   maxDiffBundleChars,
 		MaxConcurrentReviews: maxConcurrentReviews,
 		ReviewTimeoutMinutes: reviewTimeoutMinutes,
+		ReviewMaxBudgetUSD:   reviewMaxBudgetUSD,
 		ReviewLogDir:         os.Getenv("REVIEW_LOG_DIR"),
 		ReviewStateFile:      os.Getenv("REVIEW_STATE_FILE"),
 		BundleCacheDir:       os.Getenv("BUNDLE_CACHE_DIR"),
@@ -167,6 +178,20 @@ func loadGitHubAppPrivateKey() ([]byte, error) {
 // Config coi là "chưa cấu hình, tự dùng default riêng của nó". Nếu biến CÓ
 // set nhưng không phải số nguyên dương thì coi là lỗi cấu hình rõ ràng
 // (thà fail sớm lúc khởi động còn hơn âm thầm dùng default sai ý người set).
+// parseOptionalPositiveFloatEnv giống parseOptionalPositiveIntEnv cho số
+// thực dương (vd số tiền USD).
+func parseOptionalPositiveFloatEnv(name string) (float64, error) {
+	raw, ok := os.LookupEnv(name)
+	if !ok {
+		return 0, nil
+	}
+	f, err := strconv.ParseFloat(raw, 64)
+	if err != nil || !(f > 0) || math.IsInf(f, 0) {
+		return 0, fmt.Errorf("%s must be a positive number, got %q", name, raw)
+	}
+	return f, nil
+}
+
 func parseOptionalPositiveIntEnv(name string) (int, error) {
 	raw, ok := os.LookupEnv(name)
 	if !ok {

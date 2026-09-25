@@ -36,17 +36,18 @@ const (
 // của server (dạng `--env KEY`, giá trị không nằm trong args).
 var credentialEnvKeys = []string{egress.OAuthTokenEnv, egress.APIKeyEnv}
 
-// dockerRunner chạy 1 lệnh docker, trả stdout. Tách ra để test logic của
-// SetupNetwork mà không cần Docker thật.
-type dockerRunner func(args ...string) (string, error)
+// dockerRunner chạy 1 lệnh docker, trả stdout. passEnv là tên các biến
+// của server thêm vào env của lệnh docker (ngoài env docker CLI cần) —
+// chỉ lệnh nào thật sự cần mới truyền, để credential không nằm trong env
+// của mọi lệnh. Tách ra để test logic của SetupNetwork mà không cần Docker
+// thật.
+type dockerRunner func(passEnv []string, args ...string) (string, error)
 
-func runDocker(args ...string) (string, error) {
+func runDocker(passEnv []string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), startTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "docker", args...)
-	// Kèm credential Claude: `docker run --env KEY` của container egress lấy
-	// giá trị từ đây. Các lệnh docker khác không chuyển gì vào container.
-	cmd.Env = procenv.Only(os.Environ(), slices.Concat(dockerCLIEnvKeys, credentialEnvKeys)...)
+	cmd.Env = procenv.Only(os.Environ(), slices.Concat(dockerCLIEnvKeys, passEnv)...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -68,12 +69,12 @@ func SetupNetwork(image string) error {
 }
 
 func setupNetwork(run dockerRunner, image string) error {
-	internal, err := run("network", "inspect", "--format", "{{.Internal}}", NetworkName)
+	internal, err := run(nil, "network", "inspect", "--format", "{{.Internal}}", NetworkName)
 	switch {
 	case err != nil:
 		// Chưa có network (hoặc inspect lỗi): tạo mới. Lỗi thật (daemon
 		// không chạy...) sẽ lộ ra ở lệnh create.
-		if _, err := run("network", "create", "--internal", NetworkName); err != nil {
+		if _, err := run(nil, "network", "create", "--internal", NetworkName); err != nil {
 			return fmt.Errorf("tạo network sandbox: %w", err)
 		}
 	case internal != "true":
@@ -84,19 +85,19 @@ func setupNetwork(run dockerRunner, image string) error {
 	// tại trước bằng `ps --filter` (trả ID hoặc rỗng) thay vì đoán qua
 	// message lỗi của `rm`: exit code của `rm --force` khi container chưa có
 	// khác nhau giữa các bản docker CLI, còn câu chữ lỗi không ổn định.
-	existing, err := run("ps", "--all", "--quiet", "--filter", "name=^"+EgressContainerName+"$")
+	existing, err := run(nil, "ps", "--all", "--quiet", "--filter", "name=^"+EgressContainerName+"$")
 	if err != nil {
 		return fmt.Errorf("kiểm tra egress proxy cũ: %w", err)
 	}
 	if existing != "" {
-		if _, err := run("rm", "--force", EgressContainerName); err != nil {
+		if _, err := run(nil, "rm", "--force", EgressContainerName); err != nil {
 			return fmt.Errorf("xoá egress proxy cũ: %w", err)
 		}
 	}
-	if _, err := run(egressRunArgs(image)...); err != nil {
+	if _, err := run(credentialEnvKeys, egressRunArgs(image)...); err != nil {
 		return fmt.Errorf("chạy egress proxy: %w", err)
 	}
-	if _, err := run("network", "connect", NetworkName, EgressContainerName); err != nil {
+	if _, err := run(nil, "network", "connect", NetworkName, EgressContainerName); err != nil {
 		return fmt.Errorf("nối egress proxy vào network sandbox: %w", err)
 	}
 	return nil

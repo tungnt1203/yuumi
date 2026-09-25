@@ -70,7 +70,8 @@ func TestCredentialProxy_ReplacesCredential(t *testing.T) {
 			got := withFakeAnthropic(t)
 			proxy := NewCredentialProxy(tt.cred, nil)
 
-			req := httptest.NewRequest(http.MethodPost, "http://yuumi-egress:3129/v1/messages", strings.NewReader(`{"model":"x"}`))
+			// Claude CLI có thể gắn query (vd ?beta=true): vẫn phải đi được.
+			req := httptest.NewRequest(http.MethodPost, "http://yuumi-egress:3129/v1/messages?beta=true", strings.NewReader(`{"model":"x"}`))
 			req.Header.Set("Authorization", "Bearer yuumi-sandbox-placeholder")
 			req.Header.Set("X-Api-Key", "yuumi-sandbox-placeholder")
 			rec := httptest.NewRecorder()
@@ -93,18 +94,28 @@ func TestCredentialProxy_ReplacesCredential(t *testing.T) {
 	}
 }
 
-// Chỉ /v1/ đã chuẩn hoá; path khác không được chuyển tiếp kèm credential thật.
-func TestCredentialProxy_RejectsOtherPaths(t *testing.T) {
+// Chỉ đúng POST /v1/messages; request khác không được chuyển tiếp kèm
+// credential thật.
+func TestCredentialProxy_RejectsOtherRequests(t *testing.T) {
 	got := withFakeAnthropic(t)
 	proxy := NewCredentialProxy(Credential{Env: OAuthTokenEnv, Value: "oauth-real"}, nil)
 
-	for _, p := range []string{"/", "/api/oauth/profile", "/v1/../api/oauth/profile", "/v1"} {
-		req := httptest.NewRequest(http.MethodGet, "http://yuumi-egress:3129/", nil)
-		req.URL.Path = p
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/api/oauth/profile"},
+		{http.MethodPost, "/"},
+		{http.MethodGet, "/v1/messages"},
+		{http.MethodPost, "/v1/models"},
+		{http.MethodGet, "/v1/organizations"},
+		{http.MethodPost, "/v1/messages/count_tokens"},
+		{http.MethodPost, "/v1/messages/../models"},
+		{http.MethodPost, "/v1/../api/oauth/profile"},
+	} {
+		req := httptest.NewRequest(tc.method, "http://yuumi-egress:3129/", nil)
+		req.URL.Path = tc.path
 		rec := httptest.NewRecorder()
 		proxy.ServeHTTP(rec, req)
 		if rec.Code != http.StatusForbidden {
-			t.Errorf("path %q: status = %d, want 403", p, rec.Code)
+			t.Errorf("%s %q: status = %d, want 403", tc.method, tc.path, rec.Code)
 		}
 	}
 	select {

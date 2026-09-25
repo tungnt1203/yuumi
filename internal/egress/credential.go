@@ -6,8 +6,6 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
-	"path"
-	"strings"
 )
 
 // Biến môi trường chứa credential Claude — cùng tên Claude CLI đọc.
@@ -36,6 +34,9 @@ func CredentialFromEnv(getenv func(string) string) (Credential, error) {
 	return Credential{}, fmt.Errorf("thiếu credential Claude: set %s hoặc %s", OAuthTokenEnv, APIKeyEnv)
 }
 
+// messagesPath là đường dẫn duy nhất credential proxy chuyển tiếp.
+const messagesPath = "/v1/messages"
+
 // anthropicAPI là đích duy nhất của credential proxy.
 var anthropicAPI = &url.URL{Scheme: "https", Host: "api.anthropic.com"}
 
@@ -45,8 +46,11 @@ var anthropicAPI = &url.URL{Scheme: "https", Host: "api.anthropic.com"}
 // thật rồi chuyển tiếp qua HTTPS. Code PR trong sandbox (kể cả khi dụ được
 // Claude đọc env) không lấy được credential thật.
 //
-// Chỉ chuyển tiếp đường dẫn /v1/ (Claude CLI chỉ gọi POST /v1/messages —
-// đã kiểm chứng bằng log khi chạy claude -p thật với credential giả).
+// Chỉ chuyển tiếp đúng POST /v1/messages: đó là request duy nhất Claude CLI
+// gửi khi review (đã kiểm chứng bằng log khi chạy claude -p thật với
+// credential giả, và qua các lần review thật). Endpoint khác của Anthropic
+// (models, tổ chức...) không cần cho review, không cho sandbox dùng
+// credential thật để gọi.
 func NewCredentialProxy(cred Credential, logf func(format string, args ...any)) http.Handler {
 	if logf == nil {
 		logf = func(string, ...any) {}
@@ -67,9 +71,10 @@ func NewCredentialProxy(cred Credential, logf func(format string, args ...any)) 
 		},
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Path phải đã chuẩn hoá: "/v1/../x" có tiền tố /v1/ nhưng trỏ ra
-		// ngoài /v1/.
-		if !strings.HasPrefix(r.URL.Path, "/v1/") || path.Clean(r.URL.Path) != r.URL.Path {
+		// So khớp chính xác path (không phải tiền tố), nên "/v1/../x" hay
+		// "/v1/messages/../x" cũng không lọt. Query (vd ?beta=true) không
+		// nằm trong Path.
+		if r.Method != http.MethodPost || r.URL.Path != messagesPath {
 			logf("credential DENY %s %s", r.Method, r.URL.Path)
 			http.Error(w, "path not allowed", http.StatusForbidden)
 			return

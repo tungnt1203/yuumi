@@ -13,6 +13,7 @@ import (
 
 	"github.com/tungnt1203/yuumi/internal/claudecli"
 	"github.com/tungnt1203/yuumi/internal/config"
+	"github.com/tungnt1203/yuumi/internal/egress"
 	"github.com/tungnt1203/yuumi/internal/githubapi"
 	"github.com/tungnt1203/yuumi/internal/githubapp"
 	"github.com/tungnt1203/yuumi/internal/gitrepo"
@@ -88,7 +89,13 @@ func main() {
 	// server); SANDBOX=docker cho mỗi job 1 container riêng (issue #78).
 	var startSandbox func(dir string) (sandbox.Env, error)
 	if cfg.Sandbox == "docker" {
-		dockerCfg := sandbox.DockerConfig{Image: cfg.SandboxImage}
+		// Sandbox chỉ nhận credential Claude GIẢ cùng loại; credential thật
+		// nằm ở credential proxy trong container egress (issue #78 bước 3).
+		cred, err := egress.CredentialFromOSEnv()
+		if err != nil {
+			log.Fatal("SANDBOX=docker: ", err)
+		}
+		dockerCfg := sandbox.DockerConfig{Image: cfg.SandboxImage, CredentialEnv: cred.Env}
 		startSandbox = func(dir string) (sandbox.Env, error) {
 			return sandbox.StartDocker(dockerCfg, dir)
 		}

@@ -10,13 +10,15 @@ import (
 // fakeDocker ghi lại các lệnh docker và trả kết quả theo lệnh con.
 type fakeDocker struct {
 	calls   [][]string
-	inspect string // stdout của `network inspect`; "" = chưa có network
-	egress  string // stdout của `ps --filter` tìm egress; "" = chưa có container
+	envs    [][]string // passEnv của từng lệnh, cùng thứ tự với calls
+	inspect string     // stdout của `network inspect`; "" = chưa có network
+	egress  string     // stdout của `ps --filter` tìm egress; "" = chưa có container
 	errs    map[string]error
 }
 
-func (f *fakeDocker) run(args ...string) (string, error) {
+func (f *fakeDocker) run(passEnv []string, args ...string) (string, error) {
 	f.calls = append(f.calls, args)
+	f.envs = append(f.envs, passEnv)
 	key := strings.Join(args[:min(2, len(args))], " ")
 	if err := f.errs[key]; err != nil {
 		return "", err
@@ -138,6 +140,10 @@ func TestEgressRunArgs_LocksDownProxy(t *testing.T) {
 		{"--security-opt", "no-new-privileges"},
 		{"--user", "10001:10001"},
 		{"--entrypoint", "yuumi-egressproxy", "yuumi:dev"},
+		// Credential thật cho credential proxy, dạng `--env KEY` (giá trị
+		// lấy từ env của lệnh docker, không nằm trong args).
+		{"--env", "CLAUDE_CODE_OAUTH_TOKEN"},
+		{"--env", "ANTHROPIC_API_KEY"},
 	} {
 		if !containsSeq(args, want...) {
 			t.Errorf("egress run args missing %v: %v", want, args)
@@ -147,5 +153,24 @@ func TestEgressRunArgs_LocksDownProxy(t *testing.T) {
 	// sandbox sau — không tự chỉ định --network internal lúc run.
 	if slices.Contains(args, "--network") {
 		t.Errorf("egress must start on default bridge: %v", args)
+	}
+}
+
+// Credential Claude thật chỉ được đưa vào env của đúng lệnh `docker run`
+// container egress, không có trong env của các lệnh docker khác.
+func TestSetupNetwork_CredentialOnlyForEgressRun(t *testing.T) {
+	f := &fakeDocker{egress: "3f2a9c1b7d4e"}
+	if err := setupNetwork(f.run, "yuumi:dev"); err != nil {
+		t.Fatalf("setupNetwork() error = %v", err)
+	}
+	for i, call := range f.calls {
+		isEgressRun := call[0] == "run"
+		hasCred := slices.Contains(f.envs[i], "CLAUDE_CODE_OAUTH_TOKEN")
+		if isEgressRun && !hasCred {
+			t.Errorf("egress run missing credential env: %v", f.envs[i])
+		}
+		if !isEgressRun && len(f.envs[i]) > 0 {
+			t.Errorf("docker %v got extra env %v, want none", call, f.envs[i])
+		}
 	}
 }

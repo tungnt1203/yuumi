@@ -1,9 +1,14 @@
-// Lệnh egressproxy chạy HTTP proxy giới hạn đường ra Internet của container
-// sandbox (issue #78, bước 2, xem package egress). Server tự chạy lệnh này
-// trong container "yuumi-egress" khi SANDBOX=docker; chạy tay để thử:
+// Lệnh egressproxy chạy 2 proxy cho container sandbox (issue #78, xem
+// package egress). Server tự chạy lệnh này trong container "yuumi-egress"
+// khi SANDBOX=docker:
 //
-//	go run ./cmd/egressproxy -listen :3128
-//	go run ./cmd/egressproxy -allow api.anthropic.com,proxy.golang.org
+//   - -listen (mặc định :3128): proxy CONNECT, chỉ cho host trong -allow.
+//
+//   - -cred-listen (mặc định :3129): reverse proxy tới Anthropic API, gắn
+//     credential thật (CLAUDE_CODE_OAUTH_TOKEN hoặc ANTHROPIC_API_KEY trong
+//     env của lệnh này) thay cho credential giả của sandbox.
+//
+//     go run ./cmd/egressproxy -listen :3128 -cred-listen :3129
 package main
 
 import (
@@ -17,17 +22,31 @@ import (
 )
 
 func main() {
-	listen := flag.String("listen", ":3128", "địa chỉ lắng nghe")
+	listen := flag.String("listen", ":3128", "địa chỉ proxy CONNECT")
+	credListen := flag.String("cred-listen", ":3129", "địa chỉ credential proxy tới Anthropic API")
 	allow := flag.String("allow", strings.Join(egress.DefaultAllowedHosts, ","), "các host được CONNECT tới (cổng 443), cách nhau bởi dấu phẩy")
 	flag.Parse()
 
+	cred, err := egress.CredentialFromOSEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	hosts := strings.Split(*allow, ",")
 	log.Printf("egress proxy listening on %s, allow: %s", *listen, strings.Join(hosts, ", "))
+	log.Printf("credential proxy listening on %s, credential: %s", *credListen, cred.Env)
 
+	errs := make(chan error, 2)
+	go func() { errs <- serve(*listen, egress.New(hosts)) }()
+	go func() { errs <- serve(*credListen, egress.NewCredentialProxy(cred, log.Printf)) }()
+	log.Fatal(<-errs)
+}
+
+func serve(addr string, h http.Handler) error {
 	server := &http.Server{
-		Addr:              *listen,
-		Handler:           egress.New(hosts),
+		Addr:              addr,
+		Handler:           h,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	log.Fatal(server.ListenAndServe())
+	return server.ListenAndServe()
 }

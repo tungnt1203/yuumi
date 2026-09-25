@@ -195,10 +195,13 @@ Mặc định, `gofmt`/`go vet` và Claude CLI chạy ngay trong container serve
 
 - Thư mục code PR mount **chỉ đọc**, root filesystem chỉ đọc. Chỉ `/tmp` và `$HOME` ghi được, dạng tmpfs, mất khi container bị xoá.
 - `--cap-drop ALL`, `no-new-privileges`, giới hạn 2 GB RAM, 2 CPU, 512 tiến trình.
-- Không có secret nào của server. Chỉ các biến trong allowlist (`forwardEnvKeys` trong `internal/sandbox/docker.go`: credential Claude và cấu hình Go) được chuyển vào từng lệnh, dạng `-e KEY` nên giá trị không nằm trong args.
+- Không có secret nào của server. Chỉ các biến trong allowlist (`forwardEnvKeys` trong `internal/sandbox/docker.go`: cấu hình Go) được chuyển vào từng lệnh, dạng `-e KEY` nên giá trị không nằm trong args.
 - Server vẫn tự clone (`git fetch` không chạy code PR), nên installation token không vào sandbox.
-- **Mạng bị giới hạn** (bước 2): sandbox chỉ nằm trong Docker network `yuumi-sandbox` tạo với `--internal` (không có route ra Internet). Đường ra duy nhất là egress proxy (`cmd/egressproxy`, container `yuumi-egress`), chỉ cho `CONNECT` cổng 443 tới `api.anthropic.com` và `proxy.golang.org`. Mọi đích khác, HTTP thường, hay gọi thẳng không qua proxy đều bị chặn. Proxy ghi log `ALLOW`/`DENY` cho từng kết nối: `docker logs yuumi-egress`.
-- Chưa làm: credential Claude vẫn nằm trong sandbox (bước 3). Nhờ bước 2, nó chỉ gửi được tới `api.anthropic.com`.
+- **Mạng bị giới hạn** (bước 2): sandbox chỉ nằm trong Docker network `yuumi-sandbox` tạo với `--internal` (không có route ra Internet). Đường ra duy nhất là container `yuumi-egress` (`cmd/egressproxy`), gồm 2 proxy:
+  - `:3128` proxy `CONNECT`, chỉ cho cổng 443 tới `proxy.golang.org` (module cho `go vet`). Mọi đích khác, kể cả `api.anthropic.com`, HTTP thường, hay gọi thẳng không qua proxy đều bị chặn.
+  - `:3129` **credential proxy** tới Anthropic API (bước 3): Claude CLI trong sandbox gọi model qua `ANTHROPIC_BASE_URL=http://yuumi-egress:3129`.
+- **Credential Claude thật không vào sandbox** (bước 3). Sandbox chỉ có giá trị giả cùng loại (`CLAUDE_CODE_OAUTH_TOKEN` hoặc `ANTHROPIC_API_KEY` = `yuumi-sandbox-placeholder`), để Claude CLI khởi động và gửi đúng loại header. Credential proxy bỏ header xác thực giả, gắn credential thật rồi chuyển tiếp qua HTTPS, và chỉ cho đường dẫn `/v1/`. Code PR có dụ được Claude đọc env thì cũng chỉ thấy giá trị giả. Credential thật nằm ở server và container `yuumi-egress`.
+- Proxy ghi log `ALLOW`/`DENY` cho từng kết nối và request: `docker logs yuumi-egress`.
 
 ```bash
 WORK="$PWD/work"   # đường dẫn trên host
@@ -272,7 +275,7 @@ Code của PR có thể đến từ bất kỳ ai, nên mọi tiến trình con 
 - Installation token chỉ được truyền cho riêng lệnh `git fetch` (qua `GIT_CONFIG_*`, header `Authorization`), không nhúng vào URL remote. Vì vậy token không nằm trong `.git/config` của thư mục clone mà Claude CLI đọc, cũng không nằm trong args của tiến trình.
 - Claude CLI mặc định từ chối `Read`/`Grep`/`Glob` ra ngoài thư mục review, kể cả qua symlink trong repo (nên không đọc được file private key, `.env` hay `/proc/<pid>/environ` của server). **Không thêm `additionalDirectories` hay rule `allow` cho Read/Grep/Glob vào `~/.claude/settings.json` của user chạy server** — làm vậy là mở lại đường đọc secret.
 
-Giai đoạn 2: bật `SANDBOX=docker` để các tiến trình con chạy trong container riêng mỗi job, không cùng filesystem với server (xem [Sandbox mỗi job](#sandbox-mỗi-job-sandboxdocker)). Mạng của sandbox chỉ ra được `api.anthropic.com` và `proxy.golang.org`. Còn lại: `CLAUDE.md` của repo vẫn được Claude CLI đọc, credential Claude vẫn nằm trong sandbox.
+Giai đoạn 2: bật `SANDBOX=docker` để các tiến trình con chạy trong container riêng mỗi job, không cùng filesystem với server (xem [Sandbox mỗi job](#sandbox-mỗi-job-sandboxdocker)). Mạng của sandbox chỉ ra được `proxy.golang.org` và credential proxy tới Anthropic API; credential Claude thật không vào sandbox. Còn lại: `CLAUDE.md` của repo vẫn được Claude CLI đọc (chỉ ảnh hưởng nội dung review).
 
 </details>
 

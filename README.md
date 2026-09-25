@@ -123,7 +123,8 @@ ALLOWED_USERS=<username1,username2,...>   # danh sách GitHub username được 
 
 | Biến | Default | Ý nghĩa |
 |------|---------|---------|
-| `MAX_DIFF_BUNDLE_CHARS` | `12000` | Ngưỡng ký tự diff cho mỗi bundle (mỗi bundle = 1 lần gọi Claude). Phải là số nguyên dương. |
+| `MAX_DIFF_BUNDLE_CHARS` | `100000` | Ngưỡng ký tự diff cho mỗi bundle (mỗi bundle = 1 lần gọi Claude). Phải là số nguyên dương. |
+| `REVIEW_TIMEOUT_MINUTES` | `15` | Thời gian tối đa của 1 lần gọi Claude CLI. Hết giờ thì bundle đó báo lỗi, không retry. Phải là số nguyên dương. |
 | `MAX_CONCURRENT_REVIEWS` | `3` | Số job review chạy đồng thời tối đa; job vượt mức sẽ chờ tới khi có slot trống. Phải là số nguyên dương. |
 | `REVIEW_LOG_DIR` | `logs/reviews` | Thư mục ghi log mỗi lần gọi Claude CLI (xem mục Log review). |
 | `REVIEW_STATE_FILE` | `logs/review-state.json` | File lưu SHA đã review gần nhất cho từng PR (xem mục review lần 2 trở đi). |
@@ -242,7 +243,7 @@ Muốn bắt buộc review chạy xong trước khi merge: vào **Settings → B
 Diff của PR được xử lý trước khi gửi cho Claude (`internal/review/diffsplit.go`):
 
 1. **Lọc file không cần review** trước khi tính kích thước: lock file (`go.sum`, `package-lock.json`, `yarn.lock`...), thư mục sinh ra (`vendor/`, `node_modules/`, `dist/`, `build/`...), file minified/binary/ảnh/font. Danh sách này được gộp với `exclude` của `.yuumi.yml` và `.gitignore` của repo. Comment kết quả có ghi chú `_(Đã bỏ qua N file không cần review: ...)_` để người đọc biết.
-2. **Chia bundle**: diff còn lại được nhóm theo thư mục (file impl + test cùng thư mục đi cùng nhau) rồi chia thành các bundle không vượt `MAX_DIFF_BUNDLE_CHARS` (mặc định 12000 ký tự). Mỗi bundle là 1 lần gọi `claude -p` riêng, chạy **tuần tự**, sau đó kết quả được gộp lại vào đúng 1 comment. PR nhỏ chỉ có 1 bundle.
+2. **Chia bundle**: diff còn lại được nhóm theo thư mục (file impl + test cùng thư mục đi cùng nhau) rồi chia thành các bundle không vượt `MAX_DIFF_BUNDLE_CHARS` (mặc định 100000 ký tự — đa số PR chỉ có 1 bundle, xem issue #73). Mỗi bundle là 1 lần gọi `claude -p` riêng, chạy **tuần tự**, sau đó kết quả được gộp lại vào đúng 1 comment. PR nhỏ chỉ có 1 bundle.
 3. **Cảnh báo diff bị cắt**: nếu số file parse được từ diff ít hơn `changed_files` mà GitHub báo cho cả PR (GitHub tự cắt diff của PR quá lớn), comment sẽ có dòng `⚠️ GitHub chỉ trả về diff của X/Y file — review có thể sót file.`
 
 </details>

@@ -207,6 +207,32 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"ok after r
 	}
 }
 
+// Hết timeout thì dừng, không retry: bundle chạy hết giờ thường là do quá
+// lớn, retry chỉ nhân thời gian chờ (issue #73).
+func TestReview_Timeout_DoesNotRetry(t *testing.T) {
+	counter := filepath.Join(t.TempDir(), "attempts")
+	// exec: sleep thay chính tiến trình sh, để kill khi hết timeout không
+	// bỏ lại tiến trình con giữ stdout làm cmd.Output() chờ tiếp.
+	withFakeClaude(t, countingScript(counter, `exec sleep 10`))
+
+	start := time.Now()
+	r := &Reviewer{Timeout: time.Second, sleep: noSleep}
+	_, stats, err := r.Review("review this", sandbox.Local(t.TempDir()))
+	if err == nil {
+		t.Fatal("Review() expected a timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("Review() error = %v, want it to say the call timed out", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("Review() took %s, want it to stop at the timeout", elapsed)
+	}
+	assertAttempts(t, counter, 1)
+	if stats.Attempts != 1 {
+		t.Errorf("Review() attempts = %d, want 1", stats.Attempts)
+	}
+}
+
 func TestReview_MaxAttempts_Override(t *testing.T) {
 	counter := filepath.Join(t.TempDir(), "attempts")
 	withFakeClaude(t, countingScript(counter, `echo 'always fails' >&2

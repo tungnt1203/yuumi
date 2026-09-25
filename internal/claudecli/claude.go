@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -69,6 +70,12 @@ func (c ClaudeResult) usage() review.Usage {
 // không được set (<=0): 1 lần gọi đầu + tối đa 2 lần retry (xem issue #11).
 const defaultMaxAttempts = 3
 
+// defaultTimeout giới hạn 1 lần gọi Claude CLI khi Reviewer.Timeout không
+// được set. Bundle lớn (tới ~100k ký tự diff, xem
+// review.defaultBundleBudgetChars) cần vài phút đọc thêm file; 5 phút cũ
+// đã sát trần với bundle 12k (log có lần gọi 200s, issue #73).
+const defaultTimeout = 15 * time.Minute
+
 // defaultBackoff là hàm backoff mặc định khi Reviewer.Backoff == nil.
 // attempt đếm từ 2 (lần retry đầu tiên, sau lần gọi thứ 1 thất bại) —
 // backoff tuyến tính ngắn (2s, 4s...), đủ để chờ qua sự cố mạng/tải tạm
@@ -88,6 +95,9 @@ type Reviewer struct {
 	// đếm từ 2). nil dùng defaultBackoff.
 	Backoff func(attempt int) time.Duration
 
+	// Timeout giới hạn 1 lần gọi CLI. <=0 dùng defaultTimeout.
+	Timeout time.Duration
+
 	// sleep tách riêng khỏi Backoff để test override (khỏi phải chờ backoff
 	// thật) — không export vì bên ngoài package không cần chỉnh; mặc định
 	// (nil) dùng time.Sleep.
@@ -99,7 +109,8 @@ func NewReviewer() *Reviewer {
 }
 
 // Review gọi Claude CLI, tự retry tối đa MaxAttempts lần nếu gặp lỗi có vẻ
-// tạm thời (chạy lệnh thất bại: timeout, lỗi mạng khi gọi Claude CLI...).
+// tạm thời (chạy lệnh thất bại, lỗi mạng khi gọi Claude CLI...; hết
+// timeout thì không, xem runOnce).
 // Lỗi Claude tự báo rõ ràng (is_error=true kèm subtype cụ thể) hoặc output
 // không parse được KHÔNG được retry — đây là lỗi xác định trước, thử lại
 // với cùng input không giúp gì, chỉ tốn thêm thời gian (xem issue #11).
@@ -132,11 +143,15 @@ func (r *Reviewer) Review(prompt string, box sandbox.Env) (result string, stats 
 	if sleep == nil {
 		sleep = time.Sleep
 	}
+	timeout := r.Timeout
+	if timeout <= 0 {
+		timeout = defaultTimeout
+	}
 
 	var lastErr error
 	var usage review.Usage
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		res, err, retryable := runOnce(prompt, box)
+		res, err, retryable := runOnce(prompt, box, timeout)
 		usage = usage.Add(res.usage())
 		stats = review.CallStats{Attempts: attempt, NumTurns: res.NumTurns, Usage: usage}
 		if err == nil {
@@ -193,17 +208,24 @@ func claudeArgs(prompt string) []string {
 }
 
 // runOnce gọi Claude CLI đúng 1 lần. retryable báo lỗi này có đáng thử lại
-// không: true cho lỗi chạy lệnh (timeout, lệnh không chạy được...) — những
-// lỗi này thường do mạng/tải tạm thời, chạy lại có cơ hội thành công; false
-// cho lỗi xác định trước (output không parse được đúng định dạng kỳ vọng,
-// hoặc Claude tự báo is_error=true, kể cả khi lệnh thoát exit != 0) — retry
-// không thay đổi được kết quả.
+// không: true cho lỗi chạy lệnh (lệnh không chạy được, CLI chết giữa
+// chừng...) — thường do mạng/tải tạm thời, chạy lại có cơ hội thành công;
+// false cho lỗi xác định trước (output không parse được đúng định dạng kỳ
+// vọng, hoặc Claude tự báo is_error=true, kể cả khi lệnh thoát exit != 0) —
+// retry không thay đổi được kết quả.
+//
+// Hết timeout cũng KHÔNG retry: lần gọi đã chạy hết thời gian cho phép
+// thường là do bundle quá lớn, không phải trục trặc thoáng qua (CLI tự
+// retry lỗi API bên trong). Retry chỉ nhân thời gian chờ lên tới
+// MaxAttempts lần, và trong Docker sandbox tiến trình cũ còn chạy tiếp tới
+// khi container bị xoá (xem sandbox.docker.Command), tức là tốn token gấp
+// đôi.
 //
 // res là output đã parse, kể cả khi is_error=true hoặc lệnh thoát exit != 0
 // mà stdout vẫn là JSON (để caller đọc num_turns, usage); zero value nếu
 // không có output JSON để đọc.
-func runOnce(prompt string, box sandbox.Env) (res ClaudeResult, err error, retryable bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+func runOnce(prompt string, box sandbox.Env, timeout time.Duration) (res ClaudeResult, err error, retryable bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	cmd := box.Command(ctx, procenv.WithoutSecrets(os.Environ()), "claude", claudeArgs(prompt)...)
@@ -220,6 +242,9 @@ func runOnce(prompt string, box sandbox.Env) (res ClaudeResult, err error, retry
 			// CLI thoát exit != 0 vì chính Claude báo lỗi (vd error_max_turns)
 			// — lỗi xác định trước như nhánh is_error bên dưới, không retry.
 			return partial, fmt.Errorf("claude returned error (%s): %s: %w", partial.Subtype, partial.Result, cmdErr), false
+		}
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return partial, fmt.Errorf("claude timed out after %s: %w", timeout, cmdErr), false
 		}
 		return partial, fmt.Errorf("claude command failed: %w (stderr: %s)", cmdErr, stderr.String()), true
 	}

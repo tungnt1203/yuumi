@@ -132,6 +132,33 @@ func TestLoad_ReviewTimeoutMinutes(t *testing.T) {
 	}
 }
 
+func TestLoad_ReviewMaxBudgetUSD(t *testing.T) {
+	setRequiredEnv(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.ReviewMaxBudgetUSD != 0 {
+		t.Errorf("ReviewMaxBudgetUSD = %v, want 0 when unset", cfg.ReviewMaxBudgetUSD)
+	}
+
+	t.Setenv("REVIEW_MAX_BUDGET_USD", "1.5")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.ReviewMaxBudgetUSD != 1.5 {
+		t.Errorf("ReviewMaxBudgetUSD = %v, want 1.5", cfg.ReviewMaxBudgetUSD)
+	}
+
+	for _, raw := range []string{"abc", "0", "-1", "NaN", "Inf"} {
+		t.Setenv("REVIEW_MAX_BUDGET_USD", raw)
+		if _, err := Load(); err == nil {
+			t.Errorf("Load() with REVIEW_MAX_BUDGET_USD=%q: expected error, got nil", raw)
+		}
+	}
+}
+
 func TestLoad_MaxConcurrentReviews_UnsetDefaultsToZero(t *testing.T) {
 	setRequiredEnv(t)
 

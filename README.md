@@ -124,6 +124,7 @@ ALLOWED_USERS=<username1,username2,...>   # danh sách GitHub username được 
 | Biến | Default | Ý nghĩa |
 |------|---------|---------|
 | `MAX_DIFF_BUNDLE_CHARS` | `100000` | Ngưỡng ký tự diff cho mỗi bundle (mỗi bundle = 1 lần gọi Claude). Phải là số nguyên dương. |
+| `REVIEW_MAX_BUDGET_USD` | `3` | Trần chi phí (USD) của 1 lần gọi Claude CLI (`--max-budget-usd`). Vượt trần thì bundle đó báo lỗi, không retry. Phải là số dương. |
 | `REVIEW_TIMEOUT_MINUTES` | `15` | Thời gian tối đa của 1 lần gọi Claude CLI. Hết giờ thì bundle đó báo lỗi, không retry. Phải là số nguyên dương. |
 | `MAX_CONCURRENT_REVIEWS` | `3` | Số job review chạy đồng thời tối đa; job vượt mức sẽ chờ tới khi có slot trống. Phải là số nguyên dương. |
 | `REVIEW_LOG_DIR` | `logs/reviews` | Thư mục ghi log mỗi lần gọi Claude CLI (xem mục Log review). |
@@ -270,7 +271,7 @@ Nếu repo được review có `go.mod`, bot chạy `gofmt` và `go vet` trên b
 
 Code của PR có thể đến từ bất kỳ ai, nên mọi tiến trình con chạy trên thư mục clone đều bị siết lại (issue #78, giai đoạn 1):
 
-- **Claude CLI** chạy với `--setting-sources user` và `--strict-mcp-config`: bỏ `.claude/settings*.json` và `.mcp.json` của repo (các file này khai báo được hook chạy lệnh shell trên server). Tool `Bash`, `Edit`, `Write`, `NotebookEdit`, `WebFetch`, `WebSearch` bị chặn; review chỉ đọc code.
+- **Claude CLI** chạy với `--setting-sources user` và `--strict-mcp-config`: bỏ `.claude/settings*.json` và `.mcp.json` của repo (các file này khai báo được hook chạy lệnh shell trên server). Tool chỉ còn `Read`, `Grep`, `Glob` (allowlist `--tools`, không phải blocklist: tool mới của bản CLI sau không tự lọt vào); review chỉ đọc code. `--restricted` giới hạn file tools trong thư mục repo, `--no-session-persistence` không ghi transcript ra đĩa, `--max-budget-usd` (`REVIEW_MAX_BUDGET_USD`) chặn lần gọi chạy mất kiểm soát.
 - **`gofmt`/`go vet`** có timeout 2 phút, `GOTOOLCHAIN=local` (không tải toolchain do `go.mod` của PR yêu cầu), `CGO_ENABLED=0`, `GOPROXY` chỉ `proxy.golang.org` (không clone VCS tuỳ ý).
 - Không tiến trình con nào nhận secret của server (`GITHUB_WEBHOOK_SECRET`, private key của App...) qua biến môi trường.
 - Installation token chỉ được truyền cho riêng lệnh `git fetch` (qua `GIT_CONFIG_*`, header `Authorization`), không nhúng vào URL remote. Vì vậy token không nằm trong `.git/config` của thư mục clone mà Claude CLI đọc, cũng không nằm trong args của tiến trình.

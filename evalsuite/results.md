@@ -20,3 +20,9 @@
 | 2026-09-25 | ngân sách bundle 12k, lần 3 | cross-package-nil-go | ✅ | 2 bundle, $0.39. Bắt ở api/handler.go:31 (critical), trùng lại ở store/user.go:50 (high) |
 | 2026-09-25 | ngân sách bundle 100k, lần 2 | cross-package-nil-go | ✅ | 1 bundle, $0.26. api/handler.go:30 (critical), không trùng |
 | 2026-09-25 | ngân sách bundle 100k, lần 3 | cross-package-nil-go | ✅ | 1 bundle, $0.24. api/handler.go:30 (critical), không trùng. Thêm: Mailer.from không được dùng (đúng — lỗi thật trong fixture) |
+| 2026-09-25 | cờ CLI #100 (--tools Read,Grep,Glob, --restricted, --no-session-persistence, --max-budget-usd) | cross-package-nil-go | ✅ | $0.22 (trước ~$0.27). api/handler.go:30 high, không trùng; thêm Mailer.from không dùng (đúng) |
+| 2026-09-25 | cờ CLI #100 | go-goroutine-leak | ✅ | $0.09 (trước $0.19: bớt tool → system prompt ngắn, cache write 19.5k → 8.2k token). Leak trong Notify đúng dòng |
+| 2026-09-25 | cờ CLI #100 | hardcoded-secret-go | ✅ | $0.09. security/high, đúng dòng 21-22, nhận ra key AWS EXAMPLE, suggestion os.Getenv |
+| 2026-09-25 | cờ CLI #100 | js-floating-promise | ✅ | $0.08. Floating promise đúng dòng 20, suggestion .catch(...) |
+| 2026-09-25 | cờ CLI #100 | python-mutable-default | ✅ | $0.09. Bắt đúng mutable default + mutate list của caller |
+| 2026-09-25 | cờ CLI #100 | sql-injection-go | ✅ | $0.08. security/critical đúng dòng fmt.Sprintf |

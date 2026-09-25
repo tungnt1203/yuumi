@@ -38,7 +38,10 @@ func main() {
 	// package githubapp, issue #47) — KHÔNG còn 1 ghClient dùng chung, vì
 	// token giờ gắn theo installation của từng webhook (xem newJob).
 	tokenProvider := githubapp.NewProvider(cfg.GitHubAppID, cfg.GitHubAppPrivateKey)
-	var reviewer review.Reviewer = &claudecli.Reviewer{Timeout: time.Duration(cfg.ReviewTimeoutMinutes) * time.Minute}
+	var reviewer review.Reviewer = &claudecli.Reviewer{
+		Timeout:      time.Duration(cfg.ReviewTimeoutMinutes) * time.Minute,
+		MaxBudgetUSD: cfg.ReviewMaxBudgetUSD,
+	}
 	dispatcher := review.NewDispatcher(cfg.MaxConcurrentReviews)
 	seenComments := webhook.NewSeenComments()
 	reviewLogger := reviewlog.NewFileLogger(cfg.ReviewLogDir)
@@ -76,16 +79,6 @@ func main() {
 		json.NewEncoder(w).Encode(report)
 	})
 
-	// newJob dựng 1 review.Job dùng chung cấu hình (cloner, reviewer, budget,
-	// logger, state store) cho CẢ 2 luồng trigger (mention thủ công lẫn
-	// auto-review, issue #32) — chỉ khác nhau ở ghClient (token riêng theo
-	// installation của từng webhook, xem githubapp.Provider, issue #47) và
-	// RepoFullName/IssueNumber/PlaceholderID/UserCommand, tránh 2 luồng tự
-	// xây dựng Job lệch nhau.
-	//
-	// token trả installation token còn hạn — clone gọi nó ngay lúc clone
-	// (có thể sau khi job chờ lâu trong hàng đợi Dispatcher) để đọc được
-	// repo private (issue #48, #99).
 	// startSandbox: nil giữ hành vi cũ (lệnh trên code PR chạy thẳng trên
 	// server); SANDBOX=docker cho mỗi job 1 container riêng (issue #78).
 	var startSandbox func(dir string) (sandbox.Env, error)
@@ -126,6 +119,16 @@ func main() {
 		}
 	}
 
+	// newJob dựng 1 review.Job dùng chung cấu hình (cloner, reviewer, budget,
+	// logger, state store) cho CẢ 2 luồng trigger (mention thủ công lẫn
+	// auto-review, issue #32) — chỉ khác nhau ở ghClient (token riêng theo
+	// installation của từng webhook, xem githubapp.Provider, issue #47) và
+	// RepoFullName/IssueNumber/PlaceholderID/UserCommand, tránh 2 luồng tự
+	// xây dựng Job lệch nhau.
+	//
+	// token trả installation token còn hạn — clone gọi nó ngay lúc clone
+	// (có thể sau khi job chờ lâu trong hàng đợi Dispatcher) để đọc được
+	// repo private (issue #48, #99).
 	newJob := func(ghClient *githubapi.Client, token func() (string, error), repoFullName string, issueNumber int, placeholderID int64, userCommand string) *review.Job {
 		return &review.Job{
 			GitHub: ghClient,

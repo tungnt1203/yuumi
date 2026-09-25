@@ -114,6 +114,26 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"văn xuôi
 	}
 }
 
+// Trần chi phí cấu hình được; vượt trần thì CLI báo is_error và Review
+// không retry (issue #100).
+func TestReview_MaxBudget(t *testing.T) {
+	out := t.TempDir()
+	counter := filepath.Join(out, "attempts")
+	withFakeClaude(t, countingScript(counter, fmt.Sprintf(`for a in "$@"; do echo "$a"; done > %q
+echo '{"type":"result","subtype":"error_max_budget_usd","is_error":true,"result":"","num_turns":3}'
+exit 1`, filepath.Join(out, "args"))))
+
+	_, _, err := (&Reviewer{MaxBudgetUSD: 0.5, sleep: noSleep}).Review("p", sandbox.Local(t.TempDir()))
+	if err == nil || !strings.Contains(err.Error(), "error_max_budget_usd") {
+		t.Errorf("Review() error = %v, want the budget error", err)
+	}
+	assertAttempts(t, counter, 1)
+	args, _ := os.ReadFile(filepath.Join(out, "args"))
+	if !strings.Contains(string(args), "--max-budget-usd\n0.5\n") {
+		t.Errorf("claude args missing --max-budget-usd 0.5, got:\n%s", args)
+	}
+}
+
 func TestReview_ClaudeReportsError_DoesNotRetry(t *testing.T) {
 	counter := filepath.Join(t.TempDir(), "attempts")
 	withFakeClaude(t, countingScript(counter, `echo '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"gave up","num_turns":2}'`))
@@ -404,15 +424,26 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'
 	}
 
 	args, _ := os.ReadFile(filepath.Join(out, "args"))
-	for _, want := range []string{"--setting-sources\nuser\n", "--strict-mcp-config\n", "--disallowedTools\n" + disallowedTools + "\n", "--json-schema\n" + review.FindingsSchema + "\n"} {
+	for _, want := range []string{
+		"--tools\n" + allowedTools + "\n",
+		"--restricted\n",
+		"--setting-sources\nuser\n",
+		"--strict-mcp-config\n",
+		"--no-session-persistence\n",
+		"--max-budget-usd\n3\n",
+		"--json-schema\n" + review.FindingsSchema + "\n",
+	} {
 		if !strings.Contains(string(args), want) {
 			t.Errorf("claude args missing %q, got:\n%s", want, args)
 		}
 	}
-	for _, tool := range []string{"Bash", "Edit", "Write", "WebFetch"} {
-		if !slices.Contains(strings.Split(disallowedTools, ","), tool) {
-			t.Errorf("disallowedTools = %q, want it to include %s", disallowedTools, tool)
-		}
+	// Allowlist chỉ gồm tool đọc; không được có tool chạy lệnh/sửa
+	// file/gọi mạng hay tạo agent (issue #100).
+	if got := strings.Split(allowedTools, ","); !slices.Equal(got, []string{"Read", "Grep", "Glob"}) {
+		t.Errorf("allowedTools = %v, want only Read, Grep, Glob", got)
+	}
+	if strings.Contains(string(args), "--disallowedTools") {
+		t.Errorf("claude args should use the --tools allowlist, not --disallowedTools:\n%s", args)
 	}
 
 	env, _ := os.ReadFile(filepath.Join(out, "env"))

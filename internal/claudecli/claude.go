@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/tungnt1203/yuumi/internal/procenv"
@@ -76,6 +77,13 @@ const defaultMaxAttempts = 3
 // đã sát trần với bundle 12k (log có lần gọi 200s, issue #73).
 const defaultTimeout = 15 * time.Minute
 
+// defaultMaxBudgetUSD là trần chi phí 1 lần gọi khi Reviewer.MaxBudgetUSD
+// không được set. Log tới 2026-09-25 (115 lần gọi): cao nhất $0.54, p95
+// $0.39 — phần lớn với bundle 12k; bundle 100k có thể tới ~$1-1.5. $3 đủ
+// rộng để không chặn review bình thường, chỉ chặn lần gọi chạy mất kiểm
+// soát (vd diff chứa prompt injection bắt đọc cả repo) (issue #100).
+const defaultMaxBudgetUSD = 3.0
+
 // defaultBackoff là hàm backoff mặc định khi Reviewer.Backoff == nil.
 // attempt đếm từ 2 (lần retry đầu tiên, sau lần gọi thứ 1 thất bại) —
 // backoff tuyến tính ngắn (2s, 4s...), đủ để chờ qua sự cố mạng/tải tạm
@@ -97,6 +105,10 @@ type Reviewer struct {
 
 	// Timeout giới hạn 1 lần gọi CLI. <=0 dùng defaultTimeout.
 	Timeout time.Duration
+
+	// MaxBudgetUSD là trần chi phí 1 lần gọi CLI. <=0 dùng
+	// defaultMaxBudgetUSD.
+	MaxBudgetUSD float64
 
 	// sleep tách riêng khỏi Backoff để test override (khỏi phải chờ backoff
 	// thật) — không export vì bên ngoài package không cần chỉnh; mặc định
@@ -147,11 +159,15 @@ func (r *Reviewer) Review(prompt string, box sandbox.Env) (result string, stats 
 	if timeout <= 0 {
 		timeout = defaultTimeout
 	}
+	budget := r.MaxBudgetUSD
+	if budget <= 0 {
+		budget = defaultMaxBudgetUSD
+	}
 
 	var lastErr error
 	var usage review.Usage
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		res, err, retryable := runOnce(prompt, box, timeout)
+		res, err, retryable := runOnce(prompt, box, timeout, budget)
 		usage = usage.Add(res.usage())
 		stats = review.CallStats{Attempts: attempt, NumTurns: res.NumTurns, Usage: usage}
 		if err == nil {
@@ -168,24 +184,30 @@ func (r *Reviewer) Review(prompt string, box sandbox.Env) (result string, stats 
 	return "", review.CallStats{Attempts: maxAttempts, Usage: usage}, lastErr
 }
 
-// disallowedTools là các tool Claude không được dùng khi review: review chỉ
-// cần đọc code (Read/Grep/Glob). Chạy lệnh, sửa file hay gọi mạng trên
-// thư mục chứa code PR không tin cậy là đường cho prompt injection trong
-// diff biến thành hành động thật trên máy server (issue #78).
-const disallowedTools = "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"
+// allowedTools là toàn bộ tool Claude được dùng khi review: review chỉ cần
+// đọc code. Allowlist (--tools) thay cho blocklist (--disallowedTools) cũ:
+// với blocklist, CLI 2.1.281 vẫn mở Agent, Workflow, Skill, ToolSearch,
+// ScheduleWakeup... — tool mới của bản CLI sau cũng tự lọt vào. Chạy lệnh,
+// sửa file hay gọi mạng trên code PR không tin cậy là đường cho prompt
+// injection trong diff biến thành hành động thật (issue #78, #100).
+const allowedTools = "Read,Grep,Glob"
 
 // claudeArgs dựng tham số cho Claude CLI. Thư mục làm việc là repo của PR,
 // nên mọi cấu hình CLI tự đọc từ đó đều do tác giả PR viết:
-//   - --setting-sources user: bỏ .claude/settings*.json của repo — file này
-//     khai báo được hook (lệnh shell tự chạy) và nới quyền tool.
+//   - --tools: chỉ còn Read/Grep/Glob (cộng tool structured output nội bộ
+//     của --json-schema) — đã kiểm chứng bằng cách hỏi CLI danh sách tool.
+//   - --restricted: CLI tự giới hạn file tools trong thư mục làm việc, bỏ
+//     tool chạy code và mọi settings file (user/project/local). Trước đây
+//     việc Read/Grep/Glob không đọc được ra ngoài (đường dẫn tuyệt đối,
+//     symlink, /proc/<pid>/environ...) chỉ dựa vào mặc định của -p.
+//   - --setting-sources user: bỏ .claude/settings*.json của repo (hook, nới
+//     quyền tool). --restricted đã bao hàm, giữ lại làm lớp thứ hai.
 //   - --strict-mcp-config (không kèm --mcp-config): bỏ MCP server khai báo
 //     trong .mcp.json của repo.
-//
-// Read/Grep/Glob ra ngoài thư mục làm việc (đường dẫn tuyệt đối, symlink
-// trong repo trỏ ra ngoài, /proc/<pid>/environ...) bị CLI từ chối theo mặc
-// định ở chế độ -p — đã kiểm chứng với claude 2.1.281. Mặc định này chỉ giữ
-// khi ~/.claude/settings.json của user chạy server KHÔNG thêm
-// additionalDirectories hay rule allow cho Read/Grep/Glob: đừng nới ở đó.
+//   - --no-session-persistence: không ghi transcript (có code PR) ra đĩa.
+//   - --max-budget-usd: trần chi phí 1 lần gọi. Vượt thì CLI trả is_error
+//     (subtype error_max_budget_usd), runOnce không retry. Trần mềm: CLI
+//     dừng SAU lượt vượt trần, không cắt giữa chừng.
 //
 // --json-schema (review.FindingsSchema) buộc model trả kết quả qua tool
 // structured output, CLI validate theo schema và bắt model gọi lại nếu sai;
@@ -194,15 +216,17 @@ const disallowedTools = "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"
 //
 // CLAUDE.md của repo vẫn được CLI đọc (chỉ --bare tắt được, mà --bare bắt
 // buộc xác thực bằng ANTHROPIC_API_KEY). Với tool đã khoá chỉ còn đọc, nó
-// chỉ ảnh hưởng được nội dung review; cô lập hẳn cần sandbox riêng mỗi job
-// (giai đoạn 2 của issue #78).
-func claudeArgs(prompt string) []string {
+// chỉ ảnh hưởng được nội dung review.
+func claudeArgs(prompt string, maxBudgetUSD float64) []string {
 	return []string{
 		"-p", prompt,
 		"--output-format", "json",
+		"--tools", allowedTools,
+		"--restricted",
 		"--setting-sources", "user",
 		"--strict-mcp-config",
-		"--disallowedTools", disallowedTools,
+		"--no-session-persistence",
+		"--max-budget-usd", strconv.FormatFloat(maxBudgetUSD, 'f', -1, 64),
 		"--json-schema", review.FindingsSchema,
 	}
 }
@@ -224,11 +248,11 @@ func claudeArgs(prompt string) []string {
 // res là output đã parse, kể cả khi is_error=true hoặc lệnh thoát exit != 0
 // mà stdout vẫn là JSON (để caller đọc num_turns, usage); zero value nếu
 // không có output JSON để đọc.
-func runOnce(prompt string, box sandbox.Env, timeout time.Duration) (res ClaudeResult, err error, retryable bool) {
+func runOnce(prompt string, box sandbox.Env, timeout time.Duration, maxBudgetUSD float64) (res ClaudeResult, err error, retryable bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := box.Command(ctx, procenv.WithoutSecrets(os.Environ()), "claude", claudeArgs(prompt)...)
+	cmd := box.Command(ctx, procenv.WithoutSecrets(os.Environ()), "claude", claudeArgs(prompt, maxBudgetUSD)...)
 
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

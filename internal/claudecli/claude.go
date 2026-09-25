@@ -70,17 +70,17 @@ func (c ClaudeResult) usage() review.Usage {
 // không được set (<=0): 1 lần gọi đầu + tối đa 2 lần retry (xem issue #11).
 const defaultMaxAttempts = 3
 
-// defaultBackoff là hàm backoff mặc định khi Reviewer.Backoff == nil.
-// attempt đếm từ 2 (lần retry đầu tiên, sau lần gọi thứ 1 thất bại) —
-// backoff tuyến tính ngắn (2s, 4s...), đủ để chờ qua sự cố mạng/tải tạm
-// thời mà không làm review chậm đáng kể so với thời gian Claude CLI vốn đã
-// cần (có thể tới vài chục giây/phút).
 // defaultTimeout giới hạn 1 lần gọi Claude CLI khi Reviewer.Timeout không
 // được set. Bundle lớn (tới ~100k ký tự diff, xem
 // review.defaultBundleBudgetChars) cần vài phút đọc thêm file; 5 phút cũ
 // đã sát trần với bundle 12k (log có lần gọi 200s, issue #73).
 const defaultTimeout = 15 * time.Minute
 
+// defaultBackoff là hàm backoff mặc định khi Reviewer.Backoff == nil.
+// attempt đếm từ 2 (lần retry đầu tiên, sau lần gọi thứ 1 thất bại) —
+// backoff tuyến tính ngắn (2s, 4s...), đủ để chờ qua sự cố mạng/tải tạm
+// thời mà không làm review chậm đáng kể so với thời gian Claude CLI vốn đã
+// cần (có thể tới vài chục giây/phút).
 func defaultBackoff(attempt int) time.Duration {
 	return time.Duration(attempt-1) * 2 * time.Second
 }

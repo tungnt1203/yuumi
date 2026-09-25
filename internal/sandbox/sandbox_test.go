@@ -122,20 +122,20 @@ func TestDockerCommand_DeadlineWrapsWithTimeout(t *testing.T) {
 	cmd := d.Command(ctx, nil, "claude", "-p", "hi")
 
 	wantArgs := []string{"docker", "exec", "--workdir", "/work",
-		"yuumi-job-abc", "timeout", "--kill-after=10s", "90s", "claude", "-p", "hi"}
+		"yuumi-job-abc", "timeout", "-k", "10", "90", "claude", "-p", "hi"}
 	if !slices.Equal(cmd.Args, wantArgs) {
 		t.Errorf("Args = %v\nwant %v", cmd.Args, wantArgs)
 	}
 }
 
-// Deadline đã qua vẫn cho `timeout` tối thiểu 1s, không phải 0s (GNU
+// Deadline đã qua vẫn cho `timeout` tối thiểu 1 giây, không phải 0 (GNU
 // timeout coi 0 là "không giới hạn").
 func TestTimeoutPrefix_ExpiredDeadlineUsesOneSecond(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
 
 	got := timeoutPrefix(ctx)
-	if len(got) != 3 || got[2] != "1s" {
-		t.Errorf("timeoutPrefix() = %v, want duration 1s", got)
+	if len(got) != 4 || got[3] != "1" {
+		t.Errorf("timeoutPrefix() = %v, want duration 1", got)
 	}
 }

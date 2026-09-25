@@ -50,8 +50,9 @@ var dockerCLIEnvKeys = []string{
 
 // DockerConfig cấu hình container sandbox.
 type DockerConfig struct {
-	// Image phải có sẵn các tool mà review chạy (go, git, claude) — dùng
-	// chính image của server.
+	// Image phải có sẵn các tool mà review chạy (go, git, claude) và
+	// `timeout` (coreutils hoặc BusyBox, xem timeoutPrefix) — dùng chính
+	// image của server.
 	Image string
 
 	// CredentialEnv là loại credential Claude của server
@@ -168,7 +169,9 @@ func (d *docker) Dir() string { return d.dir }
 // tới khi Close xoá container (vd claude vẫn tốn token cho kết quả sẽ bị bỏ,
 // issue #98). Vì vậy khi ctx có deadline, lệnh được bọc trong `timeout` của
 // coreutils (có sẵn trong image Debian) để chính container tự dừng nó:
-// TERM đúng lúc hết giờ, KILL sau killGrace nếu vẫn chưa thoát. `timeout`
+// TERM đúng lúc hết giờ, KILL sau killGrace nếu vẫn chưa thoát. Image
+// sandbox vì vậy phải có `timeout` (coreutils hoặc BusyBox), xem
+// DockerConfig.Image. `timeout`
 // chạy lệnh trong process group riêng và gửi tín hiệu cho cả group, nên
 // tiến trình con (vd rg do Grep của claude sinh ra) cũng dừng theo.
 // Không có deadline thì chạy lệnh trực tiếp như cũ.
@@ -193,10 +196,14 @@ func (d *docker) Command(ctx context.Context, env []string, name string, args ..
 // killGrace là thời gian `timeout` chờ sau TERM trước khi gửi KILL.
 const killGrace = 10 * time.Second
 
-// timeoutPrefix trả `timeout --kill-after=<killGrace> <giây còn lại>s` khi
-// ctx có deadline, nil nếu không. Làm tròn LÊN giây để container không dừng
-// lệnh sớm hơn deadline phía server (runOnce dựa vào ctx.Err() để nhận ra
-// lỗi timeout); tối thiểu 1s.
+// timeoutPrefix trả `timeout -k <killGrace> <giây còn lại>` khi ctx có
+// deadline, nil nếu không. Làm tròn LÊN giây để container không dừng lệnh
+// sớm hơn deadline phía server (runOnce dựa vào ctx.Err() để nhận ra lỗi
+// timeout); tối thiểu 1 (GNU timeout coi 0 là không giới hạn).
+//
+// Dùng dạng ngắn `-k N` với số giây trần: cả GNU coreutils lẫn BusyBox đều
+// hiểu. Dạng dài `--kill-after=10s` BusyBox không nhận (exit 1, lệnh không
+// chạy) — image sandbox dựa trên Alpine sẽ làm hỏng mọi review.
 func timeoutPrefix(ctx context.Context) []string {
 	deadline, ok := ctx.Deadline()
 	if !ok {
@@ -206,7 +213,7 @@ func timeoutPrefix(ctx context.Context) []string {
 	if secs < 1 {
 		secs = 1
 	}
-	return []string{"timeout", "--kill-after=" + strconv.Itoa(int(killGrace.Seconds())) + "s", strconv.Itoa(secs) + "s"}
+	return []string{"timeout", "-k", strconv.Itoa(int(killGrace.Seconds())), strconv.Itoa(secs)}
 }
 
 // Close xoá container (kill mọi tiến trình còn chạy trong đó).

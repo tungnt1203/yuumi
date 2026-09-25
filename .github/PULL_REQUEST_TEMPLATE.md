@@ -1,26 +1,26 @@
-## Mô tả
+## Description
 
-<!-- PR này làm gì, tại sao cần thay đổi này -->
+<!-- What does this PR do, and why is the change needed? -->
 
-## Liên quan
+## Related
 
-<!-- vd: Closes #47 -->
+<!-- e.g. Closes #47 -->
 
-## Loại thay đổi
+## Type of change
 
 - [ ] Bug fix
-- [ ] Feature mới
-- [ ] Refactor (không đổi behavior)
+- [ ] New feature
+- [ ] Refactor (no behavior change)
 - [ ] Docs
-- [ ] Khác: ...
+- [ ] Other: ...
 
-## Đã test thế nào
+## How was this tested?
 
-<!-- vd: unit test mới, chạy go run ./cmd/evalrun, test tay qua ngrok... -->
+<!-- e.g. new unit tests, go run ./cmd/evalrun, manual test through ngrok... -->
 
 ## Checklist
 
-- [ ] `go build ./... && go vet ./... && go test ./...` pass local
-- [ ] Có unit test cho logic mới/thay đổi (nếu áp dụng được)
-- [ ] Đã cập nhật README/CONTRIBUTING nếu thay đổi behavior hoặc cách cấu hình
-- [ ] Không commit secret (`.env`, `.pem`...)
+- [ ] `go build ./... && go vet ./... && go test ./...` passes locally
+- [ ] Unit tests for new or changed logic (where applicable)
+- [ ] README/CONTRIBUTING updated if behavior or configuration changed
+- [ ] No secrets committed (`.env`, `.pem`...)

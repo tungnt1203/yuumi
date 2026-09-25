@@ -1,6 +1,6 @@
 ---
 name: yuumi-review-loop
-description: Wait for the yuumi bot to finish reviewing a PR in this repo, then triage and fix its findings, push, and reply on each comment. Use after pushing to a PR branch, or when the user says "xem và fix comment", "bot review xong chưa", "fix góp ý review PR #N".
+description: Wait for the yuumi bot to finish reviewing a PR in this repo, then triage and fix its findings, push, and reply on each comment. Use after pushing to a PR branch, or when the user says "check and fix the review comments", "is the bot review done", "fix the review feedback on PR #N" (or in Vietnamese: "xem và fix comment", "bot review xong chưa", "fix góp ý review PR #N").
 ---
 
 # yuumi review loop
@@ -42,11 +42,11 @@ go vet ./... && env -u GITHUB_APP_PRIVATE_KEY_PATH -u GITHUB_APP_PRIVATE_KEY go 
 ```
 
 1. Rebuild and recreate the container (step 1), unless only comments or docs changed.
-2. Commit as `fix: xử lý góp ý review PR #<n>`, with one bullet per finding addressed, then push.
+2. Commit as `fix: address review feedback on PR #<n>`, with one bullet per finding addressed, then push.
 3. Reply in each finding's thread, naming the commit and what changed (or why nothing did):
 
 ```bash
-gh api -X POST repos/<owner>/<repo>/pulls/<n>/comments/<comment id>/replies -f body="Đã sửa ở <short sha>: ..."
+gh api -X POST repos/<owner>/<repo>/pulls/<n>/comments/<comment id>/replies -f body="Fixed in <short sha>: ..."
 ```
 
 For findings that appear only in the summary comment (not inline), reply with `gh pr comment <n> --body "..."`.

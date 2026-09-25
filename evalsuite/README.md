@@ -26,7 +26,12 @@ lại luồng nhận webhook (đã có `internal/review` unit test riêng cho vi
 ```bash
 go run ./cmd/evalrun                          # chạy toàn bộ fixture
 go run ./cmd/evalrun sql-injection-go         # chỉ 1 fixture
+go run ./cmd/evalrun -budget 100000 cross-package-nil-go  # đổi ngân sách bundle
 ```
+
+Diff đi qua đúng đường chia bundle của production (`review.BuildBundlePlan`):
+fixture lớn hơn ngân sách bị chia bundle, có primer và ghi chú "phần i/n"
+như PR thật. `-budget 0` (mặc định) dùng ngân sách của `review.Job`.
 
 Cần `claude` CLI đã cài + authenticate (giống yêu cầu chạy server thật, xem
 README gốc) — đây KHÔNG phải lệnh chạy trong `go test`/CI, mà là công cụ
@@ -61,3 +66,7 @@ mục "Rule mặc định theo loại file") — 5 fixture hiện có (`sql-inje
 `hardcoded-secret-go`) mỗi
 cái tương ứng 1 rule, để biết rule đó thực sự "có tác dụng" hay chỉ nằm
 trong prompt cho có.
+
+`cross-package-nil-go` (issue #73) khác loại: lỗi chỉ thấy được khi nhìn cả
+2 package, và diff đủ lớn để bị chia 2 bundle ở ngân sách mặc định — dùng để
+so chất lượng/chi phí giữa các ngân sách bundle.

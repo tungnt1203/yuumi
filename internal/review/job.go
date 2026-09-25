@@ -255,23 +255,9 @@ func (j *Job) Run() {
 		}
 	}
 
-	budget := j.BundleBudgetChars
-	if budget <= 0 {
-		budget = defaultBundleBudgetChars
-	}
-
-	bundles, skipped := bundleDiffs(diff, budget, extraIgnoredPatterns)
-	if len(skipped) > 0 {
-		notes = append(notes, skippedNote(skipped))
-	}
-
-	// primer chỉ đáng tổng hợp khi PR THẬT SỰ bị chia nhiều bundle — PR bình
-	// thường (1 bundle, đại đa số) đã thấy nguyên diff của mình rồi, primer
-	// liệt kê lại đúng những file nó đang thấy không mang thêm giá trị gì
-	// (issue #18).
-	var primer string
-	if len(bundles) > 1 {
-		primer = buildPrimer(dir, changedFilePaths(diff, extraIgnoredPatterns))
+	plan := BuildBundlePlan(dir, j.UserCommand, diff, j.BundleBudgetChars, extraIgnoredPatterns, staticReport, repoCfg.Instructions)
+	if len(plan.Skipped) > 0 {
+		notes = append(notes, skippedNote(plan.Skipped))
 	}
 
 	var merged string
@@ -280,25 +266,14 @@ func (j *Job) Run() {
 	var header string
 	var allFindings []Finding
 	var anyParsed, allParsed bool
-	if len(bundles) == 0 && len(skipped) > 0 {
+	if len(plan.Prompts) == 0 {
 		// Diff CÓ nội dung nhưng toàn bộ file đều bị lọc (vd PR chỉ sửa
 		// go.sum) — không có gì đáng review, không tốn 1 lần gọi Claude CLI
 		// chỉ để nó nói "không có gì để xem". Không có finding nào để tổng
 		// hợp nên bỏ qua header luôn, tránh 1 banner "0 góp ý" thừa thãi.
 		merged = "Không có file nào cần review."
 	} else {
-		// effectiveBundles: dùng đúng `bundles` bình thường, trừ trường hợp
-		// diff rỗng thật (GetPullRequestDiff lỗi ở trên, hoặc PR không đổi
-		// gì) thì vẫn cần review 1 lần với diff rỗng, để BuildReviewPrompt
-		// tự chèn hướng dẫn fallback (Claude tự đọc file state + commit
-		// message) — gộp 2 case cũ (len(bundles)==0 và bình thường) làm 1
-		// để logic tính header dưới đây không bị lặp lại y hệt ở 2 nơi.
-		effectiveBundles := bundles
-		if len(effectiveBundles) == 0 {
-			effectiveBundles = []string{""}
-		}
-
-		merged, hadError, inline, allFindings, anyParsed, allParsed = j.reviewBundles(effectiveBundles, box, sha, staticReport, repoCfg.Instructions, validationDiff, primer)
+		merged, hadError, inline, allFindings, anyParsed, allParsed = j.reviewBundles(plan.Prompts, box, sha, validationDiff)
 		if anyParsed {
 			// partial=true khi có bundle KHÔNG đóng góp được vào allFindings
 			// (lỗi hoặc Claude trả văn xuôi tự do) — renderReviewHeader cần
@@ -522,9 +497,8 @@ func (j *Job) diffTruncationWarning(diff string) string {
 // trước (issue #21), có hunk khác với diff GitHub thực sự đối chiếu khi
 // nhận inline comment.
 //
-// primer là ngữ cảnh dùng chung được build 1 lần cho cả PR (xem buildPrimer,
-// issue #18) — nhúng y hệt vào MỌI bundle, rỗng khi PR không bị chia bundle
-// (len(bundles) == 1, xem Run).
+// prompts là prompt đầy đủ của từng bundle, dựng sẵn bởi BuildBundlePlan
+// (đã gồm primer và bundleNote khi PR bị chia nhiều bundle).
 //
 // allFindings gộp TOÀN BỘ finding parse được của MỌI bundle (kể cả những
 // finding đã tách ra post inline riêng, khác `inline` ở trên vốn chỉ có
@@ -546,25 +520,19 @@ func (j *Job) diffTruncationWarning(diff string) string {
 // finding nào thì header nói review chưa đủ để kết luận, không được mở đầu
 // bằng "✅ không có vấn đề" (issue #69). Khi đã đếm được N thì cảnh báo
 // đứng trước bảng, vì "Tổng: N" không phải toàn bộ PR (issue #57).
-func (j *Job) reviewBundles(bundles []string, box sandbox.Env, sha string, staticReport string, repoInstructions string, validationDiff string, primer string) (merged string, hadError bool, inline []pendingComment, allFindings []Finding, anyParsed bool, allParsed bool) {
-	single := len(bundles) == 1
-	sections := make([]string, len(bundles))
+func (j *Job) reviewBundles(prompts []string, box sandbox.Env, sha string, validationDiff string) (merged string, hadError bool, inline []pendingComment, allFindings []Finding, anyParsed bool, allParsed bool) {
+	single := len(prompts) == 1
+	sections := make([]string, len(prompts))
 	parsedCount := 0
 
-	for i, bundleDiff := range bundles {
-		promptDiff := bundleDiff
-		if !single && bundleDiff != "" {
-			promptDiff = bundleNote(i+1, len(bundles)) + bundleDiff
-		}
-
-		prompt := BuildReviewPrompt(j.UserCommand, promptDiff, staticReport, repoInstructions, primer)
+	for i, prompt := range prompts {
 		cacheKey := bundleCacheKey(sha, prompt)
 		text, cached := j.loadCachedBundle(cacheKey)
 		var err error
 		errMsg := ""
 		if cached {
 			// Không gọi Reviewer nên không có gì để ghi reviewlog.
-			fmt.Println("Review bundle", i+1, "/", len(bundles), "dùng kết quả đã lưu từ lần review bị ngắt trước")
+			fmt.Println("Review bundle", i+1, "/", len(prompts), "dùng kết quả đã lưu từ lần review bị ngắt trước")
 		} else {
 			start := time.Now()
 			var stats CallStats
@@ -577,7 +545,7 @@ func (j *Job) reviewBundles(bundles []string, box sandbox.Env, sha string, stati
 			if err != nil {
 				errMsg = err.Error()
 			}
-			j.logBundleReview(sha, i+1, len(bundles), prompt, text, errMsg, duration, stats)
+			j.logBundleReview(sha, i+1, len(prompts), prompt, text, errMsg, duration, stats)
 		}
 
 		// display là những gì thực sự được post lên comment tổng hợp — mặc
@@ -588,14 +556,14 @@ func (j *Job) reviewBundles(bundles []string, box sandbox.Env, sha string, stati
 		// #5), phần còn lại (general) mới render vào display.
 		display := text
 		if err != nil {
-			fmt.Println("Review bundle", i+1, "/", len(bundles), "error:", err)
+			fmt.Println("Review bundle", i+1, "/", len(prompts), "error:", err)
 			display = "❌ Review thất bại: " + errMsg
 			hadError = true
 		} else {
-			fmt.Println("Review bundle", i+1, "/", len(bundles), "result:", text)
+			fmt.Println("Review bundle", i+1, "/", len(prompts), "result:", text)
 			findings, dropped, ok := parseFindings(text)
 			if dropped > 0 {
-				fmt.Println("Review bundle", i+1, "/", len(bundles), "bỏ", dropped, "finding sai định dạng")
+				fmt.Println("Review bundle", i+1, "/", len(prompts), "bỏ", dropped, "finding sai định dạng")
 			}
 			if !ok && strings.TrimSpace(text) == "" {
 				// Output trắng không phải kết luận sạch. Ghi một câu để người
@@ -618,11 +586,11 @@ func (j *Job) reviewBundles(bundles []string, box sandbox.Env, sha string, stati
 		if single {
 			sections[i] = display
 		} else {
-			sections[i] = fmt.Sprintf("### Phần %d/%d\n%s", i+1, len(bundles), display)
+			sections[i] = fmt.Sprintf("### Phần %d/%d\n%s", i+1, len(prompts), display)
 		}
 	}
 
-	allParsed = parsedCount == len(bundles)
+	allParsed = parsedCount == len(prompts)
 	return strings.Join(sections, "\n\n"), hadError, inline, allFindings, anyParsed, allParsed
 }
 

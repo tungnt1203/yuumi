@@ -24,6 +24,10 @@ type Config struct {
 	// không cần set biến này.
 	MaxDiffBundleChars int
 
+	// ReviewTimeoutMinutes override thời gian tối đa của 1 lần gọi Claude
+	// CLI (xem claudecli.defaultTimeout) — 0 nghĩa là "không set".
+	ReviewTimeoutMinutes int
+
 	// MaxConcurrentReviews override số job review chạy đồng thời tối đa
 	// (xem review.NewDispatcher/defaultMaxConcurrentJobs) — 0 nghĩa là
 	// "không set", để review package tự dùng default của nó.
@@ -91,6 +95,11 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
+	reviewTimeoutMinutes, err := parseOptionalPositiveIntEnv("REVIEW_TIMEOUT_MINUTES")
+	if err != nil {
+		return Config{}, err
+	}
+
 	sandboxMode := os.Getenv("SANDBOX")
 	sandboxImage := os.Getenv("SANDBOX_IMAGE")
 	workDir := os.Getenv("WORK_DIR")
@@ -111,6 +120,7 @@ func Load() (Config, error) {
 		AllowedUsers:         strings.Split(allowedUsersRaw, ","),
 		MaxDiffBundleChars:   maxDiffBundleChars,
 		MaxConcurrentReviews: maxConcurrentReviews,
+		ReviewTimeoutMinutes: reviewTimeoutMinutes,
 		ReviewLogDir:         os.Getenv("REVIEW_LOG_DIR"),
 		ReviewStateFile:      os.Getenv("REVIEW_STATE_FILE"),
 		BundleCacheDir:       os.Getenv("BUNDLE_CACHE_DIR"),

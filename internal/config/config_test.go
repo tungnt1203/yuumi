@@ -105,6 +105,33 @@ func TestLoad_MaxDiffBundleChars_Invalid(t *testing.T) {
 	}
 }
 
+func TestLoad_ReviewTimeoutMinutes(t *testing.T) {
+	setRequiredEnv(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.ReviewTimeoutMinutes != 0 {
+		t.Errorf("ReviewTimeoutMinutes = %d, want 0 when unset", cfg.ReviewTimeoutMinutes)
+	}
+
+	t.Setenv("REVIEW_TIMEOUT_MINUTES", "20")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.ReviewTimeoutMinutes != 20 {
+		t.Errorf("ReviewTimeoutMinutes = %d, want 20", cfg.ReviewTimeoutMinutes)
+	}
+
+	for _, raw := range []string{"abc", "0", "-1"} {
+		t.Setenv("REVIEW_TIMEOUT_MINUTES", raw)
+		if _, err := Load(); err == nil {
+			t.Errorf("Load() with REVIEW_TIMEOUT_MINUTES=%q: expected error, got nil", raw)
+		}
+	}
+}
+
 func TestLoad_MaxConcurrentReviews_UnsetDefaultsToZero(t *testing.T) {
 	setRequiredEnv(t)
 

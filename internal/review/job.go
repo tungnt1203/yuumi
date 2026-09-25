@@ -14,10 +14,15 @@ import (
 // defaultBundleBudgetChars là ngưỡng mặc định (tính theo số ký tự) cho mỗi
 // bundle khi Job.BundleBudgetChars không được set (<=0). Ký tự là proxy rẻ
 // và đủ tốt cho số token thực tế — không cần tokenizer chính xác ở đây.
-// Con số này là điểm khởi đầu hợp lý, cần tinh chỉnh lại bằng PR lớn thật
-// (xem issue #3) — vì vậy nó KHÔNG phải const cứng mà override được qua
-// Job.BundleBudgetChars (và Config.MaxDiffBundleChars ở tầng main.go).
-const defaultBundleBudgetChars = 12_000
+//
+// 100k ký tự (~25-30k token) thay cho 12k cũ (issue #73): mỗi lần gọi CLI
+// trả lại ~15k token nền, nên chia nhỏ làm chi phí tăng gần theo số bundle,
+// và cùng 1 lỗi bị báo lặp ở mỗi bundle chạm tới nó. Eval
+// cross-package-nil-go (3 lần mỗi mức): 12k và 100k đều bắt được lỗi chéo
+// package, 100k rẻ hơn ~33% và không trùng finding. Chưa kiểm chứng được
+// với diff gần 100k — theo dõi PR lớn thật, override được qua
+// Job.BundleBudgetChars (Config.MaxDiffBundleChars ở tầng main.go).
+const defaultBundleBudgetChars = 100_000
 
 // GitHubClient là tập con các method của githubapi.Client mà Job cần.
 // Khai báo interface riêng ở đây (thay vì phụ thuộc thẳng *githubapi.Client)

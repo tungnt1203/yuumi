@@ -10,7 +10,8 @@ import (
 // fakeDocker ghi lại các lệnh docker và trả kết quả theo lệnh con.
 type fakeDocker struct {
 	calls   [][]string
-	inspect string // stdout của `network inspect`; "" kèm inspectErr = chưa có network
+	inspect string // stdout của `network inspect`; "" = chưa có network
+	egress  string // stdout của `ps --filter` tìm egress; "" = chưa có container
 	errs    map[string]error
 }
 
@@ -19,6 +20,9 @@ func (f *fakeDocker) run(args ...string) (string, error) {
 	key := strings.Join(args[:min(2, len(args))], " ")
 	if err := f.errs[key]; err != nil {
 		return "", err
+	}
+	if key == "ps --all" {
+		return f.egress, nil
 	}
 	if key == "network inspect" {
 		if f.inspect == "" {
@@ -38,12 +42,11 @@ func (f *fakeDocker) called(prefix ...string) bool {
 	return false
 }
 
-// assertEgressRecreated kiểm tra egress proxy được xoá, chạy lại từ image
-// hiện tại và nối vào network sandbox.
+// assertEgressRecreated kiểm tra egress proxy được chạy từ image hiện tại
+// và nối vào network sandbox.
 func assertEgressRecreated(t *testing.T, f *fakeDocker) {
 	t.Helper()
 	for _, want := range [][]string{
-		{"rm", "--force", "yuumi-egress"},
 		{"run", "--detach", "--name", "yuumi-egress"},
 		{"network", "connect", "yuumi-sandbox", "yuumi-egress"},
 	} {
@@ -64,14 +67,28 @@ func TestSetupNetwork_CreatesInternalNetworkAndEgress(t *testing.T) {
 	assertEgressRecreated(t, f)
 }
 
-// Lần chạy đầu trên máy mới: chưa có egress container. Docker CLI cũ trả
-// lỗi "No such container" cho `rm --force` — không được làm hỏng setup.
-func TestSetupNetwork_MissingEgressContainerIsNotAnError(t *testing.T) {
-	f := &fakeDocker{errs: map[string]error{
-		"rm --force": errors.New("docker rm: exit status 1: Error response from daemon: No such container: yuumi-egress"),
-	}}
+// Lần chạy đầu trên máy mới: chưa có egress container thì không gọi `rm`
+// (exit code của `rm --force` khi container chưa có khác nhau giữa các bản
+// docker CLI).
+func TestSetupNetwork_MissingEgressContainerSkipsRemove(t *testing.T) {
+	f := &fakeDocker{}
 	if err := setupNetwork(f.run, "yuumi:dev"); err != nil {
 		t.Fatalf("setupNetwork() error = %v, want nil", err)
+	}
+	if f.called("rm") {
+		t.Errorf("must not rm a container that does not exist: %v", f.calls)
+	}
+	assertEgressRecreated(t, f)
+}
+
+// Egress cũ còn (server khởi động lại): xoá rồi chạy lại từ image hiện tại.
+func TestSetupNetwork_ExistingEgressIsReplaced(t *testing.T) {
+	f := &fakeDocker{egress: "3f2a9c1b7d4e"}
+	if err := setupNetwork(f.run, "yuumi:dev"); err != nil {
+		t.Fatalf("setupNetwork() error = %v", err)
+	}
+	if !f.called("rm", "--force", "yuumi-egress") {
+		t.Errorf("old egress container not removed: %v", f.calls)
 	}
 	assertEgressRecreated(t, f)
 }
@@ -102,9 +119,10 @@ func TestSetupNetwork_RejectsNonInternalNetwork(t *testing.T) {
 }
 
 func TestSetupNetwork_PropagatesErrors(t *testing.T) {
-	for _, step := range []string{"network create", "rm --force", "run --detach", "network connect"} {
+	for _, step := range []string{"network create", "ps --all", "rm --force", "run --detach", "network connect"} {
 		t.Run(step, func(t *testing.T) {
-			f := &fakeDocker{errs: map[string]error{step: errors.New("daemon down")}}
+			// egress có sẵn để bước rm thực sự được gọi.
+			f := &fakeDocker{egress: "3f2a9c1b7d4e", errs: map[string]error{step: errors.New("daemon down")}}
 			if err := setupNetwork(f.run, "yuumi:dev"); err == nil {
 				t.Errorf("setupNetwork() = nil, want error when %q fails", step)
 			}

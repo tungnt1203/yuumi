@@ -68,13 +68,18 @@ func setupNetwork(run dockerRunner, image string) error {
 		return fmt.Errorf("network %q đã có nhưng không phải --internal (Internal=%s): sandbox sẽ ra Internet tự do. Xoá nó (docker network rm %s) để server tạo lại", NetworkName, internal, NetworkName)
 	}
 
-	// Xoá container cũ (nếu có) để chạy đúng image hiện tại. Container
-	// chưa có không phải lỗi: docker CLI 29.x (bản ghim trong image) thoát 0
-	// trong trường hợp này, bản cũ hơn trả lỗi "No such container" — bỏ qua
-	// riêng lỗi đó. Lỗi khác (daemon, quyền...) báo ngay, không để lỗi của
-	// bước run che mất.
-	if _, err := run("rm", "--force", EgressContainerName); err != nil && !strings.Contains(err.Error(), "No such container") {
-		return fmt.Errorf("xoá egress proxy cũ: %w", err)
+	// Xoá container cũ (nếu có) để chạy đúng image hiện tại. Kiểm tra tồn
+	// tại trước bằng `ps --filter` (trả ID hoặc rỗng) thay vì đoán qua
+	// message lỗi của `rm`: exit code của `rm --force` khi container chưa có
+	// khác nhau giữa các bản docker CLI, còn câu chữ lỗi không ổn định.
+	existing, err := run("ps", "--all", "--quiet", "--filter", "name=^"+EgressContainerName+"$")
+	if err != nil {
+		return fmt.Errorf("kiểm tra egress proxy cũ: %w", err)
+	}
+	if existing != "" {
+		if _, err := run("rm", "--force", EgressContainerName); err != nil {
+			return fmt.Errorf("xoá egress proxy cũ: %w", err)
+		}
 	}
 	if _, err := run(egressRunArgs(image)...); err != nil {
 		return fmt.Errorf("chạy egress proxy: %w", err)

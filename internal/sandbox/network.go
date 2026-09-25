@@ -68,10 +68,12 @@ func setupNetwork(run dockerRunner, image string) error {
 		return fmt.Errorf("network %q đã có nhưng không phải --internal (Internal=%s): sandbox sẽ ra Internet tự do. Xoá nó (docker network rm %s) để server tạo lại", NetworkName, internal, NetworkName)
 	}
 
-	// Xoá container cũ (nếu có) để chạy đúng image hiện tại. `rm --force`
-	// thoát 0 cả khi container không tồn tại, nên lỗi ở đây là lỗi thật
-	// (daemon, quyền...) — báo ngay thay vì để lỗi của bước run che mất.
-	if _, err := run("rm", "--force", EgressContainerName); err != nil {
+	// Xoá container cũ (nếu có) để chạy đúng image hiện tại. Container
+	// chưa có không phải lỗi: docker CLI 29.x (bản ghim trong image) thoát 0
+	// trong trường hợp này, bản cũ hơn trả lỗi "No such container" — bỏ qua
+	// riêng lỗi đó. Lỗi khác (daemon, quyền...) báo ngay, không để lỗi của
+	// bước run che mất.
+	if _, err := run("rm", "--force", EgressContainerName); err != nil && !strings.Contains(err.Error(), "No such container") {
 		return fmt.Errorf("xoá egress proxy cũ: %w", err)
 	}
 	if _, err := run(egressRunArgs(image)...); err != nil {

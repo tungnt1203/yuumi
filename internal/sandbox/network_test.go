@@ -38,6 +38,21 @@ func (f *fakeDocker) called(prefix ...string) bool {
 	return false
 }
 
+// assertEgressRecreated kiểm tra egress proxy được xoá, chạy lại từ image
+// hiện tại và nối vào network sandbox.
+func assertEgressRecreated(t *testing.T, f *fakeDocker) {
+	t.Helper()
+	for _, want := range [][]string{
+		{"rm", "--force", "yuumi-egress"},
+		{"run", "--detach", "--name", "yuumi-egress"},
+		{"network", "connect", "yuumi-sandbox", "yuumi-egress"},
+	} {
+		if !f.called(want...) {
+			t.Errorf("missing docker %v: %v", want, f.calls)
+		}
+	}
+}
+
 func TestSetupNetwork_CreatesInternalNetworkAndEgress(t *testing.T) {
 	f := &fakeDocker{}
 	if err := setupNetwork(f.run, "yuumi:dev"); err != nil {
@@ -46,15 +61,19 @@ func TestSetupNetwork_CreatesInternalNetworkAndEgress(t *testing.T) {
 	if !f.called("network", "create", "--internal", "yuumi-sandbox") {
 		t.Errorf("network not created with --internal: %v", f.calls)
 	}
-	if !f.called("rm", "--force", "yuumi-egress") {
-		t.Errorf("old egress container not removed: %v", f.calls)
+	assertEgressRecreated(t, f)
+}
+
+// Lần chạy đầu trên máy mới: chưa có egress container. Docker CLI cũ trả
+// lỗi "No such container" cho `rm --force` — không được làm hỏng setup.
+func TestSetupNetwork_MissingEgressContainerIsNotAnError(t *testing.T) {
+	f := &fakeDocker{errs: map[string]error{
+		"rm --force": errors.New("docker rm: exit status 1: Error response from daemon: No such container: yuumi-egress"),
+	}}
+	if err := setupNetwork(f.run, "yuumi:dev"); err != nil {
+		t.Fatalf("setupNetwork() error = %v, want nil", err)
 	}
-	if !f.called("run", "--detach", "--name", "yuumi-egress") {
-		t.Errorf("egress container not started: %v", f.calls)
-	}
-	if !f.called("network", "connect", "yuumi-sandbox", "yuumi-egress") {
-		t.Errorf("egress not connected to sandbox network: %v", f.calls)
-	}
+	assertEgressRecreated(t, f)
 }
 
 func TestSetupNetwork_ReusesExistingInternalNetwork(t *testing.T) {
@@ -66,15 +85,7 @@ func TestSetupNetwork_ReusesExistingInternalNetwork(t *testing.T) {
 		t.Errorf("must not recreate an existing internal network: %v", f.calls)
 	}
 	// Egress proxy vẫn luôn được tạo lại từ image hiện tại.
-	for _, want := range [][]string{
-		{"rm", "--force", "yuumi-egress"},
-		{"run", "--detach", "--name", "yuumi-egress"},
-		{"network", "connect", "yuumi-sandbox", "yuumi-egress"},
-	} {
-		if !f.called(want...) {
-			t.Errorf("missing %v when network already exists: %v", want, f.calls)
-		}
-	}
+	assertEgressRecreated(t, f)
 }
 
 // Network trùng tên nhưng không internal: sandbox trong đó sẽ ra Internet

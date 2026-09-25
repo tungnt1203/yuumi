@@ -10,6 +10,7 @@
 //
 //	go run ./cmd/evalrun                # chạy toàn bộ fixture
 //	go run ./cmd/evalrun sql-injection-go go-goroutine-leak
+//	go run ./cmd/evalrun -budget 100000 # đổi ngân sách bundle (issue #73)
 package main
 
 import (
@@ -24,6 +25,7 @@ import (
 
 func main() {
 	fixturesDir := flag.String("fixtures", "evalsuite/testdata", "thư mục chứa các fixture")
+	budget := flag.Int("budget", 0, "ngân sách ký tự mỗi bundle, 0 = mặc định của review.Job")
 	flag.Parse()
 	only := flag.Args()
 
@@ -42,18 +44,27 @@ func main() {
 		}
 
 		fmt.Printf("\n========== %s ==========\n", f.Name)
-		result, err := evalrunner.Run(reviewer, f)
+		result, err := evalrunner.Run(reviewer, f, *budget)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "["+f.Name+"] review lỗi:", err)
+			fmt.Fprintln(os.Stderr, "["+f.Name+"] dựng fixture lỗi:", err)
 			exitCode = 1
 			continue
 		}
 
-		fmt.Printf("(attempts=%d, num_turns=%d, input=%d, cache write=%d, cache read=%d, output=%d, cost=$%.4f)\n\n",
-			result.Attempts, result.NumTurns, result.Usage.InputTokens, result.Usage.CacheCreationInputTokens,
-			result.Usage.CacheReadInputTokens, result.Usage.OutputTokens, result.Usage.CostUSD)
-		fmt.Println("--- Response ---")
-		fmt.Println(result.Response)
+		u := result.Usage
+		fmt.Printf("(diff=%d ký tự, bundles=%d, input=%d, cache write=%d, cache read=%d, output=%d, cost=$%.4f)\n",
+			len(result.Diff), len(result.Bundles), u.InputTokens, u.CacheCreationInputTokens,
+			u.CacheReadInputTokens, u.OutputTokens, u.CostUSD)
+		for i, b := range result.Bundles {
+			fmt.Printf("\n--- Response bundle %d/%d (attempts=%d, num_turns=%d, cost=$%.4f) ---\n",
+				i+1, len(result.Bundles), b.Stats.Attempts, b.Stats.NumTurns, b.Stats.Usage.CostUSD)
+			if b.Err != nil {
+				fmt.Fprintln(os.Stderr, "["+f.Name+"] review lỗi:", b.Err)
+				exitCode = 1
+				continue
+			}
+			fmt.Println(b.Response)
+		}
 		if result.Expected != "" {
 			fmt.Println("--- Kỳ vọng (expected.md) — tự đối chiếu với Response ở trên ---")
 			fmt.Println(result.Expected)

@@ -15,14 +15,16 @@ import (
 // đánh giá chất lượng model là việc chạy thủ công riêng, không phải thứ CI
 // nên gọi tự động mỗi lần go test).
 type fakeReviewer struct {
-	gotPrompt string
-	gotDir    string
-	result    string
-	err       error
+	gotPrompt  string
+	gotPrompts []string
+	gotDir     string
+	result     string
+	err        error
 }
 
 func (f *fakeReviewer) Review(prompt string, box sandbox.Env) (string, review.CallStats, error) {
 	f.gotPrompt = prompt
+	f.gotPrompts = append(f.gotPrompts, prompt)
 	f.gotDir = box.Dir()
 	return f.result, review.CallStats{Attempts: 1, NumTurns: 1}, f.err
 }
@@ -106,7 +108,7 @@ func TestRun_PassesPromptAndAfterStateDirToReviewer(t *testing.T) {
 	)
 
 	reviewer := &fakeReviewer{result: `[]`}
-	result, err := Run(reviewer, Fixture{Name: "sample", Dir: dir})
+	result, err := Run(reviewer, Fixture{Name: "sample", Dir: dir}, 0)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -120,7 +122,62 @@ func TestRun_PassesPromptAndAfterStateDirToReviewer(t *testing.T) {
 	if result.Expected == "" || !strings.Contains(result.Expected, "println debug") {
 		t.Errorf("expected Result.Expected to contain expected.md content, got: %q", result.Expected)
 	}
-	if result.Response != "[]" {
-		t.Errorf("Result.Response = %q, want %q", result.Response, "[]")
+	if len(result.Bundles) != 1 || result.Bundles[0].Response != "[]" {
+		t.Errorf("Result.Bundles = %+v, want one bundle with response %q", result.Bundles, "[]")
+	}
+}
+
+// Budget nhỏ hơn diff thì fixture bị chia bundle như PR thật (issue #73).
+func TestRun_SmallBudget_SplitsIntoBundles(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "multi")
+	for sub, content := range map[string]string{
+		"before/a/a.go": "package a\n",
+		"after/a/a.go":  "package a\n\nfunc A() {}\n",
+		"before/b/b.go": "package b\n",
+		"after/b/b.go":  "package b\n\nfunc B() {}\n",
+	} {
+		full := filepath.Join(dir, sub)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reviewer := &fakeReviewer{result: `[]`}
+	result, err := Run(reviewer, Fixture{Name: "multi", Dir: dir}, 100)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(result.Bundles) != 2 || len(reviewer.gotPrompts) != 2 {
+		t.Fatalf("got %d bundles / %d calls, want 2", len(result.Bundles), len(reviewer.gotPrompts))
+	}
+	if !strings.Contains(reviewer.gotPrompts[0], "phần 1/2") {
+		t.Errorf("first prompt should carry the bundle note, got:\n%s", reviewer.gotPrompts[0])
+	}
+}
+
+// File chỉ có trong after/ (PR thêm file mới) phải có trong diff.
+func TestBuildFixtureDiff_IncludesNewFiles(t *testing.T) {
+	dir := writeFixture(t, t.TempDir(), "newfile", "package main\n", "package main\n\nfunc f() {}\n", "")
+	if err := os.MkdirAll(filepath.Join(dir, "after", "extra"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "after", "extra", "new.go"), []byte("package extra\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	diff, _, cleanup, err := BuildFixtureDiff(dir)
+	if err != nil {
+		t.Fatalf("BuildFixtureDiff() error = %v", err)
+	}
+	defer cleanup()
+
+	for _, want := range []string{"diff --git a/main.go b/main.go", "diff --git a/extra/new.go b/extra/new.go", "+package extra"} {
+		if !strings.Contains(diff, want) {
+			t.Errorf("diff missing %q:\n%s", want, diff)
+		}
 	}
 }

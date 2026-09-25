@@ -14,3 +14,9 @@
 | 2026-09-15 | baseline (khi thêm eval suite, issue #10) | go-goroutine-leak | ✅ | Bắt đúng bug chính (leak trong Notify) + vài finding phụ hợp lý (println debug, channel không buffer) |
 | 2026-09-15 | baseline (khi thêm eval suite, issue #10) | js-floating-promise | ✅ | Bắt đúng floating promise, đúng dòng, suggestion dùng .catch(...) đúng như expected |
 | 2026-09-23 | rule secret + regex pre-scan (issue #64) | hardcoded-secret-go | ✅ | category=security, severity=high (Claude nhận ra key là ví dụ AWS EXAMPLE nên hạ từ critical), đúng dòng 21-22, suggestion dùng os.Getenv; thêm 1 finding phụ hợp lý (validate cặp env var) |
+| 2026-09-25 | ngân sách bundle 12k (mặc định, issue #73) | cross-package-nil-go | ✅ | 2 bundle, $0.46. Bundle 1 (có api/) tự đọc store/user.go nhờ primer → bắt đúng nil deref ở api/handler.go:31; bundle 2 báo lại cùng lỗi từ phía store (trùng finding). Thêm: comment "driver Postgres trả nil,nil" sai (đúng), safeCell thiếu \t/\r (đúng), 2 góp ý low ở billing |
+| 2026-09-25 | ngân sách bundle 100k (issue #73) | cross-package-nil-go | ✅ | 1 bundle, $0.30 (rẻ hơn 35%). Bắt đúng nil deref ở api/handler.go:30 (critical) + breaking change ở store, không trùng finding. Góp ý phụ ở billing/report tương tự lần 12k |
+| 2026-09-25 | ngân sách bundle 12k, lần 2 | cross-package-nil-go | ✅ | 2 bundle, $0.36. Bắt nil deref ở api/handler.go:30 (high) và báo lại từ phía store (critical) — trùng finding. Thêm: Get vẫn trả user Disabled (đúng) |
+| 2026-09-25 | ngân sách bundle 12k, lần 3 | cross-package-nil-go | ✅ | 2 bundle, $0.39. Bắt ở api/handler.go:31 (critical), trùng lại ở store/user.go:50 (high) |
+| 2026-09-25 | ngân sách bundle 100k, lần 2 | cross-package-nil-go | ✅ | 1 bundle, $0.26. api/handler.go:30 (critical), không trùng |
+| 2026-09-25 | ngân sách bundle 100k, lần 3 | cross-package-nil-go | ✅ | 1 bundle, $0.24. api/handler.go:30 (critical), không trùng. Thêm: Mailer.from không được dùng (đúng — lỗi thật trong fixture) |

@@ -57,15 +57,28 @@ type Result struct {
 	Fixture  Fixture
 	Diff     string
 	Expected string // nội dung expected.md, rỗng nếu fixture không có file này
+
+	// Bundles là kết quả từng lần gọi Reviewer, theo thứ tự bundle. Fixture
+	// nhỏ chỉ có 1; fixture lớn hơn budget bị chia như PR thật (issue #73).
+	Bundles []BundleResult
+
+	// Usage cộng dồn token/chi phí của mọi bundle.
+	Usage review.Usage
+}
+
+// BundleResult là kết quả review 1 bundle. Err khác nil nghĩa là lần gọi
+// đó lỗi; các bundle khác vẫn chạy tiếp, giống review.Job.
+type BundleResult struct {
 	Response string
-	Attempts int
-	NumTurns int
-	Usage    review.Usage
+	Stats    review.CallStats
+	Err      error
 }
 
 // BuildFixtureDiff dựng diff thật (unified diff, đúng shape git/GitHub trả
 // về) giữa before/ và after/ của 1 fixture, bằng cách tạo 1 git repo tạm:
-// commit before/, ghi đè bằng after/, rồi "git diff" phần chưa commit.
+// commit before/, ghi đè bằng after/, stage hết rồi "git diff --cached".
+// Phải stage trước: "git diff" thường bỏ qua file untracked, nên file mới
+// chỉ có trong after/ sẽ lặng lẽ biến mất khỏi diff.
 //
 // Trả về dir (thư mục tạm ở trạng thái AFTER — dùng làm cwd cho
 // Reviewer.Review, giống hệt cách review.Job dùng repo đã checkout) và
@@ -102,7 +115,11 @@ func BuildFixtureDiff(fixtureDir string) (diff string, dir string, cleanup func(
 		return "", "", nil, fmt.Errorf("copy after/: %w", err)
 	}
 
-	out, err := exec.Command("git", "-C", dir, "diff").Output()
+	if err := runGit(dir, "add", "-A"); err != nil {
+		cleanup()
+		return "", "", nil, err
+	}
+	out, err := exec.Command("git", "-C", dir, "diff", "--cached").Output()
 	if err != nil {
 		cleanup()
 		return "", "", nil, fmt.Errorf("git diff: %w", err)
@@ -111,10 +128,16 @@ func BuildFixtureDiff(fixtureDir string) (diff string, dir string, cleanup func(
 	return string(out), dir, cleanup, nil
 }
 
-// Run chạy 1 fixture: dựng diff, gọi reviewer.Review với đúng prompt sản
-// phẩm dùng thật (review.BuildReviewPrompt, không có repo instructions hay
-// static check report — fixture đủ nhỏ để không cần bundle/primer).
-func Run(reviewer review.Reviewer, f Fixture) (Result, error) {
+// Run chạy 1 fixture qua đúng đường chia bundle của production
+// (review.BuildBundlePlan): diff lớn hơn budgetChars bị chia, có primer và
+// bundleNote như PR thật. budgetChars <= 0 dùng ngân sách mặc định của
+// review.Job — nhờ vậy so được chất lượng/chi phí giữa các ngân sách khác
+// nhau trên cùng fixture (issue #73). Không có repo instructions hay static
+// check report.
+//
+// error chỉ báo lỗi dựng fixture; lỗi của từng lần review nằm ở
+// BundleResult.Err.
+func Run(reviewer review.Reviewer, f Fixture, budgetChars int) (Result, error) {
 	diff, dir, cleanup, err := BuildFixtureDiff(f.Dir)
 	if err != nil {
 		return Result{Fixture: f}, err
@@ -122,22 +145,15 @@ func Run(reviewer review.Reviewer, f Fixture) (Result, error) {
 	defer cleanup()
 
 	expected, _ := os.ReadFile(filepath.Join(f.Dir, "expected.md"))
+	result := Result{Fixture: f, Diff: diff, Expected: string(expected)}
 
-	prompt := review.BuildReviewPrompt("review", diff, "", "", "")
-	response, stats, err := reviewer.Review(prompt, sandbox.Local(dir))
-	if err != nil {
-		return Result{Fixture: f, Diff: diff, Expected: string(expected)}, err
+	plan := review.BuildBundlePlan(dir, "review", diff, budgetChars, nil, "", "")
+	for _, prompt := range plan.Prompts {
+		response, stats, err := reviewer.Review(prompt, sandbox.Local(dir))
+		result.Bundles = append(result.Bundles, BundleResult{Response: response, Stats: stats, Err: err})
+		result.Usage = result.Usage.Add(stats.Usage)
 	}
-
-	return Result{
-		Fixture:  f,
-		Diff:     diff,
-		Expected: string(expected),
-		Response: response,
-		Attempts: stats.Attempts,
-		NumTurns: stats.NumTurns,
-		Usage:    stats.Usage,
-	}, nil
+	return result, nil
 }
 
 // runGit chạy 1 lệnh git với cwd = dir, gộp stderr vào error message để dễ

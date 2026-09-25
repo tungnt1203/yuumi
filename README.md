@@ -113,7 +113,7 @@ evalsuite/                # seeded-bug fixtures + results.md tracking review qua
 
 ## Requirements
 
-- Go 1.26+ (see `go.mod`)
+- Go 1.26+ (see `go.mod` / `.tool-versions`)
 - [Claude Code CLI](https://docs.claude.com/claude-code), installed and authenticated (`claude --version` works)
 - `git` on the machine that runs the server (used to fetch the PR head)
 - A registered [GitHub App](https://github.com/settings/apps) with these permissions: `Issues: Read and write`, `Pull requests: Read and write` (inline findings go through the Reviews API), `Contents: Read-only` (to clone private repos), and `Checks: Read and write` (the `yuumi review` check run). Subscribe it to the `Issue comments` and `Pull request` events and **install** it on the target repos.

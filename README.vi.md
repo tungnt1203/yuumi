@@ -42,11 +42,12 @@ trên chính PR đó.
 - **Xác thực qua GitHub App**: JWT RS256 + installation access token (tự cache/làm mới), bot có identity riêng `<tên App>[bot]`, không gắn với tài khoản cá nhân.
 - **Finding có phân loại + comment inline**: kết quả trả về JSON có `category`/`severity`/gợi ý sửa; finding khớp đúng dòng diff được post inline qua Reviews API, còn lại gộp vào comment tổng hợp.
 - **Rule mặc định theo ngôn ngữ**: Go, JavaScript/TypeScript, Python, SQL — tự chèn vào prompt theo đuôi file có trong diff, không cần repo cấu hình gì; rule soát secret/credential hardcode áp dụng cho mọi file.
-- **Cấu hình riêng theo repo** qua `.yuumi.yml` (loại trừ file, hướng dẫn review riêng), tự đọc thêm `.gitignore` của repo.
+- **Cấu hình riêng theo repo** qua `.yuumi.yml` (loại trừ file, hướng dẫn review riêng, severity gate), tự đọc thêm `.gitignore` của repo.
 - **Check run `yuumi review`** trên tab Checks của PR cho mỗi lần review, dùng được cho branch protection.
 - **Chỉ review phần thay đổi mới** ở các lần review sau trên cùng 1 PR (so với SHA đã review trước), tiết kiệm token.
 - **Lọc file rác & chia bundle diff** theo thư mục để không vượt giới hạn ký tự mỗi lần gọi Claude, PR lớn vẫn review đầy đủ.
 - **Ổn định khi chạy thật**: retry lỗi tạm thời, giới hạn job đồng thời, chống xử lý trùng comment, log JSON mỗi lần gọi Claude CLI.
+- **Chạy trong sandbox**: bật `SANDBOX=docker` thì mọi lệnh trên code PR chạy trong container riêng mỗi job, mạng bị giới hạn, không có credential thật.
 - **Eval suite** (`evalsuite/`) để đo chất lượng review theo thời gian mỗi khi đổi prompt/model.
 
 ## Kiến trúc
@@ -62,19 +63,19 @@ GitHub PR comment "@yuumi <lệnh>"        PR mới mở / có commit mới
   React 👀 (chỉ luồng mention) + post comment placeholder "Đang review..."  [internal/githubapi]
         │
         ▼
-  Lấy PR head SHA → git clone --depth 1 vào tmp dir      [internal/githubapi, internal/gitrepo]
+  Lấy PR head SHA → git fetch --depth 1 vào tmp dir      [internal/githubapi, internal/gitrepo]
         │
         ▼
   Lấy diff thật của PR (full, hoặc chỉ phần mới nếu đã review trước đó)
   → lọc file rác → chia bundle theo thư mục → dựng prompt [internal/review]
         │
         ▼
-  Gọi `claude -p` với cmd.Dir = tmp dir để review        [internal/claudecli]
+  Gọi `claude -p` trên bản checkout để review            [internal/claudecli, internal/sandbox]
   (mỗi bundle 1 lần gọi, tự retry khi lỗi tạm thời; dọn tmp dir sau khi xong)
         │
         ▼
   Edit lại đúng comment placeholder với kết quả/lỗi, post finding inline
-  đúng dòng code qua Reviews API                         [internal/githubapi]
+  đúng dòng code qua Reviews API, hoàn tất check run      [internal/githubapi]
 ```
 
 ## Cấu trúc thư mục
@@ -82,24 +83,28 @@ GitHub PR comment "@yuumi <lệnh>"        PR mới mở / có commit mới
 ```
 cmd/
   server/main.go          # entry point: load config, đăng ký route, start server
+  egressproxy/main.go     # egress proxy + credential proxy cho sandbox Docker
   evalrun/main.go         # CLI chạy eval suite đo chất lượng review (xem mục Eval suite)
   reviewstats/main.go     # CLI tổng hợp token/chi phí từ review log theo repo và theo ngày
 internal/
   config/                 # đọc & validate biến môi trường
   review/                 # toàn bộ logic review: Job (điều phối 1 lần review), prompt, chia bundle diff,
                           # parse finding/hunk, comment inline, rule theo ngôn ngữ, .yuumi.yml, .gitignore,
-                          # Dispatcher (giới hạn job đồng thời), dedupe theo SHA — logic thuần, có unit test
+                          # submodule, Dispatcher (giới hạn job đồng thời), dedupe theo SHA
   webhook/                # Payload struct, VerifySignature (HMAC), SeenComments (chống xử lý trùng comment)
-  claudecli/              # gọi `claude` CLI (chạy trong repo đã clone), retry, parse kết quả
-  githubapi/              # gọi GitHub REST API: reaction, post/edit comment, diff, compare, Reviews API
-  gitrepo/                # clone PR head SHA vào tmp dir, trả cleanup() để dọn dẹp
-  healthcheck/            # check claude CLI + GitHub App auth còn dùng được, cache cho /health
+  claudecli/              # gọi `claude` CLI trên bản checkout, retry, parse kết quả
+  sandbox/                # nơi chạy lệnh trên code PR: Local, hoặc container Docker riêng mỗi job
+  egress/                 # proxy allowlist CONNECT và credential proxy tới Anthropic API
+  githubapi/              # gọi GitHub REST API: reaction, comment, diff, compare, Reviews API, check run
   githubapp/              # xác thực GitHub App: ký JWT, đổi/cache installation access token
-  reviewstate/            # lưu SHA đã review lần gần nhất cho mỗi PR, để review lần sau chỉ lấy phần đổi mới
-  reviewlog/              # ghi log JSON (prompt/response/lỗi/thời gian) mỗi lần gọi Claude CLI
+  gitrepo/                # fetch PR head SHA vào work dir, trả cleanup() để dọn dẹp
+  healthcheck/            # check claude CLI + GitHub App auth còn dùng được, cache cho /health
+  procenv/                # loại bỏ secret của server khỏi env của tiến trình con
+  reviewstate/            # SHA đã review gần nhất cho mỗi PR, và cache resume theo bundle
+  reviewlog/              # ghi log JSON (prompt/response/lỗi/thời gian/usage) mỗi lần gọi Claude CLI
   evalrunner/             # dựng diff từ fixture before/after rồi chạy review, phục vụ cmd/evalrun
 evalsuite/                # fixture bug cài sẵn + results.md theo dõi chất lượng review qua thời gian
-.github/workflows/ci.yml  # CI: go build + go vet + go test trên mỗi PR và push vào main
+.github/workflows/ci.yml  # CI: go build, go vet, go test, docker build (+ test trong image)
 ```
 
 ## Yêu cầu
@@ -154,7 +159,7 @@ block_severity: [critical, high]
 
 - `exclude`: thêm pattern loại trừ file/thư mục khỏi diff review — **gộp thêm** vào danh sách mặc định của bot (lock file, `vendor/`, `node_modules/`...), không thay thế.
 - `instructions`: đoạn hướng dẫn chèn thẳng vào prompt gửi Claude, để review đúng convention/mức độ nghiêm khắc riêng của repo.
-- `block_severity` (severity gate): góp ý ở các mức này (`critical`/`high`/`medium`/`low`) làm check run `yuumi review` thành `failure`. Kết hợp với branch protection (xem [Check run `yuumi review`](#check-run-yuumi-review)) để chặn merge. Không set thì không chặn gì: check run luôn `success`, bot chỉ góp ý như trước. Giá trị gõ sai (vd `hight`) bị bỏ qua kèm cảnh báo trong log.
+- `block_severity` (severity gate): góp ý ở các mức này (`critical`/`high`/`medium`/`low`) làm check run `yuumi review` thành `failure`. Kết hợp với branch protection (xem [Check run `yuumi review`](#check-run-yuumi-review)) để chặn merge. Không set thì không chặn gì: check run luôn `success`, bot chỉ góp ý như trước. Giá trị gõ sai (vd `hight`) bị bỏ qua, kèm cảnh báo trên check run.
   - **Chỉ đọc từ `.yuumi.yml` của nhánh base** (commit base của PR, qua GitHub API), không đọc từ PR. Nếu không vậy, tác giả PR chỉ cần xoá dòng này trong PR của mình là qua được gate. Muốn đổi gate thì merge thay đổi `.yuumi.yml` vào nhánh base trước. `exclude` và `instructions` vẫn đọc từ PR như cũ.
   - Không đọc được file ở base (lỗi GitHub API, YAML sai): gate không áp dụng cho lần review đó, và summary của check run có cảnh báo.
 
@@ -193,7 +198,7 @@ docker run -d --name yuumi -p 8080:8080 \
 - **`/app/logs`** chứa review log, review state và bundle cache — mount volume để không mất khi container bị tạo lại.
 - **Private key** của GitHub App mount dạng file read-only như trên, hoặc truyền base64 qua `GITHUB_APP_PRIVATE_KEY`.
 - `GET /health` trả `503` kèm lý do nếu Claude CLI chưa đăng nhập hoặc GitHub App auth lỗi; Docker `HEALTHCHECK` dùng chính endpoint này. Server check lại mỗi 5 phút, nên trạng thái có thể trễ tối đa chừng đó.
-- Nâng phiên bản Claude CLI: sửa `CLAUDE_VERSION` và 2 checksum `CLAUDE_SHA256_AMD64`/`CLAUDE_SHA256_ARM64` trong Dockerfile (lấy từ `https://downloads.claude.ai/claude-code-releases/<version>/manifest.json`), nhưng kiểm chứng lại các flag bảo mật ở mục [Chạy an toàn trên code PR không tin cậy](#chạy-an-toàn-trên-code-pr-không-tin-cậy) trước. Build tự kiểm sha256 và `claude --version` phải khớp bản ghim.
+- Nâng phiên bản Claude CLI: sửa `CLAUDE_VERSION` và 2 checksum `CLAUDE_SHA256_AMD64`/`CLAUDE_SHA256_ARM64` trong Dockerfile (lấy từ `https://downloads.claude.ai/claude-code-releases/<version>/manifest.json`). Trước đó kiểm chứng lại các flag bảo mật ở mục [Chạy an toàn trên code PR không tin cậy](#chạy-an-toàn-trên-code-pr-không-tin-cậy) và chạy eval suite. Build tự kiểm sha256 và `claude --version` phải khớp bản ghim. Dependabot không bump Claude CLI và Docker CLI.
 
 ### Sandbox mỗi job (`SANDBOX=docker`)
 
@@ -203,6 +208,7 @@ Mặc định, `gofmt`/`go vet` và Claude CLI chạy ngay trong container serve
 - `--cap-drop ALL`, `no-new-privileges`, giới hạn 2 GB RAM, 2 CPU, 512 tiến trình.
 - Không có secret nào của server. Chỉ các biến trong allowlist (`forwardEnvKeys` trong `internal/sandbox/docker.go`: cấu hình Go) được chuyển vào từng lệnh, dạng `-e KEY` nên giá trị không nằm trong args.
 - Server vẫn tự clone (`git fetch` không chạy code PR), nên installation token không vào sandbox.
+- Lệnh hết timeout bị dừng cả bên trong container (bọc bằng `timeout`), không chỉ lệnh `docker exec` phía server.
 - **Mạng bị giới hạn** (bước 2): sandbox chỉ nằm trong Docker network `yuumi-sandbox` tạo với `--internal` (không có route ra Internet). Đường ra duy nhất là container `yuumi-egress` (`cmd/egressproxy`), gồm 2 proxy:
   - `:3128` proxy `CONNECT`, chỉ cho cổng 443 tới `proxy.golang.org` (module cho `go vet`). Mọi đích khác, kể cả `api.anthropic.com`, HTTP thường, hay gọi thẳng không qua proxy đều bị chặn.
   - `:3129` **credential proxy** tới Anthropic API (bước 3): Claude CLI trong sandbox gọi model qua `ANTHROPIC_BASE_URL=http://yuumi-egress:3129`.
@@ -235,7 +241,7 @@ Mỗi lần review (mention hoặc auto) tạo 1 check run tên `yuumi review` g
 
 - `in_progress` ngay khi bắt đầu, trước bước clone.
 - Review xong trọn vẹn: `success`, title là số góp ý, summary là bảng tổng hợp theo mức độ. Nút "Details" trỏ về comment review đầy đủ. Có góp ý ở mức trong `block_severity` (xem [`.yuumi.yml`](#cấu-hình-review-riêng-cho-từng-repo-yuumiyml)) thì `failure`; không cấu hình thì có góp ý vẫn `success`.
-- Review lỗi (clone lỗi, Claude CLI lỗi ở một phần, post comment lỗi): `neutral`. Không bao giờ treo ở `in_progress`.
+- Review lỗi (clone lỗi, Claude CLI lỗi ở một phần, post comment lỗi), hoặc có submodule chưa được review: `neutral`. Không bao giờ treo ở `in_progress`.
 - Tạo check run lỗi (vd App chưa được cấp quyền `Checks`) chỉ ghi log, review vẫn chạy bình thường.
 
 Muốn bắt buộc review chạy xong trước khi merge: vào **Settings → Branches → Branch protection rule** (hoặc Rulesets) của repo, bật "Require status checks to pass" và chọn `yuumi review`. Lưu ý: `neutral` được GitHub tính là pass, nên review lỗi không chặn merge.
@@ -274,15 +280,16 @@ Nếu repo được review có `go.mod`, bot chạy `gofmt` và `go vet` trên b
 <details id="chạy-an-toàn-trên-code-pr-không-tin-cậy">
 <summary><strong>Chạy an toàn trên code PR không tin cậy</strong></summary>
 
-Code của PR có thể đến từ bất kỳ ai, nên mọi tiến trình con chạy trên thư mục clone đều bị siết lại (issue #78, giai đoạn 1):
+Code của PR có thể đến từ bất kỳ ai, nên mọi tiến trình con chạy trên thư mục clone đều bị siết lại (issue #78):
 
 - **Claude CLI** chạy với `--setting-sources user` và `--strict-mcp-config`: bỏ `.claude/settings*.json` và `.mcp.json` của repo (các file này khai báo được hook chạy lệnh shell trên server). Tool chỉ còn `Read`, `Grep`, `Glob` (allowlist `--tools`, không phải blocklist: tool mới của bản CLI sau không tự lọt vào); review chỉ đọc code. `--restricted` giới hạn file tools trong thư mục repo, `--no-session-persistence` không ghi transcript ra đĩa, `--max-budget-usd` (`REVIEW_MAX_BUDGET_USD`) chặn lần gọi chạy mất kiểm soát.
 - **`gofmt`/`go vet`** có timeout 2 phút, `GOTOOLCHAIN=local` (không tải toolchain do `go.mod` của PR yêu cầu), `CGO_ENABLED=0`, `GOPROXY` chỉ `proxy.golang.org` (không clone VCS tuỳ ý).
 - Không tiến trình con nào nhận secret của server (`GITHUB_WEBHOOK_SECRET`, private key của App...) qua biến môi trường.
 - Installation token chỉ được truyền cho riêng lệnh `git fetch` (qua `GIT_CONFIG_*`, header `Authorization`), không nhúng vào URL remote. Vì vậy token không nằm trong `.git/config` của thư mục clone mà Claude CLI đọc, cũng không nằm trong args của tiến trình.
-- Claude CLI mặc định từ chối `Read`/`Grep`/`Glob` ra ngoài thư mục review, kể cả qua symlink trong repo (nên không đọc được file private key, `.env` hay `/proc/<pid>/environ` của server). **Không thêm `additionalDirectories` hay rule `allow` cho Read/Grep/Glob vào `~/.claude/settings.json` của user chạy server** — làm vậy là mở lại đường đọc secret.
+- File cấu hình server đọc từ bản checkout (`.yuumi.yml`, `.gitignore`, `.gitmodules`) được mở qua `os.Root`, nên symlink trỏ ra ngoài thư mục checkout bị từ chối.
+- **Không thêm `additionalDirectories` hay rule `allow` cho Read/Grep/Glob vào `~/.claude/settings.json` của user chạy server** — làm vậy là mở lại đường đọc secret.
 
-Giai đoạn 2: bật `SANDBOX=docker` để các tiến trình con chạy trong container riêng mỗi job, không cùng filesystem với server (xem [Sandbox mỗi job](#sandbox-mỗi-job-sandboxdocker)). Mạng của sandbox chỉ ra được `proxy.golang.org` và credential proxy tới Anthropic API; credential Claude thật không vào sandbox. Còn lại: `CLAUDE.md` của repo vẫn được Claude CLI đọc (chỉ ảnh hưởng nội dung review).
+Bật `SANDBOX=docker` thì các tiến trình con còn chạy trong container riêng mỗi job, không cùng filesystem với server (xem [Sandbox mỗi job](#sandbox-mỗi-job-sandboxdocker)). Mạng của sandbox chỉ ra được `proxy.golang.org` và credential proxy tới Anthropic API; credential Claude thật không vào sandbox. Còn lại: `CLAUDE.md` của repo vẫn được Claude CLI đọc (chỉ ảnh hưởng nội dung review).
 
 </details>
 
@@ -396,23 +403,24 @@ Ngoài mention thủ công, bot còn tự chạy review khi nhận webhook event
 
 ## Eval suite
 
-`evalsuite/` chứa các fixture PR có bug cài sẵn (`sql-injection-go`, `go-goroutine-leak`, `js-floating-promise`, `python-mutable-default`) để trả lời câu hỏi "đổi prompt/model có làm review tốt hơn hay tệ đi?":
+`evalsuite/` chứa các fixture PR có bug cài sẵn (`sql-injection-go`, `go-goroutine-leak`, `js-floating-promise`, `python-mutable-default`, `hardcoded-secret-go`, `cross-package-nil-go`) để trả lời câu hỏi "đổi prompt/model có làm review tốt hơn hay tệ đi?":
 
 ```bash
-go run ./cmd/evalrun                    # chạy toàn bộ fixture
-go run ./cmd/evalrun sql-injection-go   # chỉ 1 fixture
+go run ./cmd/evalrun                          # chạy toàn bộ fixture
+go run ./cmd/evalrun sql-injection-go         # chỉ 1 fixture
+go run ./cmd/evalrun -budget 12000 cross-package-nil-go   # đổi ngân sách bundle
 ```
 
 Cần `claude` CLI đã authenticate. Đây là công cụ chạy tay, **không** nằm trong `go test`/CI. Đối chiếu output với `expected.md` của từng fixture rồi ghi 1 dòng vào `evalsuite/results.md`. Chi tiết và cách thêm fixture: [evalsuite/README.md](./evalsuite/README.md).
 
 ## Roadmap
 
-**Đã fix limitation cũ:** trước đây clone `--depth 1` nên Claude không `git diff` được, chỉ đoán qua commit message. Giờ diff thật lấy trực tiếp từ GitHub API (không phụ thuộc git history), nên vẫn giữ `--depth 1` khi clone bình thường — nếu gọi GitHub API lỗi thì fallback về cách cũ (đọc file + commit message).
-
 - [x] Review repo private: clone bằng installation token của GitHub App — issue #48
-- [ ] Deploy có URL public thật (thay vì chỉ test local qua curl/ngrok) — issue #46
 - [x] Đóng gói Docker — issue #49
+- [x] Sandbox mỗi job kèm egress proxy và credential proxy — issue #78
+- [ ] Deploy có URL public thật (thay vì chỉ test local qua curl/ngrok) — issue #46
 - [ ] Deploy AWS — issue #50
+- [ ] Review nội dung submodule qua GitHub Compare API — issue #93, giai đoạn 2
 
 ## Đóng góp
 

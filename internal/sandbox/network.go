@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 
+	"github.com/tungnt1203/yuumi/internal/egress"
 	"github.com/tungnt1203/yuumi/internal/procenv"
 )
 
@@ -24,7 +26,15 @@ const (
 	// egressProxyURL là địa chỉ proxy nhìn từ trong sandbox (Docker DNS
 	// phân giải tên container trong cùng network).
 	egressProxyURL = "http://" + EgressContainerName + ":3128"
+
+	// credentialProxyURL là credential proxy tới Anthropic API, cùng
+	// container egress (issue #78, bước 3).
+	credentialProxyURL = "http://" + EgressContainerName + ":3129"
 )
+
+// credentialEnvKeys là credential Claude mà container egress nhận từ env
+// của server (dạng `--env KEY`, giá trị không nằm trong args).
+var credentialEnvKeys = []string{egress.OAuthTokenEnv, egress.APIKeyEnv}
 
 // dockerRunner chạy 1 lệnh docker, trả stdout. Tách ra để test logic của
 // SetupNetwork mà không cần Docker thật.
@@ -34,7 +44,9 @@ func runDocker(args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), startTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "docker", args...)
-	cmd.Env = procenv.Only(os.Environ(), dockerCLIEnvKeys...)
+	// Kèm credential Claude: `docker run --env KEY` của container egress lấy
+	// giá trị từ đây. Các lệnh docker khác không chuyển gì vào container.
+	cmd.Env = procenv.Only(os.Environ(), slices.Concat(dockerCLIEnvKeys, credentialEnvKeys)...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -92,9 +104,10 @@ func setupNetwork(run dockerRunner, image string) error {
 
 // egressRunArgs dựng `docker run` cho container egress proxy: nằm ở bridge
 // mặc định (có Internet), khoá quyền như sandbox. Proxy không đụng code PR
-// nhưng nhận kết nối từ sandbox, nên cũng không cần quyền gì.
+// nhưng nhận kết nối từ sandbox, nên cũng không cần quyền gì. Đây là nơi
+// duy nhất giữ credential Claude thật ngoài server (credential proxy).
 func egressRunArgs(image string) []string {
-	return []string{
+	args := []string{
 		"run", "--detach",
 		"--name", EgressContainerName,
 		"--restart", "unless-stopped",
@@ -107,7 +120,9 @@ func egressRunArgs(image string) []string {
 		"--security-opt", "no-new-privileges",
 		"--memory", "256m",
 		"--pids-limit", "256",
-		"--entrypoint", "yuumi-egressproxy",
-		image,
 	}
+	for _, key := range credentialEnvKeys {
+		args = append(args, "--env", key)
+	}
+	return append(args, "--entrypoint", "yuumi-egressproxy", image)
 }

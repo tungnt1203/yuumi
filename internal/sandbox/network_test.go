@@ -138,6 +138,10 @@ func TestEgressRunArgs_LocksDownProxy(t *testing.T) {
 		{"--security-opt", "no-new-privileges"},
 		{"--user", "10001:10001"},
 		{"--entrypoint", "yuumi-egressproxy", "yuumi:dev"},
+		// Credential thật cho credential proxy, dạng `--env KEY` (giá trị
+		// lấy từ env của lệnh docker, không nằm trong args).
+		{"--env", "CLAUDE_CODE_OAUTH_TOKEN"},
+		{"--env", "ANTHROPIC_API_KEY"},
 	} {
 		if !containsSeq(args, want...) {
 			t.Errorf("egress run args missing %v: %v", want, args)

@@ -16,13 +16,15 @@ import (
 	"time"
 )
 
-// DefaultAllowedHosts là các host review cần gọi ra ngoài: model của
-// Claude CLI và Go module proxy cho go vet (xem review.goHardenedEnv:
-// GOPROXY chỉ proxy.golang.org). Không cần sum.golang.org: GOFLAGS=
-// -mod=readonly chỉ đối chiếu go.sum có sẵn (đã kiểm chứng bằng log proxy
-// khi chạy go vet thật).
+// DefaultAllowedHosts là các host sandbox được CONNECT thẳng tới: chỉ Go
+// module proxy cho go vet (xem review.goHardenedEnv: GOPROXY chỉ
+// proxy.golang.org). Không cần sum.golang.org: GOFLAGS=-mod=readonly chỉ
+// đối chiếu go.sum có sẵn (đã kiểm chứng bằng log proxy khi chạy go vet
+// thật).
+//
+// api.anthropic.com KHÔNG nằm ở đây: Claude CLI gọi model qua credential
+// proxy (NewCredentialProxy), sandbox không có đường thẳng tới Anthropic.
 var DefaultAllowedHosts = []string{
-	"api.anthropic.com",
 	"proxy.golang.org",
 }
 

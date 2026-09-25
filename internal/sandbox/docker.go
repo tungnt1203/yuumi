@@ -30,9 +30,9 @@ const startTimeout = 2 * time.Minute
 // này không tự lọt vào sandbox. PATH/HOME của server cũng không được
 // chuyển — container có PATH/HOME riêng của image.
 var forwardEnvKeys = []string{
-	// Claude CLI cần credential để gọi model (bước 3 của #78 sẽ bỏ nó khỏi
-	// sandbox bằng proxy).
-	"CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "DISABLE_AUTOUPDATER",
+	// KHÔNG có credential Claude: sandbox chỉ có giá trị giả đặt lúc tạo
+	// container (runArgs), credential thật nằm ở credential proxy.
+	"DISABLE_AUTOUPDATER",
 	// Env đã siết cho gofmt/go vet (xem review.goHardenedEnv).
 	"GOTOOLCHAIN", "CGO_ENABLED", "GOPROXY", "GOFLAGS", "GOSUMDB",
 	// Không chuyển HTTP(S)_PROXY/NO_PROXY của server: `docker exec -e` sẽ
@@ -51,7 +51,18 @@ type DockerConfig struct {
 	// Image phải có sẵn các tool mà review chạy (go, git, claude) — dùng
 	// chính image của server.
 	Image string
+
+	// CredentialEnv là loại credential Claude của server
+	// (egress.OAuthTokenEnv hoặc egress.APIKeyEnv). Sandbox nhận biến này
+	// với giá trị GIẢ cùng loại: Claude CLI chọn header xác thực theo loại
+	// (Bearer hay x-api-key), credential proxy thay bằng giá trị thật.
+	CredentialEnv string
 }
+
+// placeholderCredential là giá trị giả của credential trong sandbox. Chỉ để
+// Claude CLI chịu khởi động và gửi đúng loại header; không dùng được với
+// Anthropic API.
+const placeholderCredential = "yuumi-sandbox-placeholder"
 
 // StartDocker tạo 1 container sandbox cho thư mục code PR dir. dir phải là
 // đường dẫn mà Docker daemon thấy được: server chạy trong container thì
@@ -92,7 +103,10 @@ func StartDocker(cfg DockerConfig, dir string) (Env, error) {
 //     đường ra duy nhất là egress proxy qua HTTP(S)_PROXY, chỉ cho host
 //     trong allowlist (xem SetupNetwork, package egress);
 //   - CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: Claude CLI không thử gửi
-//     telemetry (proxy cũng chặn, nhưng khỏi tốn kết nối bị từ chối).
+//     telemetry (proxy cũng chặn, nhưng khỏi tốn kết nối bị từ chối);
+//   - Claude CLI gọi model qua credential proxy (ANTHROPIC_BASE_URL, HTTP
+//     thường trong network nội bộ, NO_PROXY để không đi vòng qua proxy
+//     CONNECT) với credential giả; credential thật không vào sandbox.
 func runArgs(cfg DockerConfig, dir, name string, uid, gid int) []string {
 	return []string{
 		"run", "--detach", "--rm",
@@ -110,6 +124,9 @@ func runArgs(cfg DockerConfig, dir, name string, uid, gid int) []string {
 		"--env", "HTTPS_PROXY=" + egressProxyURL,
 		"--env", "HTTP_PROXY=" + egressProxyURL,
 		"--env", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+		"--env", "ANTHROPIC_BASE_URL=" + credentialProxyURL,
+		"--env", "NO_PROXY=" + EgressContainerName,
+		"--env", cfg.CredentialEnv + "=" + placeholderCredential,
 		"--init",
 		"--no-healthcheck",
 		"--cap-drop", "ALL",

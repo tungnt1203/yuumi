@@ -34,7 +34,7 @@ func containsSeq(args []string, seq ...string) bool {
 }
 
 func TestRunArgs_LocksDownContainer(t *testing.T) {
-	args := runArgs(DockerConfig{Image: "yuumi:test"}, "/work/clone-1", "yuumi-job-abc", 10001, 10001)
+	args := runArgs(DockerConfig{Image: "yuumi:test", CredentialEnv: "CLAUDE_CODE_OAUTH_TOKEN"}, "/work/clone-1", "yuumi-job-abc", 10001, 10001)
 
 	for _, want := range [][]string{
 		{"--user", "10001:10001"},
@@ -52,6 +52,10 @@ func TestRunArgs_LocksDownContainer(t *testing.T) {
 		// Chỉ network internal, đường ra duy nhất là egress proxy.
 		{"--network", "yuumi-sandbox"},
 		{"--env", "HTTPS_PROXY=http://yuumi-egress:3128"},
+		// Claude gọi model qua credential proxy, với credential GIẢ cùng loại.
+		{"--env", "ANTHROPIC_BASE_URL=http://yuumi-egress:3129"},
+		{"--env", "NO_PROXY=yuumi-egress"},
+		{"--env", "CLAUDE_CODE_OAUTH_TOKEN=yuumi-sandbox-placeholder"},
 	} {
 		if !containsSeq(args, want...) {
 			t.Errorf("docker run args missing %v: %v", want, args)
@@ -63,6 +67,8 @@ func TestRunArgs_LocksDownContainer(t *testing.T) {
 			"HOME=/home/yuumi", "GOCACHE=/tmp/go-cache", "GOMODCACHE=/tmp/go-mod", "GOPATH=/tmp/go",
 			"HTTPS_PROXY=http://yuumi-egress:3128", "HTTP_PROXY=http://yuumi-egress:3128",
 			"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+			"ANTHROPIC_BASE_URL=http://yuumi-egress:3129", "NO_PROXY=yuumi-egress",
+			"CLAUDE_CODE_OAUTH_TOKEN=yuumi-sandbox-placeholder",
 		}, args[i+1]) {
 			t.Errorf("unexpected --env %q at docker run", args[i+1])
 		}
@@ -82,22 +88,23 @@ func TestDockerCommand_ForwardsOnlyAllowlistedEnvWithoutValuesInArgs(t *testing.
 	}
 	cmd := d.Command(context.Background(), env, "claude", "-p", "hi")
 
+	// Credential thật KHÔNG được chuyển vào sandbox (issue #78 bước 3):
+	// `docker exec -e` sẽ ghi đè credential giả đặt lúc tạo container.
 	wantArgs := []string{"docker", "exec", "--workdir", "/work",
-		"--env", "CLAUDE_CODE_OAUTH_TOKEN", "--env", "GOTOOLCHAIN",
+		"--env", "GOTOOLCHAIN",
 		"yuumi-job-abc", "claude", "-p", "hi"}
 	if !slices.Equal(cmd.Args, wantArgs) {
 		t.Errorf("Args = %v\nwant %v", cmd.Args, wantArgs)
 	}
-	// Giá trị credential không được nằm trong args (lộ qua `ps`).
 	if strings.Contains(strings.Join(cmd.Args, " "), "secret-token") {
 		t.Errorf("credential value leaked into args: %v", cmd.Args)
 	}
 	// Giá trị đi qua env của chính lệnh docker, chỉ các biến trong allowlist.
-	if !slices.Contains(cmd.Env, "CLAUDE_CODE_OAUTH_TOKEN=secret-token") {
-		t.Errorf("Env missing forwarded credential: %v", cmd.Env)
+	if !slices.Contains(cmd.Env, "GOTOOLCHAIN=local") {
+		t.Errorf("Env missing forwarded GOTOOLCHAIN: %v", cmd.Env)
 	}
 	for _, kv := range cmd.Env {
-		if strings.HasPrefix(kv, "GITHUB_WEBHOOK_SECRET=") || strings.HasPrefix(kv, "SOME_NEW_SECRET=") || kv == "HTTPS_PROXY=http://corp-proxy:8080" {
+		if strings.HasPrefix(kv, "CLAUDE_CODE_OAUTH_TOKEN=") || strings.HasPrefix(kv, "GITHUB_WEBHOOK_SECRET=") || strings.HasPrefix(kv, "SOME_NEW_SECRET=") || kv == "HTTPS_PROXY=http://corp-proxy:8080" {
 			t.Errorf("non-allowlisted var reached docker env: %q", kv)
 		}
 	}

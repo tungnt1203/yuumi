@@ -1,72 +1,80 @@
-# Eval suite — đánh giá chất lượng review theo thời gian (issue #10)
+# Eval suite: tracking review quality over time (issue #10)
 
-Bộ fixture để trả lời câu hỏi "đổi prompt/model có làm review tốt hơn hay
-tệ đi?" — trước giờ chỉ test thủ công qua vài PR thật, không có gì để so
-sánh lại khi đổi `internal/review/prompt.go` hay cấu hình `claude` CLI.
+A set of fixtures to answer "did changing the prompt/model make reviews
+better or worse?". Before this, the bot was only tested by hand on a few
+real PRs, with nothing to compare against after changing
+`internal/review/prompt.go` or the `claude` CLI flags.
 
-## Cách hoạt động
+## How it works
 
-Mỗi fixture ở `testdata/<tên>/` mô phỏng 1 PR có bug đã biết trước, cấy chủ
-đích:
+Each fixture in `testdata/<name>/` simulates a PR with a known, deliberately
+seeded bug:
 
 ```
-testdata/<tên>/
-  before/        # state code TRƯỚC PR (base)
-  after/         # state code SAU PR (head) — bug được cấy ở đây
-  expected.md    # checklist bug bot PHẢI bắt được
+testdata/<name>/
+  before/        # code state BEFORE the PR (base)
+  after/         # code state AFTER the PR (head); the bug is seeded here
+  expected.md    # checklist of what the bot MUST catch
 ```
 
-`go run ./cmd/evalrun` tự dựng 1 git repo tạm để lấy diff thật giữa
-`before/` và `after/` (đúng shape unified diff GitHub trả về), gọi thẳng
-`review.BuildReviewPrompt` + `claudecli.Reviewer` — bỏ qua webhook/GitHub
-API vì mục đích ở đây là đánh giá CHẤT LƯỢNG prompt/model, không phải test
-lại luồng nhận webhook (đã có `internal/review` unit test riêng cho việc
-đó).
+`go run ./cmd/evalrun` builds a temporary git repo to get the real diff
+between `before/` and `after/` (the same unified diff shape GitHub returns),
+then calls the review pipeline and `claudecli.Reviewer` directly. It skips
+the webhook and GitHub API: the goal is to evaluate the QUALITY of the
+prompt/model, not to re-test webhook handling (covered by the
+`internal/review` unit tests).
 
 ```bash
-go run ./cmd/evalrun                          # chạy toàn bộ fixture
-go run ./cmd/evalrun sql-injection-go         # chỉ 1 fixture
-go run ./cmd/evalrun -budget 100000 cross-package-nil-go  # đổi ngân sách bundle
+go run ./cmd/evalrun                          # all fixtures
+go run ./cmd/evalrun sql-injection-go         # one fixture
+go run ./cmd/evalrun -budget 12000 cross-package-nil-go   # different bundle budget
 ```
 
-Diff đi qua đúng đường chia bundle của production (`review.BuildBundlePlan`):
-fixture lớn hơn ngân sách bị chia bundle, có primer và ghi chú "phần i/n"
-như PR thật. `-budget 0` (mặc định) dùng ngân sách của `review.Job`.
+The diff goes through the production bundling path
+(`review.BuildBundlePlan`): a fixture larger than the budget is split into
+bundles, with the shared primer and "part i/n" notes, like a real PR.
+`-budget 0` (the default) uses `review.Job`'s default budget.
 
-Cần `claude` CLI đã cài + authenticate (giống yêu cầu chạy server thật, xem
-README gốc) — đây KHÔNG phải lệnh chạy trong `go test`/CI, mà là công cụ
-chạy tay khi cần đánh giá 1 thay đổi.
+It needs an installed and authenticated `claude` CLI (same as running the
+server; see the main README). It is NOT part of `go test`/CI; it is a manual
+tool for evaluating a change.
 
-## Quy trình đánh giá (thủ công — giai đoạn đầu, issue #10 cho phép)
+## Evaluation process (manual, as issue #10 allows for now)
 
-1. Chạy `go run ./cmd/evalrun` trước khi đổi (baseline) và sau khi đổi
-   prompt/model.
-2. Với mỗi fixture, đọc phần `Response` in ra, tự đối chiếu với checklist
-   `expected.md` — bot có nhắc đúng vấn đề, đúng file, đúng dòng không.
-3. Ghi lại kết quả vào [`results.md`](./results.md) (1 dòng/lần chạy) để so
-   sánh được qua thời gian, không chỉ nhớ trong đầu.
+1. Run `go run ./cmd/evalrun` before the change (baseline) and after
+   changing the prompt/model/CLI flags.
+2. For each fixture, read the printed `Response` and compare it with the
+   `expected.md` checklist: did the bot name the right problem, file, and
+   line?
+3. Record the result in [`results.md`](./results.md) (one row per fixture
+   per run) so it can be compared over time.
 
-Tự động hoá việc đối chiếu (assert `category`/keyword có mặt trong JSON
-response) là bước SAU, một khi có đủ fixture để việc đó đáng công — hiện
-tại checklist tay là đủ theo đúng đề xuất của issue #10.
+Automating the comparison (asserting the expected `category`/keywords in the
+JSON response) is a LATER step, once there are enough fixtures to make it
+worthwhile.
 
-## Thêm fixture mới
+## Adding a fixture
 
-1. Tạo `testdata/<tên-ngắn-gọn>/before/` + `after/` — 1-2 file nhỏ là đủ,
-   chỉ cấy ĐÚNG 1 bug rõ ràng để dễ đối chiếu (đừng gộp nhiều bug không
-   liên quan vào cùng 1 fixture).
-2. Viết `expected.md`: mô tả bug, checklist bot phải bắt được (category,
-   file/dòng, có báo sai (false positive) ở phần code không đổi không).
-3. Chạy thử `go run ./cmd/evalrun <tên-fixture>` để chắc diff dựng đúng và
-   review chạy được trước khi coi là fixture hợp lệ.
+1. Create `testdata/<short-name>/before/` and `after/`. One or two small
+   files are enough. Seed exactly ONE clear bug so the result is easy to
+   check (do not mix unrelated bugs in one fixture).
+2. Write `expected.md`: describe the bug and the checklist the bot must meet
+   (category, file/line, and whether it should avoid false positives in
+   unchanged code).
+3. Run `go run ./cmd/evalrun <fixture-name>` to make sure the diff builds and
+   the review runs before treating the fixture as valid.
 
-Ưu tiên phủ đúng các loại rule mặc định bot đã tự nhận có (xem README gốc,
-mục "Rule mặc định theo loại file") — 5 fixture hiện có (`sql-injection-go`,
-`go-goroutine-leak`, `js-floating-promise`, `python-mutable-default`,
-`hardcoded-secret-go`) mỗi
-cái tương ứng 1 rule, để biết rule đó thực sự "có tác dụng" hay chỉ nằm
-trong prompt cho có.
+Fixture code is input to the model: once results are recorded, do not edit
+`before/`/`after/`, or later runs are no longer comparable. Add a new
+fixture instead.
 
-`cross-package-nil-go` (issue #73) khác loại: lỗi chỉ thấy được khi nhìn cả
-2 package, và diff đủ lớn để bị chia 2 bundle ở ngân sách mặc định — dùng để
-so chất lượng/chi phí giữa các ngân sách bundle.
+Prefer covering the bot's default rules (see the main README, "Default rules
+per file type"). Five fixtures (`sql-injection-go`, `go-goroutine-leak`,
+`js-floating-promise`, `python-mutable-default`, `hardcoded-secret-go`) each
+map to one rule, to show whether that rule actually works or just sits in
+the prompt.
+
+`cross-package-nil-go` (issue #73) is different: the bug is only visible
+when looking at two packages together, and its diff (~17k characters) is
+split into 2 bundles at a 12k budget. Use it to compare quality and cost
+across bundle budgets.

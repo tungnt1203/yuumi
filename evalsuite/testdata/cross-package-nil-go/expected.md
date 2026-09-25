@@ -1,32 +1,35 @@
-# Kỳ vọng: cross-package-nil-go
+# Expected: cross-package-nil-go
 
-Fixture cho issue #73: lỗi chỉ thấy được khi nhìn cả 2 package cùng lúc.
-Diff ~17k ký tự, với ngân sách mặc định 12k thì `api/` và `store/` rơi vào
-2 bundle khác nhau (git xếp file theo tên: `api` đầu, `store` cuối).
+Fixture for issue #73: the bug is only visible when looking at two packages
+together. The diff is ~17k characters; with a 12k budget, `api/` and
+`store/` land in different bundles (git orders files by name: `api` first,
+`store` last). With the current 100k default, it is a single bundle.
 
-- `store/user.go`: `Get(id) (User, error)` đổi thành
-  `Get(ctx, id) (*User, error)`, và **không tìm thấy trả `(nil, nil)`**
-  (doc comment ghi rõ, `ErrNotFound` bị xoá). Riêng thay đổi này hợp lệ.
-- `api/handler.go`: `GetUser` gọi `Get` mới, bỏ nhánh 404 cũ và dùng
-  `u.ID`/`u.Name`/`u.Email` mà không kiểm tra `u == nil` → **nil pointer
-  dereference (panic) khi id không tồn tại**, đồng thời mất response 404.
-  Nhìn riêng diff của `api/` thì không thấy lỗi.
+- `store/user.go`: `Get(id) (User, error)` becomes
+  `Get(ctx, id) (*User, error)`, and **"not found" returns `(nil, nil)`**
+  (stated in the doc comment; `ErrNotFound` is removed). This change on its
+  own is valid.
+- `api/handler.go`: `GetUser` calls the new `Get`, drops the old 404 branch,
+  and uses `u.ID`/`u.Name`/`u.Email` without checking `u == nil` → **nil
+  pointer dereference (panic) for an unknown id**, and the 404 response is
+  lost. The `api/` diff alone does not show the bug.
 
-Bot PHẢI bắt được:
+The bot MUST catch:
 
-- [ ] Có finding `category: "bug"` nói `GetUser` dereference `u` khi `Get`
-      trả `(nil, nil)` (user không tồn tại) → panic / mất 404.
-- [ ] Finding gắn vào `api/handler.go`, dòng `writeJSON(w, userResponse{...})`
-      trong `GetUser` (hoặc dòng gọi `h.users.Get`). Finding chỉ ở
-      `store/user.go` kiểu "trả nil, nil nguy hiểm cho caller" mà không chỉ
-      ra `GetUser` thì tính ⚠️.
+- [ ] A `category: "bug"` finding saying `GetUser` dereferences `u` when
+      `Get` returns `(nil, nil)` (user not found) → panic / no 404.
+- [ ] The finding is on `api/handler.go`, at the `writeJSON(w, userResponse{...})`
+      line in `GetUser` (or the `h.users.Get` call). A finding only on
+      `store/user.go` saying "returning nil, nil is dangerous for callers"
+      without pointing at `GetUser` counts as ⚠️.
 
-Không nên báo `bug`/`security` mức medium trở lên ở `billing/`, `notify/`,
-`report/` — 3 package mới này không có lỗi được cấy. Góp ý mức low về
-validate đầu vào/tràn số là chấp nhận được, và `safeCell` thiếu `\t`/`\r`
-theo khuyến nghị OWASP là góp ý đúng. Doc comment của `store.Get` viện dẫn
-"driver Postgres trả (nil, nil)" là sai thật (database/sql, pgx đều trả
-ErrNoRows) — bot chỉ ra được thì là điểm cộng.
+It should not report `bug`/`security` at medium or above in `billing/`,
+`notify/`, or `report/`: these three new packages have no seeded bug. Low
+findings about input validation or integer overflow are acceptable, and
+`safeCell` missing `\t`/`\r` per the OWASP recommendation is a correct
+finding. The `store.Get` doc comment claiming "the Postgres driver returns
+(nil, nil)" is genuinely wrong (database/sql and pgx both return
+ErrNoRows); pointing that out is a bonus.
 
-Khi so ngân sách (`go run ./cmd/evalrun -budget N cross-package-nil-go`),
-ghi cả số bundle và tổng chi phí vào results.md.
+When comparing budgets (`go run ./cmd/evalrun -budget N cross-package-nil-go`),
+record the number of bundles and the total cost in results.md.

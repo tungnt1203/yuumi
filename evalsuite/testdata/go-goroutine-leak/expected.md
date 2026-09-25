@@ -1,17 +1,17 @@
-# Kỳ vọng: go-goroutine-leak
+# Expected: go-goroutine-leak
 
-PR thêm `Notify` — mỗi lần gọi spawn 1 goroutine mới `for { msg := <-p.events; ... }`
-chạy MÃI MÃI, không có cách nào dừng (không nhận `context`, không có
-channel "done", không `return` sau khi xử lý). Gọi `Notify` nhiều lần =
-leak thêm goroutine mỗi lần, tất cả đều chờ đọc chung 1 channel không bao
-giờ đóng.
+The PR adds `Notify`. Every call spawns a new goroutine
+`for { msg := <-p.events; ... }` that runs FOREVER with no way to stop it
+(no `context`, no "done" channel, no `return` after handling). Calling
+`Notify` many times leaks one more goroutine each time, all waiting on the
+same channel that is never closed.
 
-Bot PHẢI bắt được:
+The bot MUST catch:
 
-- [ ] Có finding nhắc tới goroutine leak / goroutine không có cách dừng
-      (context/channel cancel) trong hàm `Notify`.
-- [ ] Finding gắn đúng vào file `worker.go`, khoảng dòng `go func() { for { ... } }()`
-      trong `Notify`.
+- [ ] A finding about a goroutine leak / a goroutine with no way to stop
+      (context/channel cancellation) in `Notify`.
+- [ ] The finding is on `worker.go`, around the `go func() { for { ... } }()`
+      lines in `Notify`.
 
-Không nên báo sai ở `Start` — goroutine đó đã có `ctx.Done()` để dừng đúng
-cách, không đổi gì trong PR này.
+It should not report `Start`: that goroutine already stops on `ctx.Done()`
+and is unchanged in this PR.

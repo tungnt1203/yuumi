@@ -1,20 +1,20 @@
-# Kỳ vọng: js-floating-promise
+# Expected: js-floating-promise
 
-PR thêm `logAudit(user.id, "viewed")` trong `handleRequest` — gọi 1 hàm
-`async` nhưng KHÔNG `await` và KHÔNG `.catch(...)`: promise "bay" tự do
-(floating promise). Nếu `logAudit` reject (vd API audit log lỗi/timeout),
-lỗi biến mất im lặng (unhandled rejection), không ai biết audit log có ghi
-được hay không.
+The PR adds `logAudit(user.id, "viewed")` in `handleRequest`: it calls an
+`async` function WITHOUT `await` and WITHOUT `.catch(...)`, leaving a
+floating promise. If `logAudit` rejects (e.g. the audit log API errors or
+times out), the error disappears silently (unhandled rejection), and nobody
+knows whether the audit entry was written.
 
-Bot PHẢI bắt được:
+The bot MUST catch:
 
-- [ ] Có finding nhắc tới floating promise / thiếu `await`/`.catch` ở dòng
-      gọi `logAudit(user.id, "viewed")`.
-- [ ] Finding gắn đúng vào file `handler.js`, đúng dòng gọi `logAudit(...)`
-      trong `handleRequest`.
-- [ ] `suggestion` (nếu có) gợi ý `await logAudit(...)` (nếu chấp nhận
-      chặn response) hoặc `logAudit(...).catch(...)` (nếu cố tình
-      "fire-and-forget" nhưng cần bắt lỗi).
+- [ ] A finding about a floating promise / missing `await`/`.catch` on the
+      `logAudit(user.id, "viewed")` call.
+- [ ] The finding is on `handler.js`, at the `logAudit(...)` call in
+      `handleRequest`.
+- [ ] The `suggestion` (if any) proposes `await logAudit(...)` (if blocking
+      the response is acceptable) or `logAudit(...).catch(...)` (if it is
+      meant to be fire-and-forget but errors must be handled).
 
-Không nên báo sai ở `fetchUser` — hàm này đã `await` đầy đủ, không đổi gì
-trong PR này.
+It should not report `fetchUser`: it already awaits correctly and is
+unchanged in this PR.

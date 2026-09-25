@@ -51,7 +51,7 @@ Both paths skip a head SHA that was already reviewed (`review.AlreadyReviewedSHA
 1. Get head + base SHA, create the check run (`checkrun.go`), clone at head (`internal/gitrepo`), start the job's sandbox (`internal/sandbox`: `Local`, or one Docker container per job when `SANDBOX=docker`). Every command on PR code (`gofmt`/`go vet`, `claude`) runs through `sandbox.Env.Command`. Reading config files from the clone stays on the server.
 2. Static checks (`gofmt`/`go vet`), `.yuumi.yml` (`exclude`, `instructions`) and `.gitignore` from the clone.
 3. Get the diff: the full PR diff, or only the changes since the last reviewed SHA (`reviewstate`, "incremental"). Filter junk files, split into bundles by directory under `MAX_DIFF_BUNDLE_CHARS`.
-4. One `claude -p` call per bundle (`internal/claudecli`, retries), parse JSON findings (`finding.go`, one repair retry on bad format), cache per-bundle results for resume.
+4. One `claude -p` call per bundle (`internal/claudecli`, retries), findings come back as CLI structured output (`--json-schema review.FindingsSchema`, parsed per finding in `finding.go`), cache per-bundle results for resume.
 5. Edit the placeholder with header + notes + body, post inline comments through the Reviews API (validated against the full base...head diff; one bad line rejects the whole review), save the reviewed SHA only if no bundle errored.
 6. Complete the check run. It starts as `neutral` in a `defer`, so every error or panic path closes it. It becomes `success`, or `failure` when a finding matches `block_severity`.
 

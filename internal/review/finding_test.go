@@ -1,69 +1,113 @@
 package review
 
 import (
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
 
-func TestParseFindings_ValidArray(t *testing.T) {
-	text := `[{"category":"bug","severity":"high","message":"nil pointer khi x == nil","suggestion":"if x != nil { ... }"}]`
+func TestParseFindings_StructuredOutputObject(t *testing.T) {
+	text := `{"findings":[{"category":"bug","severity":"high","message":"nil pointer khi x == nil","suggestion":"if x != nil { ... }"}]}`
 
-	findings, ok := parseFindings(text)
-	if !ok {
-		t.Fatal("parseFindings() ok = false, want true")
-	}
-	if len(findings) != 1 {
-		t.Fatalf("got %d findings, want 1", len(findings))
+	findings, dropped, ok := parseFindings(text)
+	if !ok || dropped != 0 {
+		t.Fatalf("parseFindings() ok=%v dropped=%d, want ok and nothing dropped", ok, dropped)
 	}
 	want := Finding{Category: "bug", Severity: "high", Message: "nil pointer khi x == nil", Suggestion: "if x != nil { ... }"}
-	if findings[0] != want {
-		t.Errorf("findings[0] = %+v, want %+v", findings[0], want)
+	if len(findings) != 1 || findings[0] != want {
+		t.Errorf("findings = %+v, want [%+v]", findings, want)
 	}
 }
 
-func TestParseFindings_EmptyArray_OkButNoFindings(t *testing.T) {
-	findings, ok := parseFindings("[]")
-	if !ok {
-		t.Fatal("parseFindings(\"[]\") ok = false, want true")
-	}
-	if len(findings) != 0 {
-		t.Errorf("got %d findings, want 0", len(findings))
+// Mảng trần là định dạng BundleCache lưu (saveCachedBundle).
+func TestParseFindings_BareArray(t *testing.T) {
+	findings, _, ok := parseFindings(`[{"category":"style","severity":"low","message":"đặt tên chưa rõ"}]`)
+	if !ok || len(findings) != 1 || findings[0].Category != "style" {
+		t.Errorf("parseFindings() = %+v ok=%v, want 1 style finding", findings, ok)
 	}
 }
 
-func TestParseFindings_WrappedInProseAndCodeFence(t *testing.T) {
-	// Claude đôi khi vẫn thêm câu mở đầu hoặc bọc ```json ... ``` dù đã dặn
-	// không làm vậy — extractJSONArray phải chịu được.
-	text := "Đây là kết quả review:\n```json\n" +
-		`[{"category":"style","severity":"low","message":"đặt tên biến chưa rõ nghĩa"}]` +
-		"\n```\nHết."
+func TestParseFindings_EmptyFindings_OkButNoFindings(t *testing.T) {
+	for _, text := range []string{`{"findings":[]}`, "[]"} {
+		findings, _, ok := parseFindings(text)
+		if !ok || findings == nil || len(findings) != 0 {
+			t.Errorf("parseFindings(%q) = %#v ok=%v, want empty non-nil and ok", text, findings, ok)
+		}
+	}
+}
 
-	findings, ok := parseFindings(text)
+// 1 finding hỏng không được kéo cả kết quả xuống (issue #72).
+func TestParseFindings_DropsOnlyInvalidItems(t *testing.T) {
+	text := `{"findings":[
+		{"category":"bug","severity":"high","message":"giữ lại"},
+		{"category":"bug","severity":"high","line":"12","message":"line là chuỗi"},
+		{"category":"bug","severity":"low","message":"  "}
+	]}`
+
+	findings, dropped, ok := parseFindings(text)
 	if !ok {
 		t.Fatal("parseFindings() ok = false, want true")
 	}
-	if len(findings) != 1 || findings[0].Category != "style" {
-		t.Errorf("findings = %+v", findings)
+	if dropped != 2 || len(findings) != 1 || findings[0].Message != "giữ lại" {
+		t.Errorf("parseFindings() = %+v dropped=%d, want only the valid finding and 2 dropped", findings, dropped)
 	}
 }
 
-func TestParseFindings_FreeformText_NotOk(t *testing.T) {
-	if _, ok := parseFindings("Code trông ổn, không có vấn đề gì."); ok {
-		t.Error("parseFindings() ok = true for freeform text without any [], want false")
+func TestParseFindings_NotOk(t *testing.T) {
+	for _, text := range []string{
+		"",
+		"Code trông ổn, không có vấn đề gì.",
+		"[{\"category\": broken json",
+		`{"note": "see [1] and [2]"}`,
+		`{"findings": null}`,
+		"Kết quả:\n```json\n[]\n```",
+	} {
+		if _, _, ok := parseFindings(text); ok {
+			t.Errorf("parseFindings(%q) ok = true, want false", text)
+		}
 	}
 }
 
-func TestParseFindings_InvalidJSON_NotOk(t *testing.T) {
-	if _, ok := parseFindings("[{\"category\": broken json"); ok {
-		t.Error("parseFindings() ok = true for invalid JSON, want false")
+// Schema gửi cho CLI phải là JSON hợp lệ và mọi field của nó phải map được
+// vào Finding — đổi tên json tag mà quên sửa schema thì field đó im lặng
+// thành rỗng.
+func TestFindingsSchema_MatchesFinding(t *testing.T) {
+	var schema struct {
+		Properties struct {
+			Findings struct {
+				Items struct {
+					Properties map[string]json.RawMessage `json:"properties"`
+					Required   []string                   `json:"required"`
+				} `json:"items"`
+			} `json:"findings"`
+		} `json:"properties"`
 	}
-}
+	if err := json.Unmarshal([]byte(FindingsSchema), &schema); err != nil {
+		t.Fatalf("FindingsSchema is not valid JSON: %v", err)
+	}
 
-func TestParseFindings_JSONObjectNotArray_NotOk(t *testing.T) {
-	// Có "[" và "]" trong text nhưng top-level không phải array — vd Claude
-	// trả 1 object đơn lẻ thay vì mảng.
-	if _, ok := parseFindings(`{"note": "see [1] and [2] for details"}`); ok {
-		t.Error("parseFindings() ok = true for a non-array JSON value, want false")
+	tags := map[string]bool{}
+	ft := reflect.TypeOf(Finding{})
+	for i := 0; i < ft.NumField(); i++ {
+		tags[strings.Split(ft.Field(i).Tag.Get("json"), ",")[0]] = true
+	}
+
+	props := schema.Properties.Findings.Items.Properties
+	for name := range props {
+		if !tags[name] {
+			t.Errorf("schema property %q has no matching Finding json tag", name)
+		}
+	}
+	for tag := range tags {
+		if _, ok := props[tag]; !ok {
+			t.Errorf("Finding field %q is missing from FindingsSchema", tag)
+		}
+	}
+	for _, req := range schema.Properties.Findings.Items.Required {
+		if _, ok := props[req]; !ok {
+			t.Errorf("required field %q is not a schema property", req)
+		}
 	}
 }
 

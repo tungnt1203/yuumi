@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLocal_CommandRunsInDirWithGivenEnv(t *testing.T) {
@@ -107,5 +108,34 @@ func TestDockerCommand_ForwardsOnlyAllowlistedEnvWithoutValuesInArgs(t *testing.
 		if strings.HasPrefix(kv, "CLAUDE_CODE_OAUTH_TOKEN=") || strings.HasPrefix(kv, "GITHUB_WEBHOOK_SECRET=") || strings.HasPrefix(kv, "SOME_NEW_SECRET=") || kv == "HTTPS_PROXY=http://corp-proxy:8080" {
 			t.Errorf("non-allowlisted var reached docker env: %q", kv)
 		}
+	}
+}
+
+// ctx có deadline thì lệnh được bọc trong `timeout` để tiến trình trong
+// container tự dừng khi hết giờ, không chỉ lệnh docker exec phía server
+// (issue #98).
+func TestDockerCommand_DeadlineWrapsWithTimeout(t *testing.T) {
+	d := &docker{name: "yuumi-job-abc", dir: "/work/clone-1"}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	cmd := d.Command(ctx, nil, "claude", "-p", "hi")
+
+	wantArgs := []string{"docker", "exec", "--workdir", "/work",
+		"yuumi-job-abc", "timeout", "--kill-after=10s", "90s", "claude", "-p", "hi"}
+	if !slices.Equal(cmd.Args, wantArgs) {
+		t.Errorf("Args = %v\nwant %v", cmd.Args, wantArgs)
+	}
+}
+
+// Deadline đã qua vẫn cho `timeout` tối thiểu 1s, không phải 0s (GNU
+// timeout coi 0 là "không giới hạn").
+func TestTimeoutPrefix_ExpiredDeadlineUsesOneSecond(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	got := timeoutPrefix(ctx)
+	if len(got) != 3 || got[2] != "1s" {
+		t.Errorf("timeoutPrefix() = %v, want duration 1s", got)
 	}
 }

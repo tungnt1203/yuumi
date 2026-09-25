@@ -6,8 +6,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -161,9 +163,15 @@ func (d *docker) Dir() string { return d.dir }
 // (không kèm giá trị): docker lấy giá trị từ env của chính lệnh docker, nên
 // credential không nằm trong args (ai trên máy server cũng thấy qua `ps`).
 //
-// Hết ctx thì chỉ lệnh `docker` trên máy server bị kill; tiến trình trong
-// container có thể còn chạy tới khi Close xoá container — vẫn bị giới hạn
-// bởi CPU/RAM/pids của container.
+// Hết ctx thì CommandContext chỉ kill được lệnh `docker exec` trên máy
+// server; tiến trình trong container không nhận tín hiệu nào và chạy tiếp
+// tới khi Close xoá container (vd claude vẫn tốn token cho kết quả sẽ bị bỏ,
+// issue #98). Vì vậy khi ctx có deadline, lệnh được bọc trong `timeout` của
+// coreutils (có sẵn trong image Debian) để chính container tự dừng nó:
+// TERM đúng lúc hết giờ, KILL sau killGrace nếu vẫn chưa thoát. `timeout`
+// chạy lệnh trong process group riêng và gửi tín hiệu cho cả group, nên
+// tiến trình con (vd rg do Grep của claude sinh ra) cũng dừng theo.
+// Không có deadline thì chạy lệnh trực tiếp như cũ.
 func (d *docker) Command(ctx context.Context, env []string, name string, args ...string) *exec.Cmd {
 	forwarded := procenv.Only(env, forwardEnvKeys...)
 
@@ -172,12 +180,33 @@ func (d *docker) Command(ctx context.Context, env []string, name string, args ..
 		key, _, _ := strings.Cut(kv, "=")
 		execArgs = append(execArgs, "--env", key)
 	}
-	execArgs = append(execArgs, d.name, name)
+	execArgs = append(execArgs, d.name)
+	execArgs = append(execArgs, timeoutPrefix(ctx)...)
+	execArgs = append(execArgs, name)
 	execArgs = append(execArgs, args...)
 
 	cmd := exec.CommandContext(ctx, "docker", execArgs...)
 	cmd.Env = append(procenv.Only(os.Environ(), dockerCLIEnvKeys...), forwarded...)
 	return cmd
+}
+
+// killGrace là thời gian `timeout` chờ sau TERM trước khi gửi KILL.
+const killGrace = 10 * time.Second
+
+// timeoutPrefix trả `timeout --kill-after=<killGrace> <giây còn lại>s` khi
+// ctx có deadline, nil nếu không. Làm tròn LÊN giây để container không dừng
+// lệnh sớm hơn deadline phía server (runOnce dựa vào ctx.Err() để nhận ra
+// lỗi timeout); tối thiểu 1s.
+func timeoutPrefix(ctx context.Context) []string {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return nil
+	}
+	secs := int(math.Ceil(time.Until(deadline).Seconds()))
+	if secs < 1 {
+		secs = 1
+	}
+	return []string{"timeout", "--kill-after=" + strconv.Itoa(int(killGrace.Seconds())) + "s", strconv.Itoa(secs) + "s"}
 }
 
 // Close xoá container (kill mọi tiến trình còn chạy trong đó).

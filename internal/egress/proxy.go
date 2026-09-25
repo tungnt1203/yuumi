@@ -5,12 +5,14 @@
 package egress
 
 import (
+	"context"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -27,6 +29,19 @@ var DefaultAllowedHosts = []string{
 // dialTimeout giới hạn thời gian kết nối tới host đích.
 const dialTimeout = 10 * time.Second
 
+// Proxy dùng chung cho mọi sandbox đang chạy, mà sandbox chạy code PR không
+// tin cậy: 1 sandbox không được giữ tài nguyên proxy vô hạn.
+const (
+	// defaultIdleTimeout đóng tunnel khi CẢ 2 chiều không có dữ liệu trong
+	// khoảng này. Tính chung 2 chiều: lúc chờ model trả lời, chiều gửi lên
+	// im lặng lâu trong khi chiều nhận vẫn chạy.
+	defaultIdleTimeout = 10 * time.Minute
+
+	// defaultMaxTunnels giới hạn số tunnel mở cùng lúc; vượt thì từ chối
+	// (503) thay vì mở thêm goroutine/fd.
+	defaultMaxTunnels = 64
+)
+
 // Proxy là http.Handler xử lý CONNECT với allowlist host.
 type Proxy struct {
 	allowed map[string]bool
@@ -35,8 +50,14 @@ type Proxy struct {
 	// log.Printf. Test thay bằng hàm ghi lại.
 	Logf func(format string, args ...any)
 
-	// dial mở kết nối tới host đích; nil thì dùng net.Dialer thật.
-	dial func(network, addr string) (net.Conn, error)
+	// dial mở kết nối tới host đích; nil thì dùng net.Dialer thật. Nhận ctx
+	// của request để huỷ dial khi sandbox ngắt kết nối giữa chừng.
+	dial func(ctx context.Context, network, addr string) (net.Conn, error)
+
+	// idleTimeout và tunnels (semaphore, sức chứa = số tunnel tối đa): New
+	// đặt default, test thay giá trị nhỏ.
+	idleTimeout time.Duration
+	tunnels     chan struct{}
 }
 
 // New tạo Proxy chỉ cho phép các host trong allowedHosts (so khớp chính
@@ -48,7 +69,11 @@ func New(allowedHosts []string) *Proxy {
 			allowed[h] = true
 		}
 	}
-	return &Proxy{allowed: allowed}
+	return &Proxy{
+		allowed:     allowed,
+		idleTimeout: defaultIdleTimeout,
+		tunnels:     make(chan struct{}, defaultMaxTunnels),
+	}
 }
 
 func (p *Proxy) logf(format string, args ...any) {
@@ -84,11 +109,20 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	select {
+	case p.tunnels <- struct{}{}:
+		defer func() { <-p.tunnels }()
+	default:
+		p.logf("egress BUSY CONNECT %s (đã có %d tunnel)", r.Host, cap(p.tunnels))
+		http.Error(w, "too many tunnels", http.StatusServiceUnavailable)
+		return
+	}
+
 	dial := p.dial
 	if dial == nil {
-		dial = (&net.Dialer{Timeout: dialTimeout}).Dial
+		dial = (&net.Dialer{Timeout: dialTimeout}).DialContext
 	}
-	upstream, err := dial("tcp", r.Host)
+	upstream, err := dial(r.Context(), "tcp", r.Host)
 	if err != nil {
 		p.logf("egress FAIL CONNECT %s: %v", r.Host, err)
 		http.Error(w, "cannot reach destination", http.StatusBadGateway)
@@ -106,6 +140,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		upstream.Close()
 		return
 	}
+	// Conn sau Hijack có thể còn deadline của ReadHeaderTimeout: bỏ đi để
+	// tunnel chỉ bị đóng theo idle timeout của pipe.
+	client.SetDeadline(time.Time{})
 	p.logf("egress ALLOW CONNECT %s", r.Host)
 
 	if _, err := client.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
@@ -123,21 +160,72 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	pipe(client, upstream)
+	if pipe(client, upstream, p.idleTimeout) {
+		p.logf("egress IDLE CONNECT %s: đóng sau %v không có dữ liệu", r.Host, p.idleTimeout)
+	}
 }
 
-// pipe chuyển dữ liệu 2 chiều tới khi 1 bên đóng, rồi đóng cả 2.
-func pipe(a, b net.Conn) {
+// pipe chuyển dữ liệu 2 chiều tới khi 1 bên đóng, hoặc cả 2 chiều không có
+// dữ liệu trong idle (idled=true), rồi đóng cả 2.
+func pipe(a, b net.Conn, idle time.Duration) (idled bool) {
+	var lastActive atomic.Int64
+	lastActive.Store(time.Now().UnixNano())
+	done := make(chan struct{})
+	var closeOnce sync.Once
+	closeBoth := func() {
+		closeOnce.Do(func() {
+			a.Close()
+			b.Close()
+			close(done)
+		})
+	}
+
 	var wg sync.WaitGroup
 	wg.Add(2)
-	copyAndClose := func(dst, src net.Conn) {
+	copyDir := func(dst, src net.Conn) {
 		defer wg.Done()
-		io.Copy(dst, src)
-		// Đóng cả 2 để chiều còn lại (đang chờ đọc) thoát ra.
-		dst.Close()
-		src.Close()
+		// Đóng cả 2 khi 1 chiều kết thúc, để chiều còn lại (đang chờ đọc)
+		// thoát ra.
+		defer closeBoth()
+		io.Copy(dst, activityReader{src, &lastActive})
 	}
-	go copyAndClose(a, b)
-	go copyAndClose(b, a)
+	go copyDir(a, b)
+	go copyDir(b, a)
+
+	// Watchdog: tunnel bị bỏ mặc (không ai gửi, không ai đóng) thì tự đóng.
+	var timedOut atomic.Bool
+	go func() {
+		ticker := time.NewTicker(idle / 4)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				if time.Since(time.Unix(0, lastActive.Load())) > idle {
+					timedOut.Store(true)
+					closeBoth()
+					return
+				}
+			}
+		}
+	}()
+
 	wg.Wait()
+	return timedOut.Load()
+}
+
+// activityReader ghi lại thời điểm đọc được dữ liệu gần nhất (chung cho cả
+// 2 chiều của tunnel).
+type activityReader struct {
+	net.Conn
+	lastActive *atomic.Int64
+}
+
+func (r activityReader) Read(p []byte) (int, error) {
+	n, err := r.Conn.Read(p)
+	if n > 0 {
+		r.lastActive.Store(time.Now().UnixNano())
+	}
+	return n, err
 }

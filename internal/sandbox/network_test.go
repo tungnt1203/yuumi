@@ -65,6 +65,16 @@ func TestSetupNetwork_ReusesExistingInternalNetwork(t *testing.T) {
 	if f.called("network", "create") {
 		t.Errorf("must not recreate an existing internal network: %v", f.calls)
 	}
+	// Egress proxy vẫn luôn được tạo lại từ image hiện tại.
+	for _, want := range [][]string{
+		{"rm", "--force", "yuumi-egress"},
+		{"run", "--detach", "--name", "yuumi-egress"},
+		{"network", "connect", "yuumi-sandbox", "yuumi-egress"},
+	} {
+		if !f.called(want...) {
+			t.Errorf("missing %v when network already exists: %v", want, f.calls)
+		}
+	}
 }
 
 // Network trùng tên nhưng không internal: sandbox trong đó sẽ ra Internet
@@ -81,7 +91,7 @@ func TestSetupNetwork_RejectsNonInternalNetwork(t *testing.T) {
 }
 
 func TestSetupNetwork_PropagatesErrors(t *testing.T) {
-	for _, step := range []string{"network create", "run --detach", "network connect"} {
+	for _, step := range []string{"network create", "rm --force", "run --detach", "network connect"} {
 		t.Run(step, func(t *testing.T) {
 			f := &fakeDocker{errs: map[string]error{step: errors.New("daemon down")}}
 			if err := setupNetwork(f.run, "yuumi:dev"); err == nil {

@@ -29,25 +29,40 @@ type PullRequestResponse struct {
 	ChangedFiles int `json:"changed_files"`
 }
 
-// Client gọi GitHub REST API bằng 1 token cố định, thay vì phải truyền token
-// vào từng lời gọi hàm như trước.
+// Client gọi GitHub REST API. Token được lấy lại cho TỪNG request qua
+// token(), không giữ 1 chuỗi cố định: installation token của GitHub App chỉ
+// sống 1 giờ, còn 1 job review có thể chờ trong hàng đợi Dispatcher rồi
+// chạy nhiều bundle lâu hơn thế — token lấy lúc nhận webhook sẽ hết hạn
+// trước khi job post kết quả (issue #99).
 type Client struct {
-	token string
+	token func() (string, error)
 }
 
+// NewClient tạo Client dùng 1 token cố định (PAT, test, script ngắn).
 func NewClient(token string) *Client {
+	return NewClientWithTokenFunc(func() (string, error) { return token, nil })
+}
+
+// NewClientWithTokenFunc tạo Client gọi token() trước mỗi request. token
+// nên có cache (vd githubapp.Provider) vì nó chạy mỗi lần gọi API.
+func NewClientWithTokenFunc(token func() (string, error)) *Client {
 	return &Client{token: token}
 }
 
 // newRequest tạo request kèm sẵn header Authorization + Accept dùng chung
 // cho hầu hết endpoint (trừ GetPullRequestDiff, cần Accept khác).
 func (c *Client) newRequest(method, url string, body io.Reader) (*http.Request, error) {
+	token, err := c.token()
+	if err != nil {
+		return nil, fmt.Errorf("cannot get github token: %w", err)
+	}
+
 	req, err := http.NewRequest(method, url, body)
 	if err != nil {
 		return nil, fmt.Errorf("cannot create request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	return req, nil
 }

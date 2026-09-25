@@ -55,7 +55,7 @@ Both paths skip a head SHA that was already reviewed (`review.AlreadyReviewedSHA
 5. Edit the placeholder with header + notes + body, post inline comments through the Reviews API (validated against the full base...head diff; one bad line rejects the whole review), save the reviewed SHA only if no bundle errored.
 6. Complete the check run. It starts as `neutral` in a `defer`, so every error or panic path closes it. It becomes `success`, or `failure` when a finding matches `block_severity`.
 
-`cmd/server` builds each `review.Job` through `newJob`. The clone closure binds the installation token there, so `Job` never sees the token.
+`cmd/server` builds each `review.Job` through `newJob`. The GitHub client and the clone closure get the installation token from `githubapp.Provider` on every use (`installationToken`), never a token captured at webhook time: tokens last 1 hour and a queued job can outlive that (#99). `Job` never sees the token.
 
 ## Security invariants (PR code is untrusted input)
 
